@@ -1,0 +1,10 @@
+# 虛擬環境與暫存
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 個人資料（分類清單、設定、整理紀錄）
+categories.json
+settings.json
+logs/

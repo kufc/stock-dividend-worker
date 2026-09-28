@@ -1,59 +1,155 @@
-# 股票股息資料擷取器（雲端版）
+# AI 媒體分類器（AI Media Sorter）
 
-這個程式可以從 Yahoo Finance 擷取股票資料並將結果儲存到 Google Sheets。
+雙擊就能用的桌面程式：AI 先幫你看一遍資料夾裡的**照片與影片**，告訴你「這看起來像什麼」，
+你確認（或修改）分類後，一鍵**依分類搬移到資料夾並重新命名**。
 
-## 功能
+- 使用 NVIDIA 顯示卡（CUDA）加速；沒有顯示卡也能用 CPU 執行（較慢）
+- 分類可以**自訂、直接用中文**（例如：貓、寶寶、旅行、收據）
+- 所有辨識都在**你自己的電腦**上完成，照片不會上傳到任何地方
 
-- 從 Google Sheets 讀取股票清單
-- 擷取每支股票的收盤價和股息資料
-- 將結果自動更新到 Google Sheets
+## 運作流程
 
-## 安裝需求
+```
+選擇資料夾 ──▶ 開始辨識（AI 看每張圖／每支影片）──▶ 你確認分類 ──▶ 開始整理（搬移＋改名）
+                  │                                    │
+                  └─ 列出最像的 3 個分類＋信心度        └─ 不滿意可以「復原上次整理」
+```
 
-1. Python 3.8 或更新版本
-2. pip（Python 套件管理器）
+整理後的結果（預設命名樣式 `{分類}_{序號}`）：
 
-## 安裝步驟
+```
+手機照片\
+└─ 已分類\
+   ├─ 貓\        貓_001.jpg、貓_002.heic、貓_003.mp4 ⋯
+   ├─ 風景\      風景_001.jpg ⋯
+   └─ 螢幕截圖\  螢幕截圖_001.png ⋯
+```
 
-1. 安裝必要的 Python 套件：
-   ```bash
-   pip install -r requirements.txt
-   ```
+## 系統需求
 
-2. 設置 Google Cloud Project 和 Google Sheets API：
-   - 建立 Google Cloud Project
-   - 啟用 Google Sheets API
-   - 建立服務帳號並下載憑證
+| 項目 | 需求 |
+| --- | --- |
+| 作業系統 | Windows 10 / 11 |
+| Python | 3.10 以上（建議 **3.12**），從 [python.org](https://www.python.org/downloads/) 安裝，安裝時勾選 **Add python.exe to PATH** |
+| 顯示卡（選配） | NVIDIA 顯示卡，並安裝最新版驅動程式；RTX 50 系列也支援 |
+| 硬碟空間 | 約 5～10 GB（PyTorch＋AI 模型） |
 
-3. 設置環境變數：
-   ```powershell
-   $env:GOOGLE_SHEETS_CREDS = Get-Content -Path "path/to/your/credentials.json" -Raw
-   $env:SPREADSHEET_ID = "your-spreadsheet-id"
-   ```
+## 安裝（只需要做一次）
 
-## 使用方法
+1. 下載這個專案（GitHub 綠色的 **Code → Download ZIP**，解壓縮；或用 `git clone`）
+2. 雙擊 **`install.bat`**，它會自動：
+   - 建立獨立的 Python 環境（`.venv` 資料夾，不影響電腦上其他程式）
+   - 偵測你的 NVIDIA 顯示卡，安裝對應 CUDA 版本的 PyTorch
+   - 下載 AI 模型並測試顯示卡是否正常運作
+3. 看到「安裝完成！」就可以關閉視窗
 
-1. 準備 Google Sheets：
-   - 建立新的試算表
-   - 建立名為「美股」的工作表
-   - 加入必要的欄位標題
-   - 將服務帳號加入共用權限
+> 第一次安裝需要下載數 GB 的檔案，請耐心等候。
 
-2. 執行程式：
-   ```bash
-   python stock_dividend_fetcher.py
-   ```
+## 使用方式
 
-## 注意事項
+雙擊 **`start.bat`** 開啟程式（第一次使用若還沒安裝，會自動先執行安裝）。
 
-- 確保服務帳號有適當的權限存取 Google Sheets
-- 避免過於頻繁的 API 請求以防止被限制
-- 定期檢查 Google Cloud Console 的配額使用情況
+1. **選擇資料夾**：選擇要整理的照片／影片資料夾（可勾選「包含子資料夾」）
+2. **開始辨識**：AI 逐一判斷每個檔案看起來像什麼。狀態列會顯示是否正在使用顯示卡
+3. **確認分類**：點選左邊清單的檔案，右邊會顯示預覽與 AI 的前 3 名候選
+   - 同意 AI 的判斷：直接按 **Enter**（或按 **1／2／3** 選對應候選），自動跳到下一個
+   - 都不對：從「都不是？改選」選別的分類，或按「＋ 新增分類」
+   - 不想整理這個檔案：按 **S** 略過
+   - **黃色**列 = AI 沒把握（信心低於門檻），建議人工確認；**綠色**列 = 已確認
+   - 省時技巧：
+     - 「顯示」選「AI 判斷為：貓」→ Ctrl+A 全選 →「採用 AI 建議」，一次確認整批
+     - 「高信心的全部採用」：信心夠高的直接採用，只剩黃色的需要逐一看
+4. **開始整理**：選擇「搬移」或「複製（保留原檔）」、是否重新命名，按「開始整理」
+   - 還有未確認的項目時，會問你要不要依 AI 判斷一起整理
+   - 執行前會先顯示摘要（每個分類幾個檔案、改名範例），確認後才動作
+5. **復原**：整理錯了？按「復原上次整理」，檔案會搬回原位（複製出來的會刪除）
 
-## 錯誤排除
+### 「AI 還看到這些」
 
-如果遇到問題：
-1. 檢查環境變數是否正確設置
-2. 確認服務帳號憑證是否有效
-3. 檢查 Google Sheets 的權限設置
-4. 查看程式的錯誤訊息和日誌 
+除了你設定的分類，AI 也會從內建的 150 個常見詞彙中找出畫面裡的東西（例如「沙發」「夕陽」「聊天截圖」），
+點一下就能把它**新增為分類**，AI 會立刻重新判斷所有檔案（不需要重新讀檔，只要幾秒鐘）。
+
+## 分類設定
+
+按「分類設定」可以新增、刪除、排序分類。每個分類有：
+
+- **名稱**：也是資料夾名稱與檔名的一部分
+- **給 AI 的描述**（選填，每行一個）：中文或英文皆可；英文描述通常最準，例如 `a photo of a cat`
+
+預設分類：人像、合照、貓、狗、風景、城市建築、美食、花草植物、交通工具、螢幕截圖、文件收據、動漫插畫。
+
+分類清單存在 `categories.json`，想備份或分享給別人時複製這個檔案即可。
+
+## 重新命名樣式
+
+| 代碼 | 意義 | 範例 |
+| --- | --- | --- |
+| `{分類}` | 分類名稱 | 貓 |
+| `{序號}` | 同一分類內依拍攝時間排序的編號 | 001 |
+| `{日期}` | 拍攝日期（照片 EXIF → 影片資訊 → 檔案修改時間） | 20240503 |
+| `{原檔名}` | 原本的檔名（不含副檔名） | IMG_2031 |
+
+例如 `{分類}_{日期}_{序號}` → `貓_20240503_001.jpg`。撞名時會自動換下一個編號，不會覆蓋任何檔案。
+
+## 設定
+
+| 設定 | 說明 |
+| --- | --- |
+| AI 模型 | **自動**：顯示卡記憶體 6 GB 以上用「高精準」，否則用「標準」 |
+| 影片取樣畫面數 | 每支影片平均擷取幾張畫面來判斷（預設 8） |
+| 低信心門檻 | 低於此信心度的項目標黃色（預設 50%） |
+| 每批處理張數 | 一次送進顯示卡的張數；出現記憶體不足時請調低 |
+
+| 模型 | 首次下載 | 特色 |
+| --- | --- | --- |
+| 標準（xlm-roberta-base-ViT-B-32） | 約 1.5 GB | 速度快，CPU 也跑得動 |
+| 高精準（xlm-roberta-large-ViT-H-14） | 約 5 GB | 準確度明顯較高，建議搭配 NVIDIA 顯示卡 |
+
+兩者都是 [LAION](https://laion.ai/) 的多語言 CLIP 模型（透過 [OpenCLIP](https://github.com/mlfoundations/open_clip)），
+支援中文分類名稱。模型只在第一次使用時從 Hugging Face 下載，存放在 `%USERPROFILE%\.cache\huggingface`。
+
+## 支援格式
+
+- 圖片：JPG、PNG、HEIC／HEIF（iPhone）、WEBP、GIF、BMP、TIFF
+- 影片：MP4、MOV、AVI、MKV、WMV、M4V、WEBM、FLV、3GP、MTS、MPG
+
+## 疑難排解
+
+| 狀況 | 解決方式 |
+| --- | --- |
+| 狀態列顯示「CPU（未偵測到可用的 NVIDIA 顯示卡）」 | 更新 NVIDIA 驅動程式後，重新執行 `install.bat` |
+| 雙擊 `start.bat` 沒反應 | 查看 `logs\error.log`；或在命令提示字元執行 `.venv\Scripts\python -m media_sorter` 看錯誤訊息 |
+| install.bat 顯示找不到 Python | 安裝 Python 時要勾選「Add python.exe to PATH」 |
+| PyTorch 安裝失敗 | Python 版本可能太新，改裝 Python 3.12 後刪除 `.venv` 資料夾再執行 `install.bat` |
+| 顯示卡記憶體不足（out of memory） | 「設定」中把「每批處理張數」調低，或改用「標準」模型 |
+| 某些影片「無法讀取」 | 檔案可能損毀或編碼特殊，可手動選分類或略過 |
+
+## 專案結構
+
+```
+install.bat              安裝（雙擊）
+start.bat                開啟程式（雙擊）
+requirements.txt         Python 套件清單
+media_sorter/
+  app.py                 視窗介面（Tkinter）
+  analysis.py            辨識流程：多執行緒讀檔 → 顯示卡批次推論
+  classifier.py          AI 模型（多語言 CLIP）載入與向量比對
+  media.py               圖片／影片讀取、影片抽幀、拍攝日期、縮圖
+  organizer.py           搬移／複製、重新命名、紀錄與復原
+  config.py              預設分類與設定
+  vocabulary.py          「AI 還看到這些」的內建詞彙
+  installer.py           偵測顯示卡並安裝對應的 PyTorch
+tests/                   自動化測試
+```
+
+使用者資料（不會上傳到 git）：`categories.json`、`settings.json`、`logs\`（整理紀錄 CSV 與錯誤紀錄）。
+
+## 開發
+
+```bash
+python -m venv .venv
+.venv\Scripts\pip install torch torchvision -r requirements.txt pytest
+.venv\Scripts\python -m pytest
+```
+
+測試使用假的模型（依顏色分類），不需要下載 AI 模型或顯示卡；`tests/test_app.py` 會實際開啟視窗跑完整流程。
