@@ -138,6 +138,9 @@ def analyze(
     stop_event: threading.Event | None = None,
     workers: int | None = None,
 ) -> list[Item]:
+    # 保險：設定檔的值萬一是 0 或負數（例如壞掉的 batch_size=0），批次大小至少是 1，避免辨識迴圈空轉不前進
+    batch_size = max(1, int(batch_size))
+    video_frames = max(1, int(video_frames))
     items = [Item(Path(p), media_kind(Path(p)) or "image") for p in paths]
     names = tuple(c.name for c in categories)
     class_emb = classifier.encode_categories(categories)

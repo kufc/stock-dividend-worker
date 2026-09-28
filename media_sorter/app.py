@@ -1022,7 +1022,7 @@ class App:
             return
         when = datetime.fromtimestamp(log.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
         folders = sorted({str(Path(r["新路徑"]).parent.parent) for r in rows})
-        moves = sum(1 for r in rows if r["動作"] == "move")
+        moves = sum(1 for r in rows if r["動作"] in ("move", "pending-move"))
         copies = len(rows) - moves
         detail = []
         if moves:
@@ -1044,6 +1044,8 @@ class App:
         self.organizing = False
         self._set_busy(False)
         message = f"已復原 {result.done} 個檔案。"
+        if result.warnings:
+            message += "\n\n注意：\n" + "\n".join(result.warnings[:8])
         if result.errors:
             message += (f"\n\n{len(result.errors)} 個失敗（再按一次「復原上次整理」會重試這些檔案）：\n"
                         + "\n".join(f"{p.name}：{e}" for p, e in result.errors[:8]))

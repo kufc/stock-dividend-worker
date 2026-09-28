@@ -1,6 +1,5 @@
 """對抗測試找到的檔案安全問題：每一項都有對應的回歸測試。"""
 
-import csv
 import errno
 import os
 import shutil
@@ -112,7 +111,7 @@ def test_failed_copy_leaves_no_partial_file(tmp_path, monkeypatch):
         Path(dst).write_text("half")
         raise OSError(errno.ENOSPC, "No space left on device")
 
-    monkeypatch.setattr(shutil, "copy2", broken_copy)
+    monkeypatch.setattr(shutil, "copyfile", broken_copy)
     ops = plan_operations([(a, "貓", D)], tmp_path / "out")
     result = execute(ops, "copy", tmp_path / "logs")
     assert result.done == 0 and result.errors
@@ -121,6 +120,8 @@ def test_failed_copy_leaves_no_partial_file(tmp_path, monkeypatch):
 
 
 def test_log_write_failure_aborts_and_keeps_log(tmp_path, monkeypatch):
+    # 第 1 次 fsync 是第一個檔案的 pending 列（成功），第 2 次是它的確認列（失敗）：
+    # 檔案已經搬移但紀錄不到，整批必須立刻停止，後面的檔案完全不能再動。
     files = [touch(tmp_path / f"{i}.jpg", str(i)) for i in range(3)]
     calls = {"n": 0}
     real_fsync = os.fsync
@@ -135,7 +136,7 @@ def test_log_write_failure_aborts_and_keeps_log(tmp_path, monkeypatch):
     result = execute(plan_operations([(f, "貓", D) for f in files], tmp_path / "out"), "move", tmp_path / "logs")
     assert result.aborted and result.log_path is not None and result.log_path.exists()
     assert result.done == 1
-    assert sum(1 for f in files if f.exists()) == 1  # 第三個檔案沒被動到
+    assert sum(1 for f in files if f.exists()) == 2  # 第二、三個檔案完全沒被動到（只有第一個已預先記錄）
 
 
 def test_cross_device_move_falls_back_to_copy(tmp_path, monkeypatch):
@@ -161,8 +162,7 @@ def test_cross_device_move_with_locked_original_logged_as_copy(tmp_path, monkeyp
                         lambda p: (_ for _ in ()).throw(PermissionError("locked")) if Path(p) == a else real_unlink(p))
     result = execute(plan_operations([(a, "貓", D)], tmp_path / "out"), "move", tmp_path / "logs")
     assert result.done == 1 and result.warnings
-    with open(result.log_path, encoding="utf-8-sig") as f:
-        assert next(csv.DictReader(f))["動作"] == "copy"  # 復原時會移除重複的複本
+    assert read_log(result.log_path)[0]["動作"] == "copy"  # 復原時會移除重複的複本
 
 
 @pytest.mark.parametrize("pattern", ["{分類}_{序號}", "{原檔名}", "{分類}"])

@@ -7,6 +7,7 @@ import os
 import re
 import stat
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,13 +24,18 @@ try:  # iPhone 的 HEIC 照片
 except ImportError:  # pragma: no cover - 選用功能
     pass
 
-# 都是使用者自己的照片：放寬 Pillow 的「解壓縮炸彈」限制（200MP 手機照片、全景照也能讀）
-Image.MAX_IMAGE_PIXELS = 1_000_000_000
+# 都是使用者自己的照片：放寬 Pillow 的「解壓縮炸彈」限制到 3 億像素（仍涵蓋 200MP 手機照片、全景照），
+# 但不是無限制：超過的話 Pillow 會丟 DecompressionBombError，避免單一張圖就把記憶體吃光
+Image.MAX_IMAGE_PIXELS = 300_000_000
 # 傳輸中斷而不完整的 JPEG 仍讀出可用的部分（缺的部分補灰色），而不是整張當成讀取失敗
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 THUMB_SIZE = 480
 ANALYSIS_SIZE = 640
+# 超過這麼多像素、又不是 JPEG／MPO（無法用 draft 縮小解碼）的圖片，同一時間只解碼一張，
+# 避免好幾個執行緒同時把好幾張巨圖整張攤開在記憶體裡
+LARGE_DECODE_PIXELS = 50_000_000
+_decode_semaphore = threading.Semaphore(1)
 EXIF_IFD = 0x8769
 EXIF_DATE_TAGS = [(EXIF_IFD, 36867), (EXIF_IFD, 36868), (None, 306)]  # 拍攝時間、數位化時間、修改時間
 DATE_RE = re.compile(r"(\d{4})[:\-/](\d{2})[:\-/](\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?")
@@ -145,18 +151,41 @@ def to_rgb(img: Image.Image) -> Image.Image:
     return img if img.mode == "RGB" else img.convert("RGB")
 
 
+def _bomb_message(exc: Exception) -> str:
+    match = re.search(r"(\d+) pixels", str(exc))
+    if match:
+        megapixels = int(match.group(1)) / 1_000_000
+        return f"圖片太大（約 {megapixels:.0f} 百萬像素），為避免記憶體不足已略過"
+    return "圖片太大，為避免記憶體不足已略過"
+
+
 def load_image(path: Path, max_side: int | None = None) -> tuple[Image.Image, datetime | None]:
     """載入圖片並依 EXIF 轉正，回傳 (RGB 圖片, EXIF 拍攝日期)。
 
     先縮小再轉正與轉色彩，避免在全尺寸影像上做多次複製（省記憶體也快很多）。
+    超過解壓縮炸彈上限的圖片會顯示成易懂的中文錯誤，而不是整包 Pillow 的例外訊息。
     """
-    with Image.open(path) as img:
+    try:
+        opened = Image.open(path)
+    except Image.DecompressionBombError as exc:
+        raise ValueError(_bomb_message(exc)) from exc
+    with opened as img:
         date = _exif_date(img)
-        if max_side:
-            img.draft("RGB", (max_side, max_side))  # JPEG／MPO 直接以縮小比例解碼；其他格式無作用
-            img.thumbnail((max_side, max_side))
-        else:
-            img.load()
+        # 很大張又不是 JPEG／MPO（draft 對它們無效，只能整張解碼）：同一時間只讓一張在解碼，避免併發時記憶體暴增
+        needs_lock = img.size[0] * img.size[1] > LARGE_DECODE_PIXELS and img.format not in ("JPEG", "MPO")
+        if needs_lock:
+            _decode_semaphore.acquire()
+        try:
+            if max_side:
+                img.draft("RGB", (max_side, max_side))  # JPEG／MPO 直接以縮小比例解碼；其他格式無作用
+                img.thumbnail((max_side, max_side))
+            else:
+                img.load()
+        except Image.DecompressionBombError as exc:
+            raise ValueError(_bomb_message(exc)) from exc
+        finally:
+            if needs_lock:
+                _decode_semaphore.release()
         img = to_rgb(ImageOps.exif_transpose(img))
     return img, date
 

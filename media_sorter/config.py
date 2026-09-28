@@ -125,11 +125,37 @@ def save_categories(categories: list[Category], path: Path = CATEGORIES_FILE) ->
     _write_json(path, {"categories": [c.to_dict() for c in categories]})
 
 
+def _clamped_int(value, low: int, high: int, default: int) -> int:
+    try:
+        return max(low, min(high, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamped_float(value, low: float, high: float, default: float) -> float:
+    try:
+        return max(low, min(high, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
 def load_settings(path: Path = SETTINGS_FILE) -> dict:
+    """讀取設定；數值會夾在合理範圍內，型別不對或壞掉的值一律用預設值（避免例如 batch_size=0 讓辨識空轉）。"""
     settings = dict(DEFAULT_SETTINGS)
     data = _read_json(path)
     if isinstance(data, dict):
         settings.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
+    settings["batch_size"] = _clamped_int(settings.get("batch_size"), 1, 256, DEFAULT_SETTINGS["batch_size"])
+    settings["video_frames"] = _clamped_int(settings.get("video_frames"), 1, 32, DEFAULT_SETTINGS["video_frames"])
+    settings["confidence_threshold"] = _clamped_float(
+        settings.get("confidence_threshold"), 0.05, 0.95, DEFAULT_SETTINGS["confidence_threshold"])
+    if settings.get("model") not in MODEL_CHOICES:
+        settings["model"] = DEFAULT_SETTINGS["model"]
+    if settings.get("action") not in ("move", "copy"):
+        settings["action"] = DEFAULT_SETTINGS["action"]
+    for key in ("include_subfolders", "rename"):
+        if not isinstance(settings.get(key), bool):
+            settings[key] = DEFAULT_SETTINGS[key]
     return settings
 
 

@@ -2,28 +2,45 @@
 
 安全原則：
 - 絕不覆蓋既有檔案（目的地已存在就換名字或回報錯誤）
-- 複製先寫到「.partial」暫存檔，完成後才改成正式檔名；失敗就刪掉暫存檔
-- 每完成一個檔案就寫入紀錄；紀錄寫不進去就立刻停止，避免出現無法復原的檔案
-- 復原複製時，原檔不見了就把複本搬回原位（而不是刪掉唯一的一份）；複本被改過就不刪
+- 複製先寫到「不會跟任何檔案撞名」的暫存檔，完成後才改成正式檔名；失敗只刪掉自己建立的暫存檔
+- 動作前先寫一列「pending」紀錄並確保寫入磁碟，完成後再寫一列確認紀錄；
+  任何一次寫入失敗就立刻停止，這樣就算半途中斷，也知道哪些檔案可能已經動過、要復原到哪裡
+- 復原複製時，原檔不見了就把複本搬回原位（而不是刪掉唯一的一份）；
+  複本只有在跟目前的原檔內容完全相同時才刪除，否則保留並回報「原檔已變更」
+- 紀錄檔重寫（例如復原後只留下失敗的列）一律先寫暫存檔再原子性地換檔，寫到一半失敗也不會動到原紀錄
+- 紀錄檔即使被竄改，也只接受合法格式、位於本次輸出資料夾內、副檔名相符的列，且刪除前一定會核對內容
 """
 
 from __future__ import annotations
 
 import csv
 import errno
+import filecmp
 import os
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from .config import IMAGE_EXTS, VIDEO_EXTS
+
+try:  # 選用套件：沒有安裝就搬到隔離資料夾，而不是直接刪除
+    from send2trash import send2trash as _send2trash
+except ImportError:  # pragma: no cover - 選用功能
+    _send2trash = None
+
 INVALID_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
-LOG_FIELDS = ["動作", "原始路徑", "新路徑", "分類", "時間", "大小", "修改時間"]
+LOG_FIELDS = ["動作", "原始路徑", "新路徑", "分類", "時間", "大小", "修改時間", "輸出資料夾"]
+MOVE_ACTIONS = {"move", "pending-move"}
+COPY_ACTIONS = {"copy", "pending-copy"}
+VALID_ACTIONS = MOVE_ACTIONS | COPY_ACTIONS
 LOG_PREFIX = "整理紀錄_"
 UNDONE_PREFIX = "已復原_"
+QUARANTINE_DIR = "復原移除"  # 沒有資源回收筒可用時，安全刪除的檔案改放到這裡
 SEQ = "{序號}"
 MAX_NAME = 100  # 檔名（不含副檔名）上限，避免超過 Windows 路徑長度限制
 PARTIAL_SUFFIX = ".partial"
@@ -163,10 +180,17 @@ def _rename_no_clobber(src: Path, dst: Path) -> None:
 
 
 def _copy_no_clobber(src: Path, dst: Path) -> None:
-    """先複製到 .partial 暫存檔，完整寫完才改成正式檔名；失敗會清掉暫存檔。"""
-    tmp = dst.with_name(dst.name + PARTIAL_SUFFIX)
+    """先複製到絕對不會跟既有檔案撞名的暫存檔，完整寫完才改成正式檔名；失敗只清掉自己建立的暫存檔。
+
+    用 mkstemp「獨佔建立」取得保證不存在的檔名，避免目的地資料夾裡剛好已經有
+    `<檔名>.partial`（例如使用者自己放的）時被覆蓋、失敗時又被誤刪。
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=dst.parent, prefix=f"{dst.name}.", suffix=PARTIAL_SUFFIX)
+    tmp = Path(tmp_name)
     try:
-        shutil.copy2(src, tmp)
+        os.close(fd)
+        shutil.copyfile(src, tmp)
+        shutil.copystat(src, tmp)
         _rename_no_clobber(tmp, dst)
     except BaseException:
         try:
@@ -204,14 +228,19 @@ def execute(
     log_dir: Path,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> ExecuteResult:
-    """執行搬移（move）或複製（copy）。每完成一個檔案就寫入紀錄，中途失敗也能復原已完成的部分。"""
+    """執行搬移（move）或複製（copy）。
+
+    採用「先記錄、再動作」：每個檔案實際搬移／複製前，先寫一列 pending 紀錄並確保寫入磁碟；
+    成功後再寫一列確認紀錄。任一次寫入失敗都立刻停止整理（不會繼續動其他檔案），
+    這樣無論在哪個環節中斷，都能從紀錄檔判斷哪些檔案已經動過、該怎麼復原。
+    """
     if action not in ("move", "copy"):
         raise ValueError(f"未知的動作：{action}")
     log_path, f = _open_new_log(Path(log_dir))
     errors: list[tuple[Path, str]] = []
     warnings: list[str] = []
     done = 0
-    rows = 0
+    any_written = False  # 有沒有任何一列 pending 紀錄成功寫入過（決定結束時要不要保留空紀錄檔）
     aborted = False
     done_sources: list[Path] = []
     with f:
@@ -219,11 +248,31 @@ def execute(
         writer.writerow(LOG_FIELDS)
         f.flush()
         for i, op in enumerate(ops, 1):
-            logged_action = action
+            output_dir = op.dst.parent.parent
             try:
                 if op.dst.exists():
                     raise FileExistsError(f"目的地已有同名檔案：{op.dst}")
                 op.dst.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                errors.append((op.src, str(exc)))
+                if on_progress:
+                    on_progress(i, len(ops))
+                continue
+
+            try:
+                writer.writerow([f"pending-{action}", str(op.src), str(op.dst), op.category,
+                                 datetime.now().isoformat(timespec="seconds"), "", "", str(output_dir)])
+                f.flush()
+                os.fsync(f.fileno())
+            except OSError as exc:
+                errors.append((op.src, f"紀錄檔寫入失敗，已停止整理（這個檔案沒有被更動）：{exc}"))
+                aborted = True
+                break
+            any_written = True
+
+            logged_action = action
+            op_error: OSError | None = None
+            try:
                 if action == "copy":
                     _copy_no_clobber(op.src, op.dst)
                 else:
@@ -239,24 +288,35 @@ def execute(
                             logged_action = "copy"  # 原檔刪不掉：當作複製記錄，復原時會移除這份複本
                             warnings.append(f"{op.src.name}：已複製到新位置，但無法刪除原檔（{unlink_exc}）")
             except OSError as exc:
-                errors.append((op.src, str(exc)))
-            else:
-                try:
-                    st = op.dst.stat()
-                    writer.writerow([logged_action, str(op.src), str(op.dst), op.category,
-                                     datetime.now().isoformat(timespec="seconds"), st.st_size, st.st_mtime_ns])
-                    f.flush()
-                    os.fsync(f.fileno())
-                except OSError as exc:
-                    errors.append((op.src, f"紀錄檔寫入失敗，已停止整理：{exc}"))
-                    aborted = True
-                    break
-                rows += 1
+                op_error = exc
+
+            if op_error is not None:
+                errors.append((op.src, str(op_error)))
+                # 這一列 pending 紀錄留著不管：復原時發現新路徑不存在，會判斷成「沒有真的發生」而略過
+                if on_progress:
+                    on_progress(i, len(ops))
+                continue
+
+            try:
+                st = op.dst.stat()
+                writer.writerow([logged_action, str(op.src), str(op.dst), op.category,
+                                 datetime.now().isoformat(timespec="seconds"), st.st_size, st.st_mtime_ns,
+                                 str(output_dir)])
+                f.flush()
+                os.fsync(f.fileno())
+            except OSError as exc:
                 done += 1
                 done_sources.append(op.src)
+                aborted = True
+                errors.append((op.src, f"檔案已{'搬移' if logged_action == 'move' else '複製'}成功，"
+                                        f"但確認紀錄寫入失敗（已預先記錄，可以復原）：{exc}"))
+                break
+
+            done += 1
+            done_sources.append(op.src)
             if on_progress:
                 on_progress(i, len(ops))
-    if rows == 0 and not aborted:
+    if done == 0 and not any_written:
         log_path.unlink(missing_ok=True)
         log_path = None
     return ExecuteResult(done, errors, log_path, warnings, aborted, done_sources)
@@ -269,7 +329,11 @@ def latest_log(log_dir: Path) -> Path | None:
 
 
 def read_log(log_path: Path) -> list[dict]:
-    """讀取紀錄檔。被 Excel 另存成 Big5（cp950）也讀得懂。"""
+    """讀取紀錄檔。被 Excel 另存成 Big5（cp950）也讀得懂。
+
+    同一個檔案可能有兩列（先寫的 pending 列、動作完成後補寫的確認列），
+    這裡會依「新路徑」把它們合併成一列：有確認列就用確認列，否則保留 pending 列。
+    """
     raw = Path(log_path).read_bytes()
     for encoding in ("utf-8-sig", "cp950", "mbcs"):
         try:
@@ -279,11 +343,22 @@ def read_log(log_path: Path) -> list[dict]:
             continue
     else:
         raise ValueError("紀錄檔的編碼無法辨識")
-    rows = list(csv.DictReader(text.splitlines()))
+    raw_rows = list(csv.DictReader(text.splitlines()))
     required = {"動作", "原始路徑", "新路徑"}
-    if rows and not required <= set(rows[0]):
+    if raw_rows and not required <= set(raw_rows[0]):
         raise ValueError("紀錄檔格式不正確（缺少必要欄位）")
-    return rows
+    merged: dict[str, dict] = {}
+    order: list[str] = []
+    for row in raw_rows:
+        key = row.get("新路徑", "")
+        action = row.get("動作", "")
+        existing = merged.get(key)
+        if existing is None:
+            order.append(key)
+            merged[key] = row
+        elif existing.get("動作", "").startswith("pending-") and not action.startswith("pending-"):
+            merged[key] = row  # 確認列覆蓋先前的 pending 列
+    return [merged[k] for k in order]
 
 
 def _move_back(dst: Path, src: Path) -> None:
@@ -297,54 +372,121 @@ def _move_back(dst: Path, src: Path) -> None:
         os.unlink(dst)
 
 
-def _delete(path: Path) -> None:
-    """優先丟到資源回收筒（可救回），不行才直接刪除。"""
+def _delete(path: Path, quarantine_dir: Path) -> Path | None:
+    """優先丟到資源回收筒（可救回）；沒有 send2trash 套件時，搬到隔離資料夾而不是直接刪除。
+
+    回傳搬去的隔離位置；丟進資源回收筒成功則回傳 None。
+    """
+    if _send2trash is not None:
+        _send2trash(str(path))
+        return None
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    dest, n = quarantine_dir / path.name, 2
+    while True:
+        try:
+            _rename_no_clobber(path, dest)
+            return dest
+        except FileExistsError:
+            dest = quarantine_dir / f"{path.stem} ({n}){path.suffix}"
+            n += 1
+
+
+def _expected_output_dir(rows: list[dict]) -> str | None:
+    """算出這份紀錄「應該」的輸出資料夾（用來擋下被竄改、指到資料夾外的列）。
+
+    新格式的列都有「輸出資料夾」欄位；舊格式沒有時，退而求其次比對新路徑的上兩層資料夾，
+    整份紀錄裡多數列一致的那個資料夾就當作標準答案。
+    """
+    votes: dict[str, int] = {}
+    for row in rows:
+        declared = row.get("輸出資料夾") or ""
+        try:
+            key = os.path.normcase(str(Path(declared).resolve())) if declared else \
+                os.path.normcase(str(Path(row["新路徑"]).resolve().parent.parent))
+        except (OSError, KeyError, ValueError):
+            continue
+        votes[key] = votes.get(key, 0) + 1
+    return max(votes, key=votes.get) if votes else None
+
+
+def _row_output_ok(row: dict, expected: str | None) -> bool:
+    if expected is None:
+        return True
     try:
-        from send2trash import send2trash
-
-        send2trash(str(path))
-    except ImportError:
-        path.unlink()
-
-
-def _unchanged(path: Path, row: dict) -> bool:
-    try:
-        st = path.stat()
-        size, mtime = row.get("大小"), row.get("修改時間")
-        if size and int(size) != st.st_size:
-            return False
-        if mtime and int(mtime) != st.st_mtime_ns:
-            return False
-    except (OSError, ValueError):
+        actual = os.path.normcase(str(Path(row["新路徑"]).resolve().parent.parent))
+    except (OSError, KeyError, ValueError):
         return False
-    return True
+    return actual == expected
+
+
+def _validate_row(row: dict, expected_output: str | None) -> str | None:
+    """檢查一列紀錄是否可信；紀錄檔被竄改也不該讓復原去動任意的檔案。合格回傳 None。"""
+    action = row.get("動作", "")
+    if action not in VALID_ACTIONS:
+        return f"不明的動作「{action}」，為了安全已略過"
+    try:
+        src, dst = Path(row["原始路徑"]), Path(row["新路徑"])
+    except (KeyError, TypeError):
+        return "紀錄格式不正確"
+    if not src.is_absolute() or not dst.is_absolute():
+        return "紀錄中的路徑不是絕對路徑，為了安全已略過"
+    if src == dst:
+        return "原始路徑與新路徑相同，為了安全已略過"
+    src_ext, dst_ext = src.suffix.lower(), dst.suffix.lower()
+    if dst_ext != src_ext or dst_ext not in (IMAGE_EXTS | VIDEO_EXTS):
+        return "新路徑的副檔名不正確，為了安全已略過"
+    if not _row_output_ok(row, expected_output):
+        return "新路徑不在這份紀錄的輸出資料夾內，為了安全已略過"
+    return None
 
 
 def undo(log_path: Path) -> ExecuteResult:
     """依紀錄檔復原：搬移的檔案搬回原位；複製出來的檔案移到資源回收筒。
 
     - 複製的原檔已經不在：把複本搬回原位（不會刪掉唯一的一份）
-    - 複本在整理後被修改過：不刪除，列為失敗
+    - 複本跟目前的原檔內容不完全相同（原檔後來被改過或換過）：不刪除，列為失敗
+    - 只有 pending、沒有確認列的檔案：依檔案系統實際狀態判斷有沒有真的發生，沒有就略過（不算錯誤）
     - 全部成功才把紀錄改名為「已復原」；有失敗時紀錄只留下失敗的列，下次按復原會重試這些檔案
     """
     log_path = Path(log_path)
     rows = read_log(log_path)
+    expected_output = _expected_output_dir(rows)
+    quarantine_dir = log_path.parent / QUARANTINE_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
     errors: list[tuple[Path, str]] = []
+    warnings: list[str] = []
     failed_rows: list[dict] = []
     done = 0
     for row in reversed(rows):
+        reason = _validate_row(row, expected_output)
+        if reason:
+            errors.append((Path(str(row.get("新路徑") or "?")), reason))
+            failed_rows.append(row)
+            continue
+        action = row["動作"]
+        pending = action.startswith("pending-")
         src, dst = Path(row["原始路徑"]), Path(row["新路徑"])
         try:
-            if not dst.exists():
-                raise FileNotFoundError(f"找不到檔案（可能已被移動或刪除）：{dst}")
-            if row["動作"] == "move" or not src.exists():
+            if action in MOVE_ACTIONS:
+                if pending and not (dst.exists() and not src.exists()):
+                    continue  # 沒有真的發生，略過（不算錯誤）
+                if not dst.exists():
+                    raise FileNotFoundError(f"找不到檔案（可能已被移動或刪除）：{dst}")
                 if src.exists():
                     raise FileExistsError(f"原位置已有同名檔案：{src}")
                 _move_back(dst, src)
-            elif _unchanged(dst, row):
-                _delete(dst)
             else:
-                raise OSError(f"整理後這個檔案被修改過，為了安全沒有刪除：{dst}")
+                if pending and not dst.exists():
+                    continue  # 複製沒有真的完成，略過（不算錯誤）
+                if not dst.exists():
+                    raise FileNotFoundError(f"找不到檔案（可能已被移動或刪除）：{dst}")
+                if not src.exists():
+                    _move_back(dst, src)
+                elif filecmp.cmp(src, dst, shallow=False):
+                    location = _delete(dst, quarantine_dir)
+                    if location is not None:
+                        warnings.append(f"{dst.name}：沒有資源回收筒可用，已搬到隔離資料夾：{location}")
+                else:
+                    raise OSError(f"整理後原始檔案已變更，為了安全，保留複本：{dst}")
             done += 1
             _remove_if_empty(dst.parent)
         except OSError as exc:
@@ -354,15 +496,27 @@ def undo(log_path: Path) -> ExecuteResult:
     try:
         if errors:
             failed_rows.reverse()
-            with open(log_path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.DictWriter(f, fieldnames=LOG_FIELDS, extrasaction="ignore")
-                writer.writeheader()
-                writer.writerows(failed_rows)
+            tmp_fd, tmp_name = tempfile.mkstemp(dir=log_path.parent, suffix=".tmp")
+            tmp_path = Path(tmp_name)
+            try:
+                with os.fdopen(tmp_fd, "w", newline="", encoding="utf-8-sig") as f:
+                    writer = csv.DictWriter(f, fieldnames=LOG_FIELDS, extrasaction="ignore")
+                    writer.writeheader()
+                    writer.writerows(failed_rows)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, log_path)  # 原子性換檔：寫到一半失敗也不會動到原紀錄
+            except OSError:
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+                raise
         else:
             os.replace(log_path, log_path.with_name(log_path.name.replace(LOG_PREFIX, UNDONE_PREFIX, 1)))
     except OSError as exc:
         errors.append((log_path, f"無法更新紀錄檔（是否正被其他程式開啟？）：{exc}"))
-    return ExecuteResult(done, errors, log_path)
+    return ExecuteResult(done, errors, log_path, warnings)
 
 
 def _remove_if_empty(folder: Path) -> None:
