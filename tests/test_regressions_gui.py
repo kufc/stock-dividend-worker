@@ -1,0 +1,164 @@
+"""對抗測試找到的介面問題的回歸測試（需要圖形環境）。"""
+
+import threading
+
+import pytest
+
+from fakes import FakeClassifier
+from helpers import make_image
+from conftest import pump
+from test_app import pytestmark  # noqa: F401 - 共用圖形環境檢查
+
+GATE = threading.Event()
+
+
+class GatedClassifier(FakeClassifier):
+    """第一批之後停住，模擬「辨識進行中」的狀態。"""
+
+    batches = 0
+
+    def encode_prepared(self, tensors):
+        GatedClassifier.batches += 1
+        if GatedClassifier.batches > 1:
+            GATE.wait(10)
+        return super().encode_prepared(tensors)
+
+
+def start_gated(app, tmp_path, n=6, color=(250, 10, 10)):
+    GATE.clear()
+    GatedClassifier.batches = 0
+    app.classifier_factory = GatedClassifier
+    app.settings["batch_size"] = 2
+    for i in range(n):
+        make_image(tmp_path / "photos" / f"{i:02d}.png", color)
+    app.folder_var.set(str(tmp_path / "photos"))
+    app.toggle_analysis()
+    pump(app.root, lambda: sum(it.analyzed for it in app.items) >= 2)
+
+
+def finish(app):
+    GATE.set()
+    pump(app.root, lambda: not app.analysis_running())
+
+
+def test_delete_and_reorder_categories_during_analysis(app, tmp_path):
+    from media_sorter.analysis import CONFIRMED
+    from media_sorter.config import Category
+
+    start_gated(app, tmp_path)
+    app.set_categories([Category("藍"), Category("紅")])  # 刪掉「綠」並調換順序：以前會 IndexError
+    app.accept_confident_all()
+    confirmed = {it.chosen for it in app.items if it.status == CONFIRMED}
+    assert confirmed == {"紅"}  # 以前會因為位置錯亂被確認成別的分類
+    finish(app)
+    assert all(it.best(app.categories)[0] == "紅" for it in app.items)
+
+
+def test_decisions_made_during_analysis_are_kept(app, tmp_path):
+    from media_sorter.analysis import CONFIRMED, SKIPPED
+
+    start_gated(app, tmp_path)
+    last = app.tree.get_children()[-1]
+    app.tree.selection_set(last)
+    app.set_selected("__skip__")
+    first = app.tree.get_children()[0]
+    app.tree.selection_set(first)
+    app.set_selected("綠")
+    finish(app)
+    assert app.items[app._index_of(last)].status == SKIPPED
+    assert app.items[app._index_of(first)].status == CONFIRMED
+    assert app.items[app._index_of(first)].chosen == "綠"
+
+
+def test_selection_is_cleared_after_organize(app, tmp_path):
+    for i in range(6):
+        make_image(tmp_path / "photos" / f"{i:02d}.png", (250, 10, 10))
+    app.folder_var.set(str(tmp_path / "photos"))
+    app.toggle_analysis()
+    pump(app.root, lambda: app.items and not app.analysis_running())
+    iids = app.tree.get_children()
+    app.tree.selection_set(iids[:3])
+    app.set_selected("紅")
+    app.organize()  # askyesnocancel → True，但這裡只有已確認＋高信心
+    pump(app.root, lambda: not app.organizing)
+    assert app.tree.selection() == () and app.current is None
+
+
+def test_relative_output_folder_goes_next_to_photos(app, tmp_path):
+    app.folder_var.set(str(tmp_path / "photos"))
+    app.output_var.set("整理好")
+    assert app.output_dir() == (tmp_path / "photos" / "整理好")
+
+
+def test_one_bad_message_does_not_block_others(app, tmp_path, monkeypatch):
+    errors = []
+    monkeypatch.setattr(app, "log_error", errors.append)
+    app.queue.put(("item", app._run_id, 999, None))  # 壞掉的訊息
+    app.queue.put(("status", app._run_id, "後面的訊息仍然會處理"))
+    app._drain_queue()
+    assert app.status_var.get() == "後面的訊息仍然會處理" and errors
+
+
+def test_stale_messages_from_previous_run_are_ignored(app):
+    app.queue.put(("status", app._run_id - 1, "舊的"))
+    app._drain_queue()
+    assert app.status_var.get() != "舊的"
+
+
+def test_undo_disabled_while_organizing(app, tmp_path):
+    app.organizing = True
+    app._set_busy(True)
+    assert app.undo_btn.instate(["disabled"]) and app.category_btn.instate(["disabled"])
+    app.undo_last()  # 不會動作
+    app.organizing = False
+    app._set_busy(False)
+    assert not app.undo_btn.instate(["disabled"])
+
+
+def test_renaming_category_keeps_confirmations(app, tmp_path):
+    from media_sorter.analysis import CONFIRMED
+    from media_sorter.config import Category
+
+    make_image(tmp_path / "photos" / "a.png", (250, 10, 10))
+    app.folder_var.set(str(tmp_path / "photos"))
+    app.toggle_analysis()
+    pump(app.root, lambda: app.items and not app.analysis_running())
+    app.accept_confident_all()
+    assert app.items[0].status == CONFIRMED and app.items[0].chosen == "紅"
+    app.set_categories([Category("紅色系"), Category("綠"), Category("藍")], {"紅": "紅色系"})
+    assert app.items[0].status == CONFIRMED and app.items[0].chosen == "紅色系"
+
+
+def test_category_folder_clash_is_rejected(app, monkeypatch):
+    from tkinter import messagebox
+
+    warnings = []
+    monkeypatch.setattr(messagebox, "showwarning", lambda *a, **k: warnings.append(a))
+    assert app.add_category("旅行/日本", [])
+    assert not app.add_category("旅行_日本", [])  # 會用到同一個資料夾 → 拒絕
+    assert app.add_category("Cat", []) and not app.add_category("cat", [])  # Windows 不分大小寫
+    assert len(warnings) >= 2
+    assert app.add_category("紅", []) is True  # 已存在的名稱直接視為成功
+
+
+def test_multi_confirm_under_filter_selects_next_remaining(app, tmp_path):
+    for i in range(8):
+        make_image(tmp_path / "photos" / f"{i:02d}.png", (250, 10, 10))
+    app.folder_var.set(str(tmp_path / "photos"))
+    app.toggle_analysis()
+    pump(app.root, lambda: app.items and not app.analysis_running())
+    app.filter_var.set("待確認")
+    app.refresh_tree()
+    iids = app.tree.get_children()
+    app.tree.selection_set(iids[:3])
+    app.root.update()
+    app.choice_var.set("紅")
+    app.confirm_current()
+    app.root.update()
+    assert app.tree.selection() == (iids[3],)  # 以前會跳過好幾列
+
+
+@pytest.fixture(autouse=True)
+def _release_gate():
+    yield
+    GATE.set()

@@ -2,13 +2,12 @@
 
 import os
 import sys
-import time
 
 import pytest
 
 tk = pytest.importorskip("tkinter")
 
-from fakes import FakeClassifier  # noqa: E402
+from conftest import pump  # noqa: E402
 from helpers import make_image, make_video  # noqa: E402
 
 
@@ -19,38 +18,6 @@ def _display_available() -> bool:
 
 
 pytestmark = pytest.mark.skipif(not _display_available(), reason="需要圖形環境")
-
-
-def pump(root, condition, timeout=30):
-    end = time.time() + timeout
-    while time.time() < end:
-        root.update()
-        if condition():
-            return
-        time.sleep(0.02)
-    raise AssertionError("等待逾時")
-
-
-@pytest.fixture
-def app(monkeypatch, tmp_path):
-    from tkinter import messagebox
-
-    import media_sorter.app as app_module
-    from media_sorter.config import Category
-
-    answers = {"askyesno": False, "askyesnocancel": True, "askokcancel": True}
-    for name, value in answers.items():
-        monkeypatch.setattr(messagebox, name, lambda *a, value=value, **k: value)
-    monkeypatch.setattr(messagebox, "showinfo", lambda *a, **k: None)
-    monkeypatch.setattr(messagebox, "showwarning", lambda *a, **k: pytest.fail(f"warning: {a}"))
-    monkeypatch.setattr(messagebox, "showerror", lambda *a, **k: pytest.fail(f"error: {a}"))
-    monkeypatch.setattr(app_module, "LOG_DIR", tmp_path / "logs")
-
-    root = tk.Tk()
-    instance = app_module.App(root, classifier_factory=FakeClassifier)
-    instance.set_categories([Category("紅"), Category("綠"), Category("藍")])
-    yield instance
-    root.destroy()
 
 
 def test_full_flow(app, tmp_path, monkeypatch):
@@ -105,6 +72,7 @@ def test_full_flow(app, tmp_path, monkeypatch):
 
     monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
     app.undo_last()
+    pump(app.root, lambda: not app.organizing)
     assert red.exists() and video.exists()
     assert not any(p.is_file() for p in out.rglob("*"))
     assert app_module.latest_log(tmp_path / "logs") is None
@@ -126,15 +94,15 @@ def test_manual_choice_skip_and_batch(app, tmp_path):
     app.tree.selection_set(iids[:2])
     app.batch_var.set("綠")
     app.apply_batch()
-    assert [app.items[int(i)].chosen for i in iids[:2]] == ["綠", "綠"]
-    assert all(app.items[int(i)].status == CONFIRMED for i in iids[:2])
+    assert [app.items[app._index_of(i)].chosen for i in iids[:2]] == ["綠", "綠"]
+    assert all(app.items[app._index_of(i)].status == CONFIRMED for i in iids[:2])
 
     # 單一項目略過
     app.tree.selection_set(iids[2])
     app.root.update()
     app.choice_var.set("__skip__")
     app.confirm_current()
-    assert app.items[int(iids[2])].status == SKIPPED
+    assert app.items[app._index_of(iids[2])].status == SKIPPED
 
     # 只整理已確認的（沒有待確認項目，不會詢問）
     app.action_var.set("copy")

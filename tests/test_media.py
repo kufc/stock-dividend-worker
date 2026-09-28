@@ -43,7 +43,7 @@ def test_load_image_reads_exif_date_and_orientation(tmp_path):
 def test_load_media_falls_back_to_file_date(tmp_path):
     path = make_image(tmp_path / "a.png", "green")
     media = load_media(path, "image")
-    assert len(media.frames) == 1 and media.thumbnail is None
+    assert len(media.frames) == 1 and media.thumbnail  # 圖片也預存縮圖，預覽不必再讀原檔
     assert abs((media.date - datetime.now()).total_seconds()) < 120
 
 

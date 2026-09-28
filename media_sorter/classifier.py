@@ -14,7 +14,31 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 ACCURATE_MIN_VRAM_GB = 5.5
+ACCURATE_MIN_RAM_GB = 12  # 載入高精準模型時系統記憶體也要夠
 TEXT_BATCH = 64
+# 與最像分類的原始相似度低於此值 → 視為「哪個分類都不太像」（低信心）。多語言 CLIP 相符時通常在 0.2 以上
+SIMILARITY_FLOOR = 0.18
+
+
+def total_ram_gb() -> float | None:
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class MemoryStatus(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            status = MemoryStatus()
+            status.dwLength = ctypes.sizeof(MemoryStatus)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+            return status.ullTotalPhys / 1024**3
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024**3
+    except (AttributeError, OSError, ValueError):
+        return None
 
 
 def detect_device() -> tuple[str, str, float | None]:
@@ -31,12 +55,22 @@ def detect_device() -> tuple[str, str, float | None]:
     return "cpu", "CPU（未偵測到可用的 NVIDIA 顯示卡，速度較慢）", None
 
 
-def resolve_preset(choice: str, device: str, vram_gb: float | None) -> str:
+def resolve_preset(choice: str, device: str, vram_gb: float | None, ram_gb: float | None = None) -> str:
     if choice in MODEL_PRESETS:
         return choice
-    if device == "cuda" and vram_gb and vram_gb >= ACCURATE_MIN_VRAM_GB:
+    enough_ram = ram_gb is None or ram_gb >= ACCURATE_MIN_RAM_GB
+    if device == "cuda" and vram_gb and vram_gb >= ACCURATE_MIN_VRAM_GB and enough_ram:
         return "accurate"
     return "standard"
+
+
+def _is_oom(exc: BaseException) -> bool:
+    import torch
+
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    text = str(exc).lower()
+    return isinstance(exc, RuntimeError) and ("out of memory" in text or "alloc_failed" in text)
 
 
 def normalize(vectors: np.ndarray) -> np.ndarray:
@@ -70,7 +104,7 @@ class Classifier:
             self.device_description, vram_gb = device, None
         self.device = device
         if arch is None:
-            self.preset = resolve_preset(preset, device, vram_gb)
+            self.preset = resolve_preset(preset, device, vram_gb, total_ram_gb())
             arch = MODEL_PRESETS[self.preset]["arch"]
             pretrained = MODEL_PRESETS[self.preset]["pretrained"]
         else:
@@ -88,25 +122,48 @@ class Classifier:
         self.tokenizer = open_clip.get_tokenizer(arch)
         self.dtype = next(model.parameters()).dtype
         self.logit_scale = min(float(model.logit_scale.exp().item()), 100.0)
+        self.similarity_floor = SIMILARITY_FLOOR if pretrained else 0.0
         self._vocab_embeddings: np.ndarray | None = None
+        self._max_batch: int | None = None  # 顯示卡記憶體不足後學到的安全批次大小
+        self.fell_back_to_fp32 = False
 
     def prepare(self, image):
         """圖片前處理（縮放、裁切、正規化）。可在多個執行緒同時呼叫。"""
         return self.preprocess(image)
 
+    def _use_fp32(self) -> bool:
+        """半精度算出 NaN（部分 GTX 16 系列等顯示卡會發生）時，改用 fp32 重算。"""
+        if self.fell_back_to_fp32 or self.dtype == self._torch.float32:
+            return False
+        self.model.float()
+        self.dtype = self._torch.float32
+        self.fell_back_to_fp32 = True
+        self._vocab_embeddings = None
+        return True
+
     def encode_prepared(self, tensors: list) -> np.ndarray:
+        if self._max_batch and len(tensors) > self._max_batch:
+            step = self._max_batch
+            return np.concatenate([self.encode_prepared(tensors[i:i + step]) for i in range(0, len(tensors), step)])
         torch = self._torch
-        batch = torch.stack(tensors).to(self.device, dtype=self.dtype)
+        oom = False
         try:
+            batch = torch.stack(tensors).to(self.device, dtype=self.dtype)
             with torch.inference_mode():
-                feats = self.model.encode_image(batch)
-        except torch.cuda.OutOfMemoryError:
-            if len(tensors) == 1:
+                feats = self.model.encode_image(batch).float().cpu().numpy()
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+            if not _is_oom(exc) or len(tensors) == 1:
                 raise
-            torch.cuda.empty_cache()
-            half = len(tensors) // 2
-            return np.concatenate([self.encode_prepared(tensors[:half]), self.encode_prepared(tensors[half:])])
-        return normalize(feats.float().cpu().numpy())
+            oom = True
+        if oom:  # 在 except 區塊外處理，失敗那批的記憶體才會真的被釋放
+            batch = None
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+            self._max_batch = max(1, len(tensors) // 2)
+            return self.encode_prepared(tensors)
+        if not np.isfinite(feats).all() and self._use_fp32():
+            return self.encode_prepared(tensors)
+        return normalize(feats)
 
     def encode_images(self, images: list) -> np.ndarray:
         return self.encode_prepared([self.prepare(img) for img in images])
@@ -118,7 +175,10 @@ class Classifier:
             tokens = self.tokenizer(texts[i:i + TEXT_BATCH]).to(self.device)
             with torch.inference_mode():
                 chunks.append(self.model.encode_text(tokens).float().cpu().numpy())
-        return normalize(np.concatenate(chunks))
+        result = np.concatenate(chunks)
+        if not np.isfinite(result).all() and self._use_fp32():
+            return self.encode_texts(texts)
+        return normalize(result)
 
     def _encode_groups(self, groups: list[list[str]]) -> np.ndarray:
         """每組描述各自轉成向量後取平均（prompt ensemble），比單一描述更穩定。"""
@@ -146,7 +206,7 @@ def download_model(choice: str = "auto") -> None:
     from PIL import Image
 
     device, description, vram_gb = detect_device()
-    preset = resolve_preset(choice, device, vram_gb)
+    preset = resolve_preset(choice, device, vram_gb, total_ram_gb())
     print(f"運算裝置：{description}")
     print(f"模型：{MODEL_PRESETS[preset]['label']}")
     print("下載並載入模型中（第一次需要一些時間）⋯")
@@ -154,4 +214,8 @@ def download_model(choice: str = "auto") -> None:
     image_vec = clf.encode_images([Image.new("RGB", (224, 224), (200, 120, 40))])
     text_vec = clf.encode_texts(["測試", "test"])
     assert image_vec.shape[1] == text_vec.shape[1]
+    if not (np.isfinite(image_vec).all() and np.isfinite(text_vec).all()):
+        raise RuntimeError("模型計算結果異常（NaN），請回報你的顯示卡型號")
+    if clf.fell_back_to_fp32:
+        print("注意：這張顯示卡的半精度計算不穩定，已自動改用 fp32（速度較慢但結果正確）。")
     print("模型測試成功！")
