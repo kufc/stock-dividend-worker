@@ -163,6 +163,47 @@ def save_settings(settings: dict, path: Path = SETTINGS_FILE) -> None:
     _write_json(path, settings)
 
 
+def log_key_dir() -> Path:
+    """整理紀錄簽章金鑰的存放位置：刻意放在程式資料夾（和 logs）以外。
+
+    Windows：%LOCALAPPDATA%\\AIMediaSorter；其他系統：~/.local/share/ai-media-sorter。
+    這樣只拿到（或同步、複製）程式資料夾與紀錄檔的人，無法偽造出能通過驗證的紀錄。
+    """
+    override = os.environ.get("MEDIA_SORTER_KEY_DIR")
+    if override:
+        return Path(override)
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "AIMediaSorter"
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "ai-media-sorter"
+
+
+def log_signing_key() -> bytes:
+    """讀取（第一次使用時建立）整理紀錄的簽章金鑰（32 位元組亂數）。"""
+    import secrets
+
+    path = log_key_dir() / "log-signing.key"
+    for _ in range(2):
+        try:
+            key = bytes.fromhex(path.read_text(encoding="ascii").strip())
+            if len(key) == 32:
+                return key
+            raise ValueError("金鑰長度不正確")
+        except FileNotFoundError:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:  # 另一個程序剛好同時建立：重新讀取
+                continue
+            with os.fdopen(fd, "w", encoding="ascii") as f:
+                f.write(secrets.token_hex(32))
+        except ValueError as exc:
+            # 金鑰檔損壞：不自動覆蓋（否則舊紀錄全部失效且難以察覺），請使用者處理
+            raise OSError(f"整理紀錄簽章金鑰檔損壞：{path}（{exc}）") from exc
+    raise OSError(f"無法建立整理紀錄簽章金鑰：{path}")
+
+
 def acquire_app_lock(lock_dir: Path | None = None):
     """取得「程式執行中」的鎖；已被另一個視窗（或安裝程式）持有時回傳 None。
 

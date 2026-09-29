@@ -8,14 +8,16 @@
 - 復原複製時，原檔不見了就把複本搬回原位（而不是刪掉唯一的一份）；
   複本只有在跟目前的原檔內容完全相同時才刪除，否則保留並回報「原檔已變更」
 - 紀錄檔重寫（例如復原後只留下失敗的列）一律先寫暫存檔再原子性地換檔，寫到一半失敗也不會動到原紀錄
-- 紀錄檔即使被竄改，也只接受合法格式、位於本次輸出資料夾內、副檔名相符的列，且刪除前一定會核對內容
+- 紀錄的每一列都有 HMAC 簽章（金鑰放在程式資料夾以外），被竄改或偽造的列一律拒絕；
+  另外也只接受合法格式、位於輸出資料夾內、副檔名相符的列，且刪除前一定會逐位元組核對內容
+- 紀錄寫到一半（例如磁碟滿了只寫出半列）時，殘缺的列會被忽略，不影響其他列的復原
 """
 
 from __future__ import annotations
 
 import csv
 import errno
-import filecmp
+import hmac
 import os
 import re
 import shutil
@@ -25,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .config import IMAGE_EXTS, VIDEO_EXTS
+from .config import IMAGE_EXTS, VIDEO_EXTS, log_signing_key
 
 try:  # 選用套件：沒有安裝就搬到隔離資料夾，而不是直接刪除
     from send2trash import send2trash as _send2trash
@@ -34,7 +36,8 @@ except ImportError:  # pragma: no cover - 選用功能
 
 INVALID_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
-LOG_FIELDS = ["動作", "原始路徑", "新路徑", "分類", "時間", "大小", "修改時間", "輸出資料夾"]
+LOG_FIELDS = ["動作", "原始路徑", "新路徑", "分類", "時間", "大小", "修改時間", "輸出資料夾", "簽章"]
+SIGNED_FIELDS = LOG_FIELDS[:-1]
 MOVE_ACTIONS = {"move", "pending-move"}
 COPY_ACTIONS = {"copy", "pending-copy"}
 VALID_ACTIONS = MOVE_ACTIONS | COPY_ACTIONS
@@ -210,6 +213,22 @@ class ExecuteResult:
     done_sources: list[Path] = field(default_factory=list)  # 成功處理的原始檔案
 
 
+def _signature(values: list[str]) -> str:
+    """一列紀錄的 HMAC-SHA256 簽章（涵蓋除了簽章本身以外的所有欄位）。"""
+    message = "\x1f".join(values).encode("utf-8")
+    return hmac.new(log_signing_key(), message, "sha256").hexdigest()
+
+
+def _signed_row(values: list) -> list[str]:
+    text = ["" if v is None else str(v) for v in values]
+    return text + [_signature(text)]
+
+
+def _row_signature_ok(row: dict) -> bool:
+    expected = _signature(["" if row.get(k) is None else str(row.get(k)) for k in SIGNED_FIELDS])
+    return hmac.compare_digest(str(row.get("簽章") or ""), expected)
+
+
 def _open_new_log(log_dir: Path):
     log_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -260,8 +279,8 @@ def execute(
                 continue
 
             try:
-                writer.writerow([f"pending-{action}", str(op.src), str(op.dst), op.category,
-                                 datetime.now().isoformat(timespec="seconds"), "", "", str(output_dir)])
+                writer.writerow(_signed_row([f"pending-{action}", op.src, op.dst, op.category,
+                                             datetime.now().isoformat(timespec="seconds"), "", "", output_dir]))
                 f.flush()
                 os.fsync(f.fileno())
             except OSError as exc:
@@ -299,9 +318,9 @@ def execute(
 
             try:
                 st = op.dst.stat()
-                writer.writerow([logged_action, str(op.src), str(op.dst), op.category,
-                                 datetime.now().isoformat(timespec="seconds"), st.st_size, st.st_mtime_ns,
-                                 str(output_dir)])
+                writer.writerow(_signed_row([logged_action, op.src, op.dst, op.category,
+                                             datetime.now().isoformat(timespec="seconds"), st.st_size,
+                                             st.st_mtime_ns, output_dir]))
                 f.flush()
                 os.fsync(f.fileno())
             except OSError as exc:
@@ -350,7 +369,11 @@ def read_log(log_path: Path) -> list[dict]:
     merged: dict[str, dict] = {}
     order: list[str] = []
     for row in raw_rows:
-        key = row.get("新路徑", "")
+        # 殘缺的列（例如寫到一半磁碟就滿了，只寫出「move,」）直接忽略：
+        # 它的 pending 列在它之前已經完整寫入並同步到磁碟，復原會依那一列處理
+        if not all(isinstance(row.get(k), str) and row.get(k).strip() for k in required):
+            continue
+        key = row["新路徑"]
         action = row.get("動作", "")
         existing = merged.get(key)
         if existing is None:
@@ -391,6 +414,22 @@ def _delete(path: Path, quarantine_dir: Path) -> Path | None:
             n += 1
 
 
+def _same_content(a: Path, b: Path, chunk: int = 1 << 20) -> bool:
+    """逐位元組比對兩個檔案。
+
+    不用 filecmp.cmp：它會依「大小＋修改時間」快取比對結果，內容改了但時間沒變時會沿用舊答案。
+    """
+    if a.stat().st_size != b.stat().st_size:
+        return False
+    with open(a, "rb") as fa, open(b, "rb") as fb:
+        while True:
+            block_a, block_b = fa.read(chunk), fb.read(chunk)
+            if block_a != block_b:
+                return False
+            if not block_a:
+                return True
+
+
 def _expected_output_dir(rows: list[dict]) -> str | None:
     """算出這份紀錄「應該」的輸出資料夾（用來擋下被竄改、指到資料夾外的列）。
 
@@ -403,7 +442,7 @@ def _expected_output_dir(rows: list[dict]) -> str | None:
         try:
             key = os.path.normcase(str(Path(declared).resolve())) if declared else \
                 os.path.normcase(str(Path(row["新路徑"]).resolve().parent.parent))
-        except (OSError, KeyError, ValueError):
+        except (OSError, KeyError, ValueError, TypeError):
             continue
         votes[key] = votes.get(key, 0) + 1
     return max(votes, key=votes.get) if votes else None
@@ -414,13 +453,15 @@ def _row_output_ok(row: dict, expected: str | None) -> bool:
         return True
     try:
         actual = os.path.normcase(str(Path(row["新路徑"]).resolve().parent.parent))
-    except (OSError, KeyError, ValueError):
+    except (OSError, KeyError, ValueError, TypeError):
         return False
     return actual == expected
 
 
 def _validate_row(row: dict, expected_output: str | None) -> str | None:
     """檢查一列紀錄是否可信；紀錄檔被竄改也不該讓復原去動任意的檔案。合格回傳 None。"""
+    if not _row_signature_ok(row):
+        return "紀錄簽章不符（紀錄可能被修改過，或不是這台電腦上的本程式產生的），為了安全已略過"
     action = row.get("動作", "")
     if action not in VALID_ACTIONS:
         return f"不明的動作「{action}」，為了安全已略過"
@@ -445,7 +486,8 @@ def undo(log_path: Path) -> ExecuteResult:
 
     - 複製的原檔已經不在：把複本搬回原位（不會刪掉唯一的一份）
     - 複本跟目前的原檔內容不完全相同（原檔後來被改過或換過）：不刪除，列為失敗
-    - 只有 pending、沒有確認列的檔案：依檔案系統實際狀態判斷有沒有真的發生，沒有就略過（不算錯誤）
+    - 只有 pending、沒有確認列的檔案：依檔案實際位置判斷有沒有真的發生；確定沒發生才略過，
+      無法確定（原位置與新位置都有檔案）就列為失敗、保留紀錄，絕不當作已復原
     - 全部成功才把紀錄改名為「已復原」；有失敗時紀錄只留下失敗的列，下次按復原會重試這些檔案
     """
     log_path = Path(log_path)
@@ -467,8 +509,14 @@ def undo(log_path: Path) -> ExecuteResult:
         src, dst = Path(row["原始路徑"]), Path(row["新路徑"])
         try:
             if action in MOVE_ACTIONS:
-                if pending and not (dst.exists() and not src.exists()):
-                    continue  # 沒有真的發生，略過（不算錯誤）
+                if pending:
+                    # 只有 pending 列：依檔案實際位置判斷搬移到底有沒有發生
+                    if not dst.exists() and src.exists():
+                        continue  # 沒有真的發生（檔案還在原位），略過（不算錯誤）
+                    if not (dst.exists() and not src.exists()):
+                        # 兩邊都有檔案或兩邊都沒有：無法確定，保留這一列讓使用者處理後重試，絕不當作完成
+                        raise OSError(f"無法確定這個檔案是否已搬移（原位置與新位置"
+                                      f"{'都有檔案' if dst.exists() else '都找不到檔案'}），請手動確認：{dst}")
                 if not dst.exists():
                     raise FileNotFoundError(f"找不到檔案（可能已被移動或刪除）：{dst}")
                 if src.exists():
@@ -481,7 +529,7 @@ def undo(log_path: Path) -> ExecuteResult:
                     raise FileNotFoundError(f"找不到檔案（可能已被移動或刪除）：{dst}")
                 if not src.exists():
                     _move_back(dst, src)
-                elif filecmp.cmp(src, dst, shallow=False):
+                elif _same_content(src, dst):
                     location = _delete(dst, quarantine_dir)
                     if location is not None:
                         warnings.append(f"{dst.name}：沒有資源回收筒可用，已搬到隔離資料夾：{location}")

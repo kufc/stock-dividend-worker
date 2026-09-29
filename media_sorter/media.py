@@ -170,23 +170,25 @@ def load_image(path: Path, max_side: int | None = None) -> tuple[Image.Image, da
     except Image.DecompressionBombError as exc:
         raise ValueError(_bomb_message(exc)) from exc
     with opened as img:
-        date = _exif_date(img)
-        # 很大張又不是 JPEG／MPO（draft 對它們無效，只能整張解碼）：同一時間只讓一張在解碼，避免併發時記憶體暴增
+        # 很大張又不是 JPEG／MPO（draft 對它們無效，只能整張解碼）：同一時間只讓一張在解碼，避免併發時記憶體暴增。
+        # 尺寸只需要讀檔頭就知道，所以在做任何可能解碼的事之前就先上鎖——
+        # 讀 EXIF 也可能觸發解碼（例如 eXIf 區塊放在影像資料之後的 PNG），轉正、轉色彩也會複製整張圖。
         needs_lock = img.size[0] * img.size[1] > LARGE_DECODE_PIXELS and img.format not in ("JPEG", "MPO")
         if needs_lock:
             _decode_semaphore.acquire()
         try:
+            date = _exif_date(img)
             if max_side:
                 img.draft("RGB", (max_side, max_side))  # JPEG／MPO 直接以縮小比例解碼；其他格式無作用
                 img.thumbnail((max_side, max_side))
             else:
                 img.load()
+            img = to_rgb(ImageOps.exif_transpose(img))
         except Image.DecompressionBombError as exc:
             raise ValueError(_bomb_message(exc)) from exc
         finally:
             if needs_lock:
                 _decode_semaphore.release()
-        img = to_rgb(ImageOps.exif_transpose(img))
     return img, date
 
 
