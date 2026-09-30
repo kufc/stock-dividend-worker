@@ -46,14 +46,24 @@ RENAME_PATTERN_PRESETS = [
     "{分類}_{原檔名}",
 ]
 
+# 整理時的命名方式：(顯示名稱, 樣式)；樣式是 None 代表保留原檔名
+RENAME_MODES = {
+    "keep": ("保留原檔名", None),
+    "category_seq": ("分類＋序號　例：貓_001.jpg", "{分類}_{序號}"),
+    "date_category_seq": ("日期＋分類＋序號　例：20240503_貓_001.jpg", "{日期}_{分類}_{序號}"),
+    "custom": ("自訂格式", None),
+}
+DEFAULT_SPLIT_RATIO = 0.42  # 「確認分類」畫面左邊清單佔的寬度比例
+
 DEFAULT_SETTINGS = {
     "model": "auto",
     "video_frames": 8,
     "batch_size": 16,
     "confidence_threshold": 0.5,
     "include_subfolders": True,
-    "rename": True,
+    "rename_mode": "keep",
     "rename_pattern": RENAME_PATTERN_PRESETS[0],
+    "split_ratio": DEFAULT_SPLIT_RATIO,
     "output_dir": "",
     "last_folder": "",
 }
@@ -150,7 +160,12 @@ def load_settings(path: Path = SETTINGS_FILE) -> dict:
         settings.get("confidence_threshold"), 0.05, 0.95, DEFAULT_SETTINGS["confidence_threshold"])
     if settings.get("model") not in MODEL_CHOICES:
         settings["model"] = DEFAULT_SETTINGS["model"]
-    for key in ("include_subfolders", "rename"):
+    if settings.get("rename_mode") not in RENAME_MODES:
+        settings["rename_mode"] = DEFAULT_SETTINGS["rename_mode"]
+    if not isinstance(settings.get("rename_pattern"), str) or not settings["rename_pattern"].strip():
+        settings["rename_pattern"] = DEFAULT_SETTINGS["rename_pattern"]
+    settings["split_ratio"] = _clamped_float(settings.get("split_ratio"), 0.25, 0.75, DEFAULT_SPLIT_RATIO)
+    for key in ("include_subfolders",):
         if not isinstance(settings.get(key), bool):
             settings[key] = DEFAULT_SETTINGS[key]
     return settings

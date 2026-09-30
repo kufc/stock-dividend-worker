@@ -50,8 +50,10 @@ def test_version_matches_program(text):
 
 
 def test_names_match_the_program(text):
-    app_source = (ROOT / "media_sorter" / "app.py").read_text(encoding="utf-8")
-    for label in ("開始辨識", "開始整理", "移除原檔", "復原上次整理", "移到資源回收筒", "已分類"):
+    app_source = "".join((ROOT / "media_sorter" / name).read_text(encoding="utf-8")
+                         for name in ("app.py", "views.py", "dialogs.py"))
+    for label in ("開始辨識", "開始複製", "確認並看下一個", "完成目前檔案後停止", "整理紀錄", "需檢查",
+                  "移除這次建立的複本", "將這批原檔移到回收筒", "移到資源回收筒", "已分類"):
         assert label in text, f"說明裡沒有提到「{label}」"
         assert label in app_source, f"程式裡已經沒有「{label}」，說明需要更新"
     assert f"({STAGE_MARK_ORIGINAL})" in text  # 資源回收筒裡的檔名標記，要跟程式一致

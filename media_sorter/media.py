@@ -73,13 +73,9 @@ def _skip_entry(entry: os.DirEntry, is_dir: bool) -> bool:
     return False
 
 
-def scan_folder(folder: Path, recursive: bool = True, exclude: Path | None = None) -> list[Path]:
-    """找出資料夾內所有支援的圖片與影片（依路徑排序）。
-
-    exclude 資料夾（例如輸出資料夾）、系統資料夾（資源回收筒、NAS 縮圖）、隱藏與系統檔都會被跳過。
-    """
+def _iter_files(folder: Path, recursive: bool, exclude: Path | None):
+    """走訪資料夾，逐一產生（沒有被跳過的）檔案路徑。跳過：輸出資料夾、系統資料夾、隱藏與系統檔。"""
     exclude_resolved = os.path.normcase(str(Path(exclude).resolve())) if exclude else None
-    found: list[Path] = []
     stack = [Path(folder)]
     while stack:
         current = stack.pop()
@@ -99,9 +95,43 @@ def scan_folder(folder: Path, recursive: bool = True, exclude: Path | None = Non
             if is_dir:
                 if recursive and os.path.normcase(str(path.resolve())) != exclude_resolved:
                     stack.append(path)
-            elif is_file and media_kind(path):
-                found.append(path)
+            elif is_file:
+                yield path
+
+
+def scan_folder(folder: Path, recursive: bool = True, exclude: Path | None = None) -> list[Path]:
+    """找出資料夾內所有支援的圖片與影片（依路徑排序）。
+
+    exclude 資料夾（例如輸出資料夾）、系統資料夾（資源回收筒、NAS 縮圖）、隱藏與系統檔都會被跳過。
+    """
+    found = [path for path in _iter_files(folder, recursive, exclude) if media_kind(path)]
     return sorted(found, key=lambda p: str(p).lower())
+
+
+@dataclass
+class FolderStats:
+    """選好資料夾後顯示給使用者看的數量。"""
+
+    images: int = 0
+    videos: int = 0
+    other: int = 0  # 不支援而會被略過的檔案
+
+    @property
+    def supported(self) -> int:
+        return self.images + self.videos
+
+
+def folder_stats(folder: Path, recursive: bool = True, exclude: Path | None = None) -> FolderStats:
+    stats = FolderStats()
+    for path in _iter_files(folder, recursive, exclude):
+        kind = media_kind(path)
+        if kind == "image":
+            stats.images += 1
+        elif kind == "video":
+            stats.videos += 1
+        else:
+            stats.other += 1
+    return stats
 
 
 def _parse_date(raw) -> datetime | None:

@@ -2,7 +2,7 @@
   AI 媒體分類器　使用說明與免責聲明
   AI Media Sorter - User Guide and Disclaimer
 ====================================================================
-版本 Version：1.0.0
+版本 Version：1.1.0
 最後更新 Last updated：2026-09-30
 
 閱讀方式 How to read this file：
@@ -22,11 +22,14 @@ counterpart.
    program copies files and, only after you confirm, removes the
    originals. Any software that handles files can fail.
 
-・「開始整理」只會複製，原檔完全不動。確認結果沒問題後，才使用
-　「移除原檔…」，原檔會被移到 Windows 的資源回收筒。
-   "開始整理" (Start organizing) only copies; your originals are left
-   untouched. Use "移除原檔…" (Remove originals) only after you have
-   checked the results. Originals are moved to the Windows Recycle Bin.
+・「開始複製」只會複製，原檔完全不動。要不要處理原檔，是整理完成之後
+　另外、可選的動作：確認複本沒問題後，才在「整理紀錄」使用「將這批
+　原檔移到回收筒…」，原檔會被移到 Windows 的資源回收筒。
+   "開始複製" (Start copying) only copies; your originals are left
+   untouched. What to do with the originals is a separate, optional step
+   after organizing: only after you have checked the copies, use "將這批
+   原檔移到回收筒…" (Move these originals to the Recycle Bin) in the
+   records page. Originals are moved to the Windows Recycle Bin.
 
 ・AI 的判斷可能出錯。按下任何確認視窗的確定之前，請先看過完整清單。
    The AI can be wrong. Read the full list before you click OK in any
@@ -122,36 +125,65 @@ counterpart.
    How to use
 --------------------------------------------------------------------
 
-・選擇要整理的資料夾，按「開始辨識」。
-   Choose the folder to organize and click "開始辨識" (Start
-   recognition).
+・第 1 步「選擇資料夾」：選擇要整理的資料夾（可勾選「包含子資料夾」），
+　看過圖片、影片的數量後，按「開始辨識」。
+   Step 1, choose the folder: pick the folder to organize (you can tick
+   "include subfolders"), check the number of images and videos, and
+   click "開始辨識" (Start recognition).
 
-・逐一確認分類：按 Enter 同意 AI 的判斷、按 1／2／3 選擇候選、按 S 略過。
-　黃色的列表示 AI 沒有把握，建議你自己看過。
-   Confirm categories one by one: press Enter to accept the AI's choice,
-   1/2/3 to pick a candidate, S to skip. Yellow rows mean the AI is not
-   sure, so please check them yourself.
+・第 2 步「確認分類」：左邊是檔案清單（縮圖、建議分類、處理狀態，可搜尋
+　與篩選），右邊是大預覽與候選分類。點候選分類只是選取；按 Enter
+　（「確認並看下一個」）才會確認。1／2／3 選擇候選、S 略過、Ctrl+Z
+　撤回上一次確認。
+   Step 2, confirm categories: the left side lists the files (thumbnail,
+   suggested category, status; searchable and filterable) and the right
+   side shows a large preview with candidate categories. Clicking a
+   candidate only selects it; nothing is confirmed until you press Enter
+   ("確認並看下一個", confirm and go to the next). 1/2/3 pick a candidate,
+   S skips, Ctrl+Z undoes the last confirmation.
 
-・按「開始整理」：檔案會被複製到輸出資料夾（預設是來源資料夾裡的
-　「已分類」），原檔不動。
-   Click "開始整理" (Start organizing): files are copied into the output
-   folder (by default "已分類" inside the source folder). Originals are
-   not touched.
+・標示「需檢查」的檔案，表示模型沒有把握，請自己看過再選；模型給的分數
+　只是參考，不代表判斷正確的機率。
+   Files marked "需檢查" (needs checking) are ones the model is unsure
+   about; please look at them yourself. The model's score is only a hint
+   and is not the probability that it is right.
+
+・批次操作（套用分類、採用建議、略過）只會處理你明確選取的列。
+   Batch actions (apply a category, accept suggestions, skip) only affect
+   the rows you have explicitly selected.
+
+・第 3 步「預覽整理結果」：確認輸出位置（預設是來源資料夾裡的「已分類」）
+　與檔名規則（預設保留原檔名），檢查整理前後對照與所需空間。預設只整理
+　你已確認的檔案。按「開始複製」之前，不會建立或改動任何檔案。
+   Step 3, preview the result: check the output location (by default
+   "已分類" inside the source folder) and the naming rule (original names
+   are kept by default), and review the before/after table and the space
+   needed. By default only files you confirmed are organized. Nothing is
+   created or changed until you click "開始複製".
+
+・複製過程中可以按「完成目前檔案後停止」；已複製好的檔案會保留。
+   While copying you can click "完成目前檔案後停止" (stop after the
+   current file); files already copied are kept.
+
+・第 4 步「完成」：顯示結果。有失敗的檔案時，畫面會用白話說明原因與可以
+　怎麼做，處理後按「重試」即可，已複製好的不會重做；技術細節預設收起來。
+   Step 4, done: shows the result. If some files failed, the screen
+   explains in plain words what happened and what you can do, and you
+   can click the retry button; files already copied are not redone.
+   Technical details are collapsed by default.
 
 ・打開輸出資料夾，檢查分類結果。
    Open the output folder and check the results.
 
-・結果沒問題：按「移除原檔…」，看清楚確認視窗裡的完整清單，再按
-　「移到資源回收筒」。
-   If the results are fine: click "移除原檔…" (Remove originals), read
-   the full list in the confirmation window, and then click "移到資源回
-   收筒" (Move to Recycle Bin).
-
-・結果不滿意：在移除原檔之前，按「復原上次整理」，把這次建立的複本
-　移到資源回收筒。
-   If you are not satisfied: before removing the originals, click
-   "復原上次整理" (Undo last organize) to send the copies created in
-   this run to the Recycle Bin.
+・之後（可選）：在「整理紀錄」頁選一批整理，可以按「移除這次建立的複本…」
+　（不滿意時）或「將這批原檔移到回收筒…」（確認複本沒問題後）。每次都會
+　列出完整清單再確認一次，而且預設按鈕是「取消」。
+   Afterwards (optional): in the records page ("整理紀錄") pick a batch
+   and use "移除這次建立的複本…" (remove the copies created by that run,
+   if you are not satisfied) or "將這批原檔移到回收筒…" (move the
+   originals to the Recycle Bin, once you have checked the copies). Each
+   action shows the full list and asks again, and the default button is
+   "取消" (Cancel).
 
 
 --------------------------------------------------------------------
@@ -164,10 +196,10 @@ counterpart.
    Organizing only copies. The program never overwrites an existing
    file; when a name is taken it moves on to the next number.
 
-・每一次移除（移除原檔，或復原時移除複本）之前，都會確認「另一份內容
-　逐位元組完全相同的檔案仍然存在」，而且一律送到資源回收筒。
-   Before every removal (removing originals, or removing copies during
-   undo), the program checks that another file with byte-for-byte
+・每一次移除（移到回收筒的原檔，或移除這次建立的複本）之前，都會確認
+　「另一份內容逐位元組完全相同的檔案仍然存在」，而且一律送到資源回收筒。
+   Before every removal (originals moved to the Recycle Bin, or copies
+   created by a run being removed), the program checks that another file with byte-for-byte
    identical content still exists, and it always sends the file to the
    Recycle Bin.
 
@@ -186,11 +218,11 @@ counterpart.
    "(整理前)" tag; after you restore it from the Recycle Bin, please
    rename it back yourself.
 
-・移除原檔之後，就不能再使用「復原上次整理」；要找回原檔，請到資源
-　回收筒還原。
-   Once the originals have been removed, "Undo last organize" can no
-   longer be used; to get an original back, restore it from the Recycle
-   Bin.
+・把原檔移到回收筒之後，就不能再用「移除這次建立的複本」；要找回原檔，
+　請到資源回收筒還原。
+   Once the originals have been moved to the Recycle Bin, "移除這次建立的
+   複本" (remove the copies) can no longer be used for that batch; to get
+   an original back, restore it from the Recycle Bin.
 
 ・整理紀錄（logs 資料夾）只是操作的依據，沒有防竄改的能力，不是安全
 　機制。真正的保護是上面的「另一份相同內容」檢查，以及確認視窗中的
@@ -236,10 +268,10 @@ counterpart.
    being copied or renamed; consider pausing synchronization first.
 
 ・分類太少時，AI 仍會把每個檔案歸到「最像」的那一類，不相關的照片也會
-　被硬塞進去；建議至少設定 3 個分類，並留意黃色標示。
+　被硬塞進去；建議至少設定 3 個分類，並留意「需檢查」標示。
    With too few categories the AI still files every item under the
    "closest" one, so unrelated photos get forced into a category. Use at
-   least 3 categories and pay attention to the yellow rows.
+   least 3 categories and pay attention to the "需檢查" (needs checking) marks.
 
 ・影片是平均抽出幾張畫面來判斷，可能漏掉只出現一瞬間的內容。
    Videos are judged from a few frames sampled evenly, so content that

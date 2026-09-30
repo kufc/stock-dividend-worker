@@ -22,6 +22,7 @@ from __future__ import annotations
 import codecs
 import csv
 import errno
+import hashlib
 import io
 import os
 import re
@@ -42,6 +43,9 @@ except ImportError:  # pragma: no cover - 選用功能
 INVALID_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 LOG_FIELDS = ["動作", "原始路徑", "新路徑", "分類", "時間", "大小", "來源資料夾", "輸出資料夾"]
+LOG_KIND_PREFIXES = {  # 檔名前綴 → 紀錄的種類
+    "整理紀錄_": "active", "已復原_": "undone", "已完成_": "finished", "無法讀取_": "unreadable",
+}
 UNREADABLE_PREFIX = "無法讀取_"  # 壞掉的紀錄移到旁邊時用的前綴（不符合 LOG_NAME_RE，不會再被選中）
 STAGE_MARK_ORIGINAL = "整理前"  # 移除原檔前的暫時檔名標記：IMG_1234 (整理前).jpg（進了資源回收筒也看得懂）
 STAGE_MARK_COPY = "複本"
@@ -210,6 +214,7 @@ class ExecuteResult:
     warnings: list[str] = field(default_factory=list)
     aborted: bool = False
     done_sources: list[Path] = field(default_factory=list)  # 成功處理的原始檔案
+    stopped: bool = False  # 使用者要求停止（已完成的部分會保留在紀錄中）
 
 
 # ---------------------------------------------------------------------------- 整理（只複製）
@@ -234,6 +239,23 @@ def free_space_problem(ops: list[PlannedOp]) -> str | None:
         return (f"輸出位置的磁碟空間不足：需要約 {need / 1024**3:.1f} GB，"
                 f"剩餘 {free / 1024**3:.1f} GB。請清出空間或換一個輸出資料夾。")
     return None
+
+
+def describe_error(exc: BaseException) -> str:
+    """把技術性的例外轉成「發生什麼＋能怎麼做」的說明，技術細節放在括號裡供回報使用。"""
+    code = getattr(exc, "errno", None)
+    winerror = getattr(exc, "winerror", None)
+    if code == errno.ENOSPC or winerror in (39, 112):
+        hint = "輸出磁碟空間不足。請清出空間或改選其他位置，再重試失敗的檔案。"
+    elif isinstance(exc, FileExistsError) or code == errno.EEXIST:
+        hint = "目的地已經有同名檔案，為了安全沒有覆蓋。請改用不同的命名方式，或先處理那個檔案。"
+    elif isinstance(exc, FileNotFoundError) or code == errno.ENOENT:
+        hint = "找不到這個檔案（可能已被移動、改名或刪除）。"
+    elif isinstance(exc, PermissionError) or code in (errno.EACCES, errno.EPERM) or winerror in (5, 32, 33):
+        hint = "沒有權限，或檔案正被其他程式使用。請關閉正在使用它的程式後再重試。"
+    else:
+        hint = "無法處理這個檔案。"
+    return f"{hint}（詳細：{exc}）"
 
 
 def _open_new_log(log_dir: Path):
@@ -265,11 +287,15 @@ def execute(
     source_dir: Path | None = None,
     output_dir: Path | None = None,
     on_progress: Callable[[int, int], None] | None = None,
+    stop_event=None,
+    append_to: Path | None = None,
 ) -> ExecuteResult:
     """把每個檔案複製到分類資料夾，原檔完全不動。每完成一個檔案就寫一列紀錄（供之後復原或移除原檔）。
 
     source_dir／output_dir 是這次整理的來源與輸出資料夾，會寫進每一列紀錄；
     之後復原或移除原檔時，只接受落在這兩個資料夾內的檔案。
+    stop_event 被設定時，會在「完成目前這個檔案」之後停止，已完成的部分照常保留在紀錄中。
+    append_to 是重試用：把結果接在既有的紀錄檔後面，讓同一次整理只有一份紀錄。
     """
     if ops:
         if source_dir is None:
@@ -278,23 +304,32 @@ def execute(
             output_dir = ops[0].dst.parent.parent
     source_root = _canonical(source_dir) if source_dir is not None else ""
     output_root = _canonical(output_dir) if output_dir is not None else ""
-    log_path, f = _open_new_log(Path(log_dir))
+    if append_to is not None:
+        log_path = Path(append_to)
+        f = open(log_path, "a", newline="", encoding="utf-8-sig")  # 追加時 Python 不會再寫一次 BOM
+    else:
+        log_path, f = _open_new_log(Path(log_dir))
     errors: list[tuple[Path, str]] = []
     done = 0
     aborted = False
+    stopped = False
     done_sources: list[Path] = []
     with f:
         writer = csv.writer(f)
-        writer.writerow(LOG_FIELDS)
-        f.flush()
+        if append_to is None:
+            writer.writerow(LOG_FIELDS)
+            f.flush()
         for i, op in enumerate(ops, 1):
+            if stop_event is not None and stop_event.is_set():
+                stopped = True
+                break
             try:
                 if op.dst.exists():
                     raise FileExistsError(f"目的地已有同名檔案：{op.dst}")
                 op.dst.parent.mkdir(parents=True, exist_ok=True)
                 _copy_no_clobber(op.src, op.dst)
             except OSError as exc:
-                errors.append((op.src, str(exc)))
+                errors.append((op.src, describe_error(exc)))
             else:
                 try:
                     writer.writerow(["copy", str(op.src), str(op.dst), op.category,
@@ -312,10 +347,10 @@ def execute(
                 done_sources.append(op.src)
             if on_progress:
                 on_progress(i, len(ops))
-    if done == 0:
+    if done == 0 and append_to is None:
         log_path.unlink(missing_ok=True)
         log_path = None
-    return ExecuteResult(done, errors, log_path, [], aborted, done_sources)
+    return ExecuteResult(done, errors, log_path, [], aborted, done_sources, stopped)
 
 
 # ---------------------------------------------------------------------------- 讀取紀錄
@@ -344,9 +379,40 @@ def _decode_bytes(raw: bytes) -> str:
     raise ValueError("紀錄檔的編碼無法辨識")
 
 
+class LogChangedError(ValueError):
+    """紀錄檔在使用者確認之後被改變：執行的清單必須是使用者看過的那一份，所以拒絕執行。"""
+
+
+@dataclass
+class LogSnapshot:
+    """使用者確認畫面所根據的那一份紀錄內容。執行時會比對 digest，確認過的跟執行的一定是同一份。"""
+
+    path: Path
+    digest: str
+    rows: list[dict]
+    skipped: int
+
+
+def snapshot_log(log_path: Path) -> LogSnapshot:
+    raw = Path(log_path).read_bytes()
+    rows, skipped = _parse_log_bytes(raw)
+    return LogSnapshot(Path(log_path), hashlib.sha256(raw).hexdigest(), rows, skipped)
+
+
+def _load_log(log_path: Path, expected_digest: str | None) -> tuple[list[dict], int]:
+    raw = Path(log_path).read_bytes()
+    if expected_digest is not None and hashlib.sha256(raw).hexdigest() != expected_digest:
+        raise LogChangedError("整理紀錄在你確認之後被改變了，為了安全沒有執行任何動作。請重新檢視後再操作。")
+    return _parse_log_bytes(raw)
+
+
 def read_log_rows(log_path: Path) -> tuple[list[dict], int]:
     """讀取紀錄，回傳 (格式完整的列, 無法讀取而略過的列數)。任何殘缺的列都只會被略過，不會丟例外。"""
-    text = _decode_bytes(Path(log_path).read_bytes())
+    return _parse_log_bytes(Path(log_path).read_bytes())
+
+
+def _parse_log_bytes(raw: bytes) -> tuple[list[dict], int]:
+    text = _decode_bytes(raw)
     # newline="" 讓 csv 模組自己處理換行：被引號包住的欄位（例如含換行的分類名稱）才不會被切斷
     reader = csv.DictReader(io.StringIO(text, newline=""))
     try:
@@ -566,7 +632,7 @@ def _remove_verified(path: Path, reference: Path, mark: str, sink: Callable[[Pat
             raise OSError(f"{exc}（檔案目前在：{staged}，請自行改回原檔名）") from exc
         raise
 
-def undo(log_path: Path) -> ExecuteResult:
+def undo(log_path: Path, expected_digest: str | None = None) -> ExecuteResult:
     """復原一次整理：把這次建立的複本移到資源回收筒，原檔不受影響。
 
     只有「原檔仍在、且與複本內容逐位元組相同」時才移除複本；
@@ -574,7 +640,7 @@ def undo(log_path: Path) -> ExecuteResult:
     只有暫時性的失敗（例如檔案被其他程式開著）會留在紀錄中，下次按復原會重試。
     """
     log_path = Path(log_path)
-    rows, skipped = read_log_rows(log_path)
+    rows, skipped = _load_log(log_path, expected_digest)
     quarantine_dir = log_path.parent / QUARANTINE_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
     errors: list[tuple[Path, str]] = []
     warnings: list[str] = []
@@ -618,7 +684,7 @@ def undo(log_path: Path) -> ExecuteResult:
 
 
 # ---------------------------------------------------------------------------- 移除原檔
-def remove_originals(log_path: Path) -> ExecuteResult:
+def remove_originals(log_path: Path, expected_digest: str | None = None) -> ExecuteResult:
     """確認複本沒問題後，把原檔移到資源回收筒（等於完成「搬移」）。
 
     只有「複本存在、且與原檔內容逐位元組相同」的原檔才會移除，而且一定是送到資源回收筒
@@ -627,7 +693,7 @@ def remove_originals(log_path: Path) -> ExecuteResult:
     if _send2trash is None:
         raise OSError("需要資源回收筒功能（send2trash 套件）才能移除原檔，請重新執行 install.bat")
     log_path = Path(log_path)
-    rows, skipped = read_log_rows(log_path)
+    rows, skipped = _load_log(log_path, expected_digest)
     errors: list[tuple[Path, str]] = []
     warnings: list[str] = []
     retry: list[dict] = []
@@ -659,6 +725,75 @@ def remove_originals(log_path: Path) -> ExecuteResult:
             retry.append(row)
     _finish_log(log_path, retry, FINISHED_PREFIX, errors)
     return ExecuteResult(done, errors, log_path, warnings)
+
+
+def classify_rows(rows: list[dict], mode: str) -> list[tuple[dict, str | None]]:
+    """確認視窗用的預檢：每一列「會不會被處理」。回傳 (列, 略過的原因)；原因是 None 代表會處理。
+
+    mode：'undo'（移除複本）或 'remove'（移除原檔）。只檢查檔案是否存在與格式，內容比對留到真正執行時。
+    """
+    result: list[tuple[dict, str | None]] = []
+    for row in rows:
+        reason = _validate_row(row)
+        if reason:
+            result.append((row, f"略過：{reason.removesuffix('，已略過')}"))
+            continue
+        try:
+            src_exists, dst_exists = Path(row["原始路徑"]).exists(), Path(row["新路徑"]).exists()
+        except OSError:
+            result.append((row, "略過：無法檢查這個檔案"))
+            continue
+        if mode == "undo":
+            note = ("略過：複本已不在" if not dst_exists
+                    else "保留：原檔已不在，複本是唯一的一份" if not src_exists else None)
+        else:
+            note = ("略過：原檔已不在" if not src_exists
+                    else "保留原檔：找不到複本" if not dst_exists else None)
+        result.append((row, note))
+    return result
+
+
+@dataclass
+class LogInfo:
+    """整理紀錄頁的一列。"""
+
+    path: Path
+    kind: str  # active（可處理）／undone（複本已移除）／finished（原檔已移除）／unreadable（無法讀取）
+    when: datetime
+    count: int
+    source: str
+    output: str
+    problem: str | None = None
+
+
+def list_logs(log_dir: Path) -> list[LogInfo]:
+    """列出紀錄資料夾裡所有整理紀錄（新的在前）。讀不出來的紀錄也會列出，並註明原因。"""
+    infos: list[LogInfo] = []
+    for path in Path(log_dir).glob("*.csv"):
+        kind = next((k for prefix, k in LOG_KIND_PREFIXES.items() if path.name.startswith(prefix)), None)
+        if kind is None or not path.is_file():
+            continue
+        if kind != "unreadable" and not re.fullmatch(r"(整理紀錄|已復原|已完成)_\d{8}_\d{6}(?:_\d{1,3})?\.csv", path.name):
+            continue
+        try:
+            when = datetime.fromtimestamp(path.stat().st_mtime)
+        except OSError:
+            continue
+        count, source, output, problem = 0, "", "", None
+        try:
+            rows, skipped = read_log_rows(path)
+            count = len(rows)
+            source, output = log_roots(rows)
+            if skipped:
+                problem = f"有 {skipped} 列不完整，已略過"
+            if not rows and kind != "unreadable":
+                problem = problem or "紀錄是空的"
+        except (OSError, ValueError) as exc:
+            if kind == "active":
+                kind = "unreadable"
+            problem = str(exc)
+        infos.append(LogInfo(path, kind, when, count, source, output, problem))
+    return sorted(infos, key=lambda i: (i.when, i.path.name), reverse=True)
 
 
 def _remove_if_empty(folder: Path) -> None:

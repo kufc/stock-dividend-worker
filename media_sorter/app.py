@@ -1,116 +1,120 @@
 """桌面視窗介面（Tkinter，Python 內建，不需額外安裝）。
 
-流程：選資料夾 → 開始辨識（AI 判斷每個檔案看起來像什麼）→ 逐一或批次確認分類 → 開始整理（搬移／複製＋重新命名）。
+四個步驟：選擇資料夾 → 確認分類 → 預覽整理結果 → 完成。
+整理只會「複製」檔案，原檔完全不動；處理原檔（移到資源回收筒）是完成之後另外的、可選的動作。
 """
 
 from __future__ import annotations
 
 import gc
+import io
 import os
 import queue
-import subprocess
+import shutil
 import sys
 import threading
 import traceback
 import tkinter as tk
 from collections import Counter, OrderedDict
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from tkinter import font as tkfont
 
 from PIL import Image, ImageTk
 
 from . import APP_NAME, __version__
-from .analysis import CONFIRMED, ERROR, PENDING, SKIPPED, Item, accept_confident, analyze, rescore
+from .analysis import CONFIRMED, ERROR, PENDING, SKIPPED, Item, analyze, rescore
 from .config import (
-    DEFAULT_CATEGORIES,
-    acquire_app_lock,
     LOG_DIR,
-    MODEL_CHOICES,
-    RENAME_PATTERN_PRESETS,
+    RENAME_MODES,
     Category,
+    acquire_app_lock,
     load_categories,
     load_settings,
     save_categories,
     save_settings,
 )
-from .media import file_date, load_preview, media_kind, scan_folder
+from .dialogs import (
+    CategoryDialog,
+    ImageViewer,
+    RecordsDialog,
+    SettingsDialog,
+    confirm_with_list,
+    open_in_file_manager,
+    show_problem,
+)
+from .media import FolderStats, file_date, folder_stats, load_preview, media_kind, scan_folder
 from .organizer import (
+    PlannedOp,
+    classify_rows,
     execute,
     folder_key,
     free_space_problem,
-    latest_log,
     log_roots,
     plan_operations,
-    read_log,
     remove_originals,
     set_aside_log,
+    snapshot_log,
     undo,
+)
+from .theme import setup_theme
+from .views import (
+    FILTERS,
+    SKIP,
+    SUGGEST_FILTER_PREFIX,
+    DonePage,
+    FolderPage,
+    PlanPage,
+    ReviewPage,
+    StatusBar,
+    StepHeader,
 )
 from .vocabulary import VOCABULARY
 
-STATUS_TEXT = {PENDING: "待確認", CONFIRMED: "已確認", SKIPPED: "略過", ERROR: "無法讀取"}
-KIND_TEXT = {"image": "圖片", "video": "影片"}
-BASE_FILTERS = ["全部", "待確認", "低信心（建議檢查）", "已確認", "略過", "無法讀取"]
-AI_FILTER_PREFIX = "AI 判斷為："
 DEFAULT_OUTPUT_NAME = "已分類"
-SKIP = "__skip__"
-PREVIEW_W, PREVIEW_H = 480, 340
+HELP_FILE = Path(__file__).resolve().parent.parent / "使用說明與免責聲明_Usage-and-Disclaimer.txt"
 GC_INTERVAL_MS = 5000
-COLUMNS = [  # (欄位, 標題, 寬度)
-    ("name", "檔名", 240),
-    ("kind", "類型", 50),
-    ("ai", "AI 判斷", 110),
-    ("conf", "信心", 60),
-    ("final", "確認分類", 110),
-    ("status", "狀態", 80),
-]
+NARROW_WIDTH = 1100  # 100% 縮放下，視窗比這個窄就把清單與預覽改成分頁
+WIDE_PLAN_WIDTH = 1200  # 「預覽整理結果」夠寬時分成左右兩欄
+THUMB_PX = 40
+MAX_THUMBS = 6000
+MAX_PLAN_ROWS = 300
+KIND_TEXT = {"image": "圖片", "video": "影片"}
+NO_RUN_ID = {"preview", "folder", "model", "viewer"}  # 這幾種訊息不屬於某一輪工作
+KEY_IGNORE = {"Entry", "TEntry", "TCombobox", "Text", "Spinbox", "TSpinbox"}
+RETURN_IGNORE = KEY_IGNORE | {"TButton", "TCheckbutton", "TRadiobutton"}
 
 
-def open_in_file_manager(path: Path) -> None:
-    if sys.platform == "win32":
-        os.startfile(path)  # type: ignore[attr-defined]
-    elif sys.platform == "darwin":
-        subprocess.Popen(["open", str(path)])
-    else:
-        subprocess.Popen(["xdg-open", str(path)])
+@dataclass
+class Plan:
+    """步驟 3 顯示的、也是「開始複製」實際執行的整理計畫。"""
+
+    ops: list[PlannedOp]
+    source: Path
+    output: Path
+    total_bytes: int = 0
+    problem: str | None = None
+    pending_count: int = 0
 
 
-def confirm_with_list(master, title: str, message: str, lines: list[str], ok_text: str) -> bool:
-    """確認視窗：上方說明，下方可捲動的完整清單（不省略），按「確定」才回傳 True。"""
-    dialog = tk.Toplevel(master)
-    dialog.title(title)
-    dialog.transient(master)
-    dialog.geometry("760x560")
-    result = {"ok": False}
-    body = ttk.Frame(dialog, padding=10)
-    body.pack(fill="both", expand=True)
-    ttk.Label(body, text=message, wraplength=720, justify="left").pack(anchor="w")
-    frame = ttk.Frame(body)
-    frame.pack(fill="both", expand=True, pady=8)
-    text = tk.Text(frame, wrap="none", height=16)
-    scroll_y = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
-    scroll_x = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
-    text.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
-    scroll_y.pack(side="right", fill="y")
-    scroll_x.pack(side="bottom", fill="x")
-    text.pack(side="left", fill="both", expand=True)
-    text.insert("1.0", "\n".join(lines))
-    text.configure(state="disabled")
-    buttons = ttk.Frame(body)
-    buttons.pack(fill="x")
+@dataclass
+class RunInfo:
+    """一次整理（含重試）的累計結果，給「完成」頁顯示。"""
 
-    def choose(ok: bool) -> None:
-        result["ok"] = ok
-        dialog.destroy()
+    ops: list[PlannedOp]
+    source: Path
+    output: Path
+    done: int = 0
+    done_sources: set = field(default_factory=set)
+    failures: dict = field(default_factory=dict)  # 原檔路徑 → (Path, 說明)
+    warnings: list = field(default_factory=list)
+    log_path: Path | None = None
+    stopped: bool = False
+    aborted: bool = False
 
-    ttk.Button(buttons, text="取消", command=lambda: choose(False)).pack(side="right")
-    ttk.Button(buttons, text=ok_text, style="Accent.TButton", command=lambda: choose(True)).pack(side="right", padx=6)
-    dialog.protocol("WM_DELETE_WINDOW", lambda: choose(False))
-    dialog.grab_set()
-    master.wait_window(dialog)
-    return result["ok"]
+    def remaining_ops(self) -> list[PlannedOp]:
+        return [op for op in self.ops if str(op.src) not in self.done_sources]
 
 
 def _same_folder(a: str | Path, b: str | Path) -> bool:
@@ -120,16 +124,31 @@ def _same_folder(a: str | Path, b: str | Path) -> bool:
         return False
 
 
+def _fmt_size(n: float) -> str:
+    if n >= 1024**3:
+        return f"{n / 1024**3:.1f} GB"
+    if n < 1024**2:
+        return "不到 1 MB"
+    return f"{n / 1024**2:.0f} MB"
+
+
 def _default_classifier_factory(preset: str):
     from .classifier import Classifier
 
     return Classifier(preset)
 
 
+def _default_model_status(choice: str):
+    from .classifier import model_status
+
+    return model_status(choice)
+
+
 class App:
-    def __init__(self, root: tk.Tk, classifier_factory=_default_classifier_factory):
+    def __init__(self, root: tk.Tk, classifier_factory=_default_classifier_factory, model_status_func=None):
         self.root = root
         self.classifier_factory = classifier_factory
+        self.model_status_func = model_status_func or _default_model_status
         self.settings = load_settings()
         self.categories = load_categories()
         self.items: list[Item] = []
@@ -138,229 +157,384 @@ class App:
         self.queue: queue.Queue = queue.Queue()
         self.worker: threading.Thread | None = None
         self.stop_event = threading.Event()
+        self.copy_stop = threading.Event()
         self.needs_rescore = False
-        self.organizing = False  # 整理或復原進行中
+        self.organizing = False  # 複製、移除複本、移除原檔進行中
         self._analysis_active = False  # 辨識中（包含背景已結束但訊息還沒處理完的時間）
         self._run_id = 0  # 每次背景工作的編號，用來丟掉上一輪殘留的訊息
-        self._pos: dict[str, int] = {}  # 清單列 id → self.items 的位置
-        self._counts_job = None
+        self._pos: dict[str, int] = {}
+        self._counts_job = self._search_job = self._folder_job = self._plan_job = self._render_job = None
+        self._layout_job = None
+        self._folder_token = 0
         self._error_dialog_open = False
+        self.step = 1
         self.current: int | None = None
         self.sort_key: str | None = None
         self.sort_reverse = False
-        self.preview_cache: OrderedDict[int, Image.Image] = OrderedDict()  # 以項目 uid 為鍵
+        self.preview_cache: OrderedDict[int, Image.Image] = OrderedDict()
         self._preview_loading: set[int] = set()
         self.preview_photo = None
+        self.thumbs: dict[int, ImageTk.PhotoImage] = {}
+        self.history: list[list[tuple[int, str, str | None]]] = []
+        self.run_info: RunInfo | None = None
+        self.plan: Plan | None = None
+        self.stats: FolderStats | None = None
+        self.stats_error = ""
+        self.model_note = None
+        self.records_win = None
+        self.session_source: Path | None = None
+        self._viewers: dict[int, ImageViewer] = {}
+        self._viewer_seq = 0
+        self._auto_switch = False
+        self._last_default_output = ""
+        self._progress = (0, 0)
+        self._sash_ratio = float(self.settings["split_ratio"])
+        self._candidate_names: list[str] = []
 
+        self.theme = setup_theme(root)
+        self.px = self.theme.px
         root.title(f"{APP_NAME} v{__version__}")
-        root.geometry("1280x800")
-        root.minsize(1000, 640)
+        self._init_geometry()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.report_callback_exception = self.on_tk_error
-        self._setup_style()
+
+        self.status_var = tk.StringVar()
+        self.folder_var = tk.StringVar(value=self.settings.get("last_folder", ""))
+        self.subfolders_var = tk.BooleanVar(value=self.settings.get("include_subfolders", True))
+        self.output_var = tk.StringVar(value=self.settings.get("output_dir", ""))
+        self.rename_mode_var = tk.StringVar(value=self.settings["rename_mode"])
+        self.pattern_var = tk.StringVar(value=self.settings["rename_pattern"])
+        self.include_pending_var = tk.BooleanVar(value=False)
+        self.filter_var = tk.StringVar(value=FILTERS[0])
+        self.search_var = tk.StringVar()
+        self.choice_var = tk.StringVar()
+        self.other_var = tk.StringVar()
+        self.batch_var = tk.StringVar()
+
         self._build_ui()
         self._bind_keys()
+        self.folder_var.trace_add("write", self._on_folder_edit)
+        self.subfolders_var.trace_add("write", self._on_folder_edit)
+        self.search_var.trace_add("write", self._on_search_edit)
+        self.output_var.trace_add("write", lambda *_: self.schedule_plan())
+        self.pattern_var.trace_add("write", lambda *_: self.schedule_plan())
+        self._sync_output_default()
         self.refresh_filters()
         self.update_counts(force=True)
-        self.show_preview(None)
+        self.show_detail(None)
+        self.show_step(1)
+        self.refresh_folder_stats()
+        self._start_model_status()
         root.after(100, self._poll_queue)
         root.after(GC_INTERVAL_MS, self._collect_garbage)
 
     # ------------------------------------------------------------------ 介面建構
-    def _setup_style(self) -> None:
-        families = set(tkfont.families(self.root))
-        for family in ("Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", "Noto Sans CJK TC",
-                       "Noto Sans TC", "WenQuanYi Zen Hei"):
-            if family in families:
-                for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
-                    tkfont.nametofont(name).configure(family=family, size=10)
-                break
-        default = tkfont.nametofont("TkDefaultFont")
-        self.big_font = default.copy()
-        self.big_font.configure(size=12, weight="bold")
-        style = ttk.Style(self.root)
-        if "vista" not in style.theme_names() and "clam" in style.theme_names():
-            style.theme_use("clam")
-        style.configure("Treeview", rowheight=int(default.metrics("linespace") * 1.5))
-        style.configure("Accent.TButton", font=self.big_font, padding=(12, 6))
-        style.configure("Big.TLabel", font=self.big_font)
-        style.configure("Hint.TLabel", foreground="#666666")
+    def _init_geometry(self, screen: tuple[int, int] | None = None) -> None:
+        """初始視窗大小：不超過螢幕（測試可以指定假想的螢幕大小）。"""
+        root, px = self.root, self.px
+        sw, sh = screen or (root.winfo_screenwidth(), root.winfo_screenheight())
+        width, height = min(px(1280), sw - 40), min(px(800), sh - 110)
+        root.geometry(f"{width}x{height}+{max(0, (sw - width) // 2)}+{max(0, (sh - height) // 3)}")
+        root.minsize(min(px(900), sw - 20), min(px(560), sh - 80))
 
     def _build_ui(self) -> None:
-        root = self.root
-        pad = {"padx": 6, "pady": 4}
+        self.header = StepHeader(self.root, self)
+        self.header.pack(side="top", fill="x")
+        self.status_bar = StatusBar(self.root, self)
+        self.status_bar.pack(side="bottom", fill="x")
+        self.progress = self.status_bar.progress
+        self.content = ttk.Frame(self.root)
+        self.content.pack(fill="both", expand=True)
+        self.content.grid_rowconfigure(0, weight=1)
+        self.content.grid_columnconfigure(0, weight=1)
+        self.page1 = FolderPage(self.content, self)
+        self.page2 = ReviewPage(self.content, self)
+        self.page3 = PlanPage(self.content, self)
+        self.page4 = DonePage(self.content, self)
+        self.pages = {1: self.page1, 2: self.page2, 3: self.page3, 4: self.page4}
+        for page in self.pages.values():
+            page.grid(row=0, column=0, sticky="nsew")
+        self.tree = self.page2.tree
+        self.root.bind("<Configure>", self._on_root_configure)
+        self.page2.paned.bind("<Configure>", self._on_paned_configure)
+        self.page2.paned.bind("<ButtonRelease-1>", self._save_sash)
 
-        # 第一列：來源資料夾
-        top = ttk.Frame(root)
-        top.pack(fill="x", **pad)
-        ttk.Button(top, text="選擇資料夾…", command=self.choose_folder).pack(side="left")
-        self.folder_var = tk.StringVar(value=self.settings.get("last_folder", ""))
-        ttk.Entry(top, textvariable=self.folder_var).pack(side="left", fill="x", expand=True, padx=6)
-        self.subfolders_var = tk.BooleanVar(value=self.settings.get("include_subfolders", True))
-        ttk.Checkbutton(top, text="包含子資料夾", variable=self.subfolders_var).pack(side="left", padx=4)
-        self.category_btn = ttk.Button(top, text="分類設定", command=self.open_category_dialog)
-        self.category_btn.pack(side="left", padx=4)
-        ttk.Button(top, text="⚙ 設定", command=self.open_settings_dialog).pack(side="left")
-
-        # 第二列：開始辨識＋進度
-        run = ttk.Frame(root)
-        run.pack(fill="x", **pad)
-        self.run_btn = ttk.Button(run, text="▶ 開始辨識", style="Accent.TButton", command=self.toggle_analysis)
-        self.run_btn.pack(side="left")
-        self.progress = ttk.Progressbar(run, mode="determinate", length=260)
-        self.progress.pack(side="left", padx=10)
-        self.status_var = tk.StringVar(value="請選擇資料夾後按「開始辨識」。")
-        ttk.Label(run, textvariable=self.status_var).pack(side="left", fill="x", expand=True)
-
-        # 底部：輸出設定（先放，視窗較矮時才不會被擠掉）
-        self._build_output(root)
-
-        # 中間：左邊清單、右邊預覽
-        paned = ttk.PanedWindow(root, orient="horizontal")
-        paned.pack(fill="both", expand=True, **pad)
-        left = ttk.Frame(paned)
-        right = ttk.Frame(paned, width=PREVIEW_W + 40)
-        paned.add(left, weight=3)
-        paned.add(right, weight=2)
-        self._build_list(left)
-        self._build_preview(right)
-
-    def _build_list(self, parent: ttk.Frame) -> None:
-        bar = ttk.Frame(parent)
-        bar.pack(fill="x", pady=(0, 4))
-        ttk.Label(bar, text="顯示：").pack(side="left")
-        self.filter_var = tk.StringVar(value=BASE_FILTERS[0])
-        self.filter_box = ttk.Combobox(bar, textvariable=self.filter_var, state="readonly", width=20)
-        self.filter_box.pack(side="left")
-        self.filter_box.bind("<<ComboboxSelected>>", lambda e: self.refresh_tree())
-        self.count_var = tk.StringVar()
-        ttk.Label(bar, textvariable=self.count_var, style="Hint.TLabel").pack(side="left", padx=8)
-
-        table = ttk.Frame(parent)
-        table.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(table, columns=[c[0] for c in COLUMNS], show="headings", selectmode="extended")
-        for key, title, width in COLUMNS:
-            self.tree.heading(key, text=title, command=lambda k=key: self.sort_by(k))
-            anchor = "w" if key in ("name", "ai", "final") else "center"
-            self.tree.column(key, width=width, stretch=(key == "name"), anchor=anchor)
-        scroll = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="left", fill="y")
-        self.tree.tag_configure(CONFIRMED, background="#e3f6e3")
-        self.tree.tag_configure(SKIPPED, foreground="#999999")
-        self.tree.tag_configure(ERROR, foreground="#c62828")
-        self.tree.tag_configure("low", background="#fff5d6")
-        self.tree.bind("<<TreeviewSelect>>", self.on_select)
-
-        batch = ttk.Frame(parent)
-        batch.pack(fill="x", pady=(4, 0))
-        ttk.Label(batch, text="選取的項目 →").pack(side="left")
-        self.batch_var = tk.StringVar()
-        self.batch_box = ttk.Combobox(batch, textvariable=self.batch_var, state="readonly", width=14)
-        self.batch_box.pack(side="left", padx=4)
-        ttk.Button(batch, text="套用分類", command=self.apply_batch).pack(side="left")
-        ttk.Button(batch, text="採用 AI 建議", command=self.accept_selected).pack(side="left", padx=4)
-        ttk.Button(batch, text="略過", command=lambda: self.set_selected(SKIP)).pack(side="left")
-        ttk.Button(batch, text="✔ 高信心的全部採用", command=self.accept_confident_all).pack(side="right")
-
-    def _build_preview(self, parent: ttk.Frame) -> None:
-        # 由下往上排：按鈕與選項固定顯示，預覽圖佔用剩下的空間（視窗小時自動縮小）
-        self.tags_box = ttk.LabelFrame(parent, text="AI 還看到這些（點一下可新增為分類）：")
-        self.tags_box.pack(side="bottom", fill="x", pady=(4, 0))
-
-        self.confirm_btn = ttk.Button(parent, text="✔ 確認並下一個（Enter）　略過按 S",
-                                      style="Accent.TButton", command=self.confirm_current)
-        self.confirm_btn.pack(side="bottom", fill="x", pady=4)
-
-        box = ttk.LabelFrame(parent, text="AI 覺得這看起來像：（按 1／2／3 直接選）")
-        box.pack(side="bottom", fill="x", pady=(4, 0))
-        self.choice_var = tk.StringVar()
-        self.radios = []
-        for _ in range(3):
-            rb = ttk.Radiobutton(box, variable=self.choice_var)
-            rb.pack(anchor="w", padx=6, pady=1)
-            self.radios.append(rb)
-        other = self.other_row = ttk.Frame(box)
-        other.pack(fill="x", padx=6, pady=2)
-        ttk.Label(other, text="都不是？改選：").pack(side="left")
-        self.other_var = tk.StringVar()
-        self.other_box = ttk.Combobox(other, textvariable=self.other_var, state="readonly", width=14)
-        self.other_box.pack(side="left")
-        self.other_box.bind("<<ComboboxSelected>>", lambda e: self.choice_var.set(self.other_var.get()))
-        ttk.Button(other, text="＋ 新增分類…", command=self.add_category_prompt).pack(side="left", padx=4)
-        ttk.Radiobutton(box, text="略過此檔案（不整理）", variable=self.choice_var, value=SKIP).pack(
-            anchor="w", padx=6, pady=(2, 4))
-
-        self.info_var = tk.StringVar()
-        ttk.Label(parent, textvariable=self.info_var, style="Hint.TLabel", wraplength=PREVIEW_W).pack(side="bottom", anchor="w")
-        self.file_var = tk.StringVar()
-        ttk.Label(parent, textvariable=self.file_var, style="Big.TLabel", wraplength=PREVIEW_W).pack(side="bottom", anchor="w")
-
-        frame = ttk.Frame(parent, width=PREVIEW_W, height=PREVIEW_H)
-        frame.pack(side="top", fill="both", expand=True, pady=(0, 4))
-        frame.pack_propagate(False)
-        self.image_label = ttk.Label(frame, anchor="center", background="#20232a", foreground="#dddddd")
-        self.image_label.pack(fill="both", expand=True)
-        self._resize_job = None
-        frame.bind("<Configure>", self._on_preview_resize)
-
-    def _on_preview_resize(self, _event=None) -> None:
-        if self._resize_job:
-            self.root.after_cancel(self._resize_job)
-        self._resize_job = self.root.after(150, self._render_preview_image)
-
-    def _build_output(self, root: tk.Tk) -> None:
-        out = ttk.LabelFrame(root, text="整理方式")
-        out.pack(side="bottom", fill="x", padx=6, pady=(0, 6))
-        row1 = ttk.Frame(out)
-        row1.pack(fill="x", padx=6, pady=3)
-        ttk.Label(row1, text="輸出資料夾：").pack(side="left")
-        self.output_var = tk.StringVar(value=self.settings.get("output_dir", ""))
-        ttk.Entry(row1, textvariable=self.output_var).pack(side="left", fill="x", expand=True)
-        ttk.Button(row1, text="瀏覽…", command=self.choose_output).pack(side="left", padx=4)
-        ttk.Label(row1, text=f"（空白 = 來源資料夾內的「{DEFAULT_OUTPUT_NAME}」）", style="Hint.TLabel").pack(side="left")
-
-        row2 = ttk.Frame(out)
-        row2.pack(fill="x", padx=6, pady=3)
-        ttk.Label(row2, text="複製到分類資料夾（原檔不動）").pack(side="left")
-        ttk.Separator(row2, orient="vertical").pack(side="left", fill="y", padx=8)
-        self.rename_var = tk.BooleanVar(value=self.settings.get("rename", True))
-        ttk.Checkbutton(row2, text="重新命名，樣式：", variable=self.rename_var).pack(side="left")
-        self.pattern_var = tk.StringVar(value=self.settings.get("rename_pattern", RENAME_PATTERN_PRESETS[0]))
-        ttk.Combobox(row2, textvariable=self.pattern_var, values=RENAME_PATTERN_PRESETS, width=22).pack(side="left", padx=4)
-        ttk.Label(row2, text="可用：{分類} {日期} {序號} {原檔名}", style="Hint.TLabel").pack(side="left")
-        self.organize_btn = ttk.Button(row2, text="開始整理 ▶", style="Accent.TButton", command=self.organize)
-        self.organize_btn.pack(side="right")
-        self.remove_btn = ttk.Button(row2, text="移除原檔…", command=self.remove_originals_last)
-        self.remove_btn.pack(side="right", padx=6)
-        self.undo_btn = ttk.Button(row2, text="↩ 復原上次整理", command=self.undo_last)
-        self.undo_btn.pack(side="right")
+    def handle_key(self, key: str, widget_class: str) -> bool:
+        """鍵盤快速鍵（只在「確認分類」步驟有效；在輸入欄位裡打字時不會觸發）。回傳有沒有處理這個按鍵。"""
+        if self.step != 2:
+            return False
+        if widget_class in (RETURN_IGNORE if key == "Return" else KEY_IGNORE):
+            return False
+        if key == "Return":
+            self.confirm_current()
+        elif key in ("1", "2", "3"):
+            self.pick_suggestion(int(key) - 1)
+        elif key in ("s", "S"):
+            self.skip_current()
+        elif key == "ctrl-z":
+            self.undo_last_confirm()
+        else:
+            return False
+        return True
 
     def _bind_keys(self) -> None:
-        def guarded(func):
-            def handler(event):
-                if isinstance(event.widget, (tk.Entry, ttk.Entry, ttk.Combobox, tk.Text, tk.Spinbox)):
-                    return None
-                func(event)
-                return "break"
-            return handler
+        def bind(sequence: str, key: str) -> None:
+            self.root.bind(sequence, lambda e: "break" if self.handle_key(key, e.widget.winfo_class()) else None)
 
-        self.root.bind("<Return>", guarded(lambda e: self.confirm_current()))
-        for i in range(3):
-            self.root.bind(str(i + 1), guarded(lambda e, i=i: self.pick_suggestion(i)))
-        for key in ("s", "S"):
-            self.root.bind(key, guarded(lambda e: (self.choice_var.set(SKIP), self.confirm_current())))
+        bind("<Return>", "Return")
+        for digit in "123":
+            bind(digit, digit)
+        for letter in "sS":
+            bind(letter, letter)
+        bind("<Control-z>", "ctrl-z")
+        self.root.bind("<Control-f>", lambda e: self.page2.search_entry.focus_set() if self.step == 2 else None)
         self.tree.bind("<Control-a>", lambda e: (self.tree.selection_set(self.tree.get_children()), "break")[1])
 
-    # ------------------------------------------------------------------ 項目與清單
+    def _on_root_configure(self, event) -> None:
+        if event.widget is not self.root:
+            return
+        if self._layout_job:
+            self.root.after_cancel(self._layout_job)
+        self._layout_job = self.root.after(120, self._apply_layout)
+
+    def _apply_layout(self) -> None:
+        self._layout_job = None
+        width = self.root.winfo_width()
+        self.page2.set_narrow(width < self.px(NARROW_WIDTH))
+        self.page3.set_wide(width >= self.px(WIDE_PLAN_WIDTH))
+        self.schedule_preview_render()
+
+    def _on_paned_configure(self, _event=None) -> None:
+        self.page2.set_sash_ratio(self._sash_ratio)
+
+    def _save_sash(self, _event=None) -> None:
+        ratio = self.page2.sash_ratio()
+        if ratio is not None:
+            self._sash_ratio = max(0.25, min(0.75, ratio))
+            self.settings["split_ratio"] = self._sash_ratio
+
+    # ------------------------------------------------------------------ 步驟切換
+    def analysis_running(self) -> bool:
+        return self._analysis_active
+
+    def confirmed_count(self) -> int:
+        return sum(1 for item in self.items if item.status == CONFIRMED and item.chosen)
+
+    def step_available(self, n: int) -> bool:
+        if self.organizing:
+            return False
+        if n == 1:
+            return True
+        if n == 2:
+            return bool(self.items)
+        if n == 3:
+            return self.confirmed_count() > 0 and not self.analysis_running()
+        return self.run_info is not None
+
+    def show_step(self, n: int) -> bool:
+        if not self.step_available(n):
+            if n == 3 and self.analysis_running() and self.confirmed_count():
+                self.status_var.set("辨識完成後才能預覽整理結果；現在可以先在這裡確認分類。")
+            return False
+        self.step = n
+        self.pages[n].tkraise()
+        if not self.analysis_running() and not self.organizing:
+            self.status_var.set("")
+        if n == 1:
+            self._sync_output_default()
+            self._update_page1()
+        elif n == 2:
+            self.refresh_tree()
+            self._auto_select()
+            self.tree.focus_set()
+        elif n == 3:
+            self._sync_output_default()
+            self.refresh_plan()
+        else:
+            self.render_done()
+        scroll = getattr(self.pages[n], "scroll", None)
+        if scroll is not None and n != 2:
+            scroll.scroll_to_top()
+        self._refresh_nav()
+        return True
+
+    def _refresh_nav(self) -> None:
+        available = {n for n in range(1, 5) if self.step_available(n)}
+        self.header.update_steps(self.step, available)
+        p = self.page2
+        enable = self.confirmed_count() > 0 and not self.analysis_running() and not self.organizing
+        p.next_btn.state(["!disabled"] if enable else ["disabled"])
+
+    def _set_busy(self, busy: bool) -> None:
+        """複製或處理紀錄進行中：停用會動到檔案或清單的操作。"""
+        state = ["disabled"] if busy else ["!disabled"]
+        self.header.set_busy(busy)
+        for widget in (self.page1.start_btn, self.page3.back_btn, self.page3.include_check, self.page3.output_entry,
+                       self.page3.pattern_entry, *self.page3.radios, self.page4.again_btn, self.page4.back_btn,
+                       self.page4.records_btn, self.page4.remove_btn, self.page4.open_btn):
+            widget.state(state)
+        self.page2.next_btn.state(state)
+        self.page2.back_btn.state(state)
+        if not busy:
+            self._refresh_step_controls()
+        self._refresh_nav()
+
+    def _refresh_step_controls(self) -> None:
+        if self.step == 1:
+            self._update_page1()
+        elif self.step == 3:
+            self.refresh_plan()
+        elif self.step == 4:
+            self.render_done()
+
+    # ------------------------------------------------------------------ 步驟 1：選擇資料夾
+    def source_dir(self) -> Path:
+        return Path(self.folder_var.get().strip()).absolute()
+
+    def _base_dir(self) -> Path | None:
+        """整理時「來源資料夾」的基準：已經辨識過就固定用辨識當時的資料夾，不受輸入欄後來的修改影響。"""
+        if self.session_source is not None and (self.items or self.run_info is not None):
+            return self.session_source
+        return self.source_dir() if self.folder_var.get().strip() else None
+
+    def _default_output(self) -> Path | None:
+        base = self._base_dir()
+        return base / DEFAULT_OUTPUT_NAME if base is not None else None
+
+    def output_dir(self) -> Path:
+        """輸出資料夾一律換成絕對路徑；只打資料夾名稱時放在來源資料夾裡（不會跑到程式資料夾）。"""
+        custom = self.output_var.get().strip()
+        base = self._base_dir() or self.source_dir()
+        if not custom:
+            return base / DEFAULT_OUTPUT_NAME
+        path = Path(custom)
+        return path if path.is_absolute() else (base / path).absolute()
+
+    def _sync_output_default(self) -> None:
+        default = self._default_output()
+        text = str(default) if default is not None else ""
+        current = self.output_var.get().strip()
+        if not current or current == self._last_default_output:
+            if current != text:
+                self.output_var.set(text)
+        self._last_default_output = text
+
+    def choose_folder(self) -> None:
+        folder = filedialog.askdirectory(initialdir=self.folder_var.get() or None, title="選擇要分類的資料夾")
+        if folder:
+            self.folder_var.set(os.path.normpath(folder))
+
+    def choose_output(self) -> None:
+        folder = filedialog.askdirectory(initialdir=self.output_var.get() or self.folder_var.get() or None,
+                                         title="選擇輸出資料夾")
+        if folder:
+            self.output_var.set(os.path.normpath(folder))
+
+    def _on_folder_edit(self, *_args) -> None:
+        self._sync_output_default()
+        self.stats = None
+        self.stats_error = ""
+        self._folder_token += 1
+        self._update_page1()
+        if self._folder_job:
+            self.root.after_cancel(self._folder_job)
+        self._folder_job = self.root.after(350, self.refresh_folder_stats)
+
+    def refresh_folder_stats(self) -> None:
+        self._folder_job = None
+        self._folder_token += 1
+        self.stats, self.stats_error = None, ""
+        text = self.folder_var.get().strip()
+        folder = Path(text).absolute() if text else None
+        if folder is not None and folder.is_dir():
+            threading.Thread(target=self._stats_worker, daemon=True, args=(
+                self._folder_token, folder, self.subfolders_var.get(), self.output_dir())).start()
+        self._update_page1()
+
+    def _stats_worker(self, token: int, folder: Path, recursive: bool, exclude: Path) -> None:
+        try:
+            stats, error = folder_stats(folder, recursive, exclude), ""
+        except OSError as exc:
+            stats, error = None, str(exc)
+        self.queue.put(("folder", token, stats, error))
+
+    def _start_model_status(self) -> None:
+        def work(choice: str) -> None:
+            try:
+                status = self.model_status_func(choice)
+            except Exception:  # noqa: BLE001 - 只是提示資訊
+                status = None
+            self.queue.put(("model", choice, status))
+
+        threading.Thread(target=work, args=(self.settings["model"],), daemon=True).start()
+
+    def _update_page1(self) -> None:
+        p = self.page1
+        text = self.folder_var.get().strip()
+        is_dir = bool(text) and Path(text).is_dir()
+        running = self._analysis_active
+        supported = self.stats.supported if self.stats else 0
+        if not text:
+            p.show_empty("還沒有選擇資料夾。按「選擇資料夾…」，或把資料夾路徑貼在上面的欄位。")
+        elif not is_dir:
+            p.show_empty("找不到這個資料夾，請確認路徑，或按「選擇資料夾…」重新選擇。")
+        elif self.stats_error:
+            p.show_empty(f"無法讀取這個資料夾：{self.stats_error}")
+        elif self.stats is None:
+            p.show_empty("正在計算檔案數量⋯")
+        else:
+            s = self.stats
+            note = "不支援的檔案不會被讀取、移動或修改。" + ("（已包含子資料夾）" if self.subfolders_var.get() else "")
+            if s.supported == 0:
+                note = "這個資料夾裡沒有支援的圖片或影片。" + note
+            p.show_counts(s.images, s.videos, s.other, note)
+
+        if running:
+            p.start_btn.configure(text="停止辨識", style="TButton")
+            p.start_btn.state(["!disabled"])
+        else:
+            p.start_btn.configure(text=f"開始辨識 {supported:,} 個檔案" if supported else "開始辨識",
+                                  style="Accent.TButton")
+            p.start_btn.state(["!disabled"] if (supported and not self.organizing) else ["disabled"])
+        p.browse_btn.configure(style="TButton" if (is_dir and not running) else "Accent.TButton")
+        for widget in (p.entry, p.browse_btn, p.sub_check):
+            widget.state(["disabled"] if running else ["!disabled"])
+        if running:
+            p.hint_var.set("辨識進行中。可以按「停止辨識」，已辨識的檔案不會遺失。")
+        elif not text:
+            p.hint_var.set("先選擇一個資料夾。")
+        elif not is_dir:
+            p.hint_var.set("找不到資料夾。")
+        elif self.stats is None and not self.stats_error:
+            p.hint_var.set("正在計算檔案數量⋯")
+        elif supported:
+            hint = f"將辨識 {supported:,} 個檔案（圖片 {self.stats.images:,}、影片 {self.stats.videos:,}）。"
+            if self.items:
+                hint += "　要繼續上次的結果，請按上方的「2　確認分類」。"
+            p.hint_var.set(hint)
+        else:
+            p.hint_var.set("沒有可以辨識的檔案。")
+        if self.model_note is None:
+            p.model_var.set("")
+        else:
+            label, cached = self.model_note
+            if cached:
+                p.model_var.set(f"AI 模型已經在這台電腦上，不需要再下載。（{label}）")
+            elif cached is False:
+                p.model_var.set(f"第一次辨識會先下載 AI 模型，需要網路連線，可能要幾分鐘；下載一次之後就不必再下載。（{label}）")
+            else:
+                p.model_var.set(label)
+
+    # ------------------------------------------------------------------ 檔案清單
     def _set_items(self, items: list[Item]) -> None:
         """換掉整份清單時一定要走這裡：清除選取、預覽與快取，避免指到別的檔案。"""
         self.items = items
         self._pos = {str(item.uid): i for i, item in enumerate(items)}
         self.preview_cache.clear()
+        self.thumbs.clear()
+        self.history.clear()
         self.tree.selection_remove(self.tree.selection())
-        self.show_preview(None)
+        self.show_detail(None)
 
     def _iid(self, index: int) -> str:
         return str(self.items[index].uid)
@@ -373,79 +547,131 @@ class App:
 
     def refresh_filters(self) -> None:
         names = [c.name for c in self.categories]
-        self.filter_box["values"] = BASE_FILTERS + [AI_FILTER_PREFIX + n for n in names]
-        if self.filter_var.get() not in self.filter_box["values"]:
-            self.filter_var.set(BASE_FILTERS[0])
-        self.batch_box["values"] = names
-        self.other_box["values"] = names
+        p = self.page2
+        p.filter_box["values"] = FILTERS + [SUGGEST_FILTER_PREFIX + n for n in names]
+        if self.filter_var.get() not in p.filter_box["values"]:
+            self.filter_var.set(FILTERS[0])
+        p.batch_box["values"] = names
+        p.other_box["values"] = names
+        if self.batch_var.get() not in names:
+            self.batch_var.set("")
 
     def _is_low(self, item: Item) -> bool:
         return item.is_low(self.categories, self.settings["confidence_threshold"], self.similarity_floor())
 
-    def _matches(self, item: Item, flt: str) -> bool:
+    def _matches(self, item: Item, flt: str, needle: str = "") -> bool:
+        if needle:
+            hay = f"{item.path.name} {item.best(self.categories)[0] or ''} {item.chosen or ''}".casefold()
+            if needle not in hay:
+                return False
         if flt == "全部":
             return True
         if flt == "待確認":
             return item.status == PENDING
-        if flt.startswith("低信心"):
+        if flt == "需檢查":
             return self._is_low(item)
+        if flt == "建議較明確":
+            return item.status == PENDING and item.analyzed and not self._is_low(item)
         if flt == "已確認":
             return item.status == CONFIRMED
-        if flt == "略過":
+        if flt == "已略過":
             return item.status == SKIPPED
-        if flt == "無法讀取":
+        if flt == "讀取失敗":
             return item.status == ERROR
-        if flt.startswith(AI_FILTER_PREFIX):
-            return item.best(self.categories)[0] == flt[len(AI_FILTER_PREFIX):]
+        if flt.startswith(SUGGEST_FILTER_PREFIX):
+            return item.best(self.categories)[0] == flt[len(SUGGEST_FILTER_PREFIX):]
         return True
 
+    def _visible(self, item: Item) -> bool:
+        return self._matches(item, self.filter_var.get(), self.search_var.get().strip().casefold())
+
+    def _thumb(self, item: Item):
+        photo = self.thumbs.get(item.uid)
+        if photo is not None or not item.thumbnail or len(self.thumbs) >= MAX_THUMBS:
+            return photo
+        try:
+            size = self.px(THUMB_PX)
+            img = Image.open(io.BytesIO(item.thumbnail)).convert("RGB")
+            img.thumbnail((size, size))
+            canvas = Image.new("RGB", (size, size), "#ffffff")
+            canvas.paste(img, ((size - img.width) // 2, (size - img.height) // 2))
+            photo = ImageTk.PhotoImage(canvas)
+        except Exception:  # noqa: BLE001 - 縮圖失敗只是不顯示
+            return None
+        self.thumbs[item.uid] = photo
+        return photo
+
+    def _blank_thumb(self):
+        if not hasattr(self, "_blank"):
+            size = self.px(THUMB_PX)
+            self._blank = ImageTk.PhotoImage(Image.new("RGB", (size, size), "#ffffff"))
+        return self._blank
+
     def _row(self, item: Item) -> tuple[tuple, tuple]:
-        name, conf = item.best(self.categories)
-        if item.status == ERROR and not item.analyzed:
-            ai, conf_text = "—", ""
-        elif not item.analyzed:
-            ai, conf_text = "辨識中…" if self.analysis_running() else "未辨識", ""
-        else:
-            ai, conf_text = name or "—", f"{conf:.0%}"
-        final = item.chosen if item.status == CONFIRMED else ""
-        values = (item.path.name, KIND_TEXT.get(item.kind, item.kind), ai, conf_text, final, STATUS_TEXT[item.status])
-        tags = (item.status,) + (("low",) if self._is_low(item) else ())
-        return values, tags
+        name, _score = item.best(self.categories)
+        if item.status == ERROR:
+            return ("—", "讀取失敗"), ("error",)
+        if not item.analyzed:
+            return ("—", "辨識中…" if self.analysis_running() else "未辨識"), ()
+        suggest = name or "—"
+        if item.status == CONFIRMED:
+            return (suggest, f"已確認：{item.chosen}"), ("confirmed",)
+        if item.status == SKIPPED:
+            return (suggest, "已略過"), ("skipped",)
+        if self._is_low(item):
+            return (suggest, "需檢查"), ("check",)
+        return (suggest, "待確認"), ()
 
     def _sort_value(self, index: int):
         item = self.items[index]
-        if self.sort_key == "conf":
-            return item.best(self.categories)[1]
+        if self.sort_key == "name":
+            return item.path.name.lower()
         values, _ = self._row(item)
-        col = [c[0] for c in COLUMNS].index(self.sort_key)
-        return str(values[col]).lower()
+        return values[0 if self.sort_key == "suggest" else 1]
 
     def refresh_tree(self) -> None:
         selected = set(self.tree.selection())
+        focused = self.tree.focus()
         self.tree.delete(*self.tree.get_children())
-        flt = self.filter_var.get()
-        visible = [i for i, item in enumerate(self.items) if self._matches(item, flt)]
+        flt, needle = self.filter_var.get(), self.search_var.get().strip().casefold()
+        visible = [i for i, item in enumerate(self.items) if self._matches(item, flt, needle)]
         if self.sort_key:
             visible.sort(key=self._sort_value, reverse=self.sort_reverse)
+        blank = self._blank_thumb()
         for i in visible:
-            values, tags = self._row(self.items[i])
-            self.tree.insert("", "end", iid=self._iid(i), values=values, tags=tags)
+            item = self.items[i]
+            values, tags = self._row(item)
+            self.tree.insert("", "end", iid=self._iid(i), text=item.path.name, values=values, tags=tags,
+                             image=self._thumb(item) or blank)
         keep = [iid for iid in selected if self.tree.exists(iid)]
         if keep:
             self.tree.selection_set(keep)
+        if focused and self.tree.exists(focused):
+            self.tree.focus(focused)
         self.update_counts(force=True)
+        self.on_select()
 
     def update_row(self, index: int) -> None:
         iid = self._iid(index)
         if self.tree.exists(iid):
-            values, tags = self._row(self.items[index])
-            self.tree.item(iid, values=values, tags=tags)
+            item = self.items[index]
+            values, tags = self._row(item)
+            self.tree.item(iid, values=values, tags=tags, image=self._thumb(item) or self._blank_thumb())
 
     def sort_by(self, key: str) -> None:
         if self.sort_key == key:
             self.sort_reverse = not self.sort_reverse
         else:
             self.sort_key, self.sort_reverse = key, False
+        self.refresh_tree()
+
+    def _on_search_edit(self, *_args) -> None:
+        if self._search_job:
+            self.root.after_cancel(self._search_job)
+        self._search_job = self.root.after(200, self._run_search)
+
+    def _run_search(self) -> None:
+        self._search_job = None
         self.refresh_tree()
 
     def update_counts(self, force: bool = False) -> None:
@@ -461,15 +687,53 @@ class App:
         self._counts_job = None
         c = Counter(item.status for item in self.items)
         low = sum(1 for item in self.items if self._is_low(item))
-        self.count_var.set(
-            f"共 {len(self.items)} 個｜已確認 {c[CONFIRMED]}｜待確認 {c[PENDING]}（低信心 {low}）｜"
-            f"略過 {c[SKIPPED]}｜無法讀取 {c[ERROR]}"
-        )
+        text = (f"共 {len(self.items)} 個｜已確認 {c[CONFIRMED]}｜待確認 {c[PENDING]}（需檢查 {low}）｜"
+                f"已略過 {c[SKIPPED]}｜讀取失敗 {c[ERROR]}")
+        if self.analysis_running():
+            text += "｜辨識完成後才能進入下一步"
+        elif not c[CONFIRMED]:
+            text += "｜至少確認一個檔案才能進入下一步"
+        self.page2.count_var.set(text)
+        self._refresh_nav()
 
-    # ------------------------------------------------------------------ 預覽與確認
+    # ------------------------------------------------------------------ 目前檔案：預覽與候選分類
+    def _selected_indices(self) -> list[int]:
+        indices = (self._index_of(iid) for iid in self.tree.selection())
+        return [i for i in indices if i is not None]
+
     def on_select(self, _event=None) -> None:
+        selection = self.tree.selection()
         indices = self._selected_indices()
-        self.show_preview(indices[0] if indices else None, len(indices))
+        p = self.page2
+        p.batch_label_var.set(f"已選取 {len(indices)} 個檔案" + ("" if indices else "（按住 Ctrl 或 Shift 可多選）"))
+        for button in p.batch_buttons:
+            button.state(["!disabled"] if indices and not self.organizing else ["disabled"])
+        if not indices:
+            self.show_detail(None)
+            return
+        focus = self.tree.focus()
+        index = self._index_of(focus) if focus in selection else indices[-1]
+        if index is None:
+            index = indices[-1]
+        if index != self.current or p.view_state != "detail":
+            self.show_detail(index, len(indices))
+        else:
+            self._update_multi_note(len(indices))
+
+    def _update_multi_note(self, count: int) -> None:
+        if self.current is None:
+            return
+        item = self.items[self.current]
+        date = item.date.strftime("%Y-%m-%d %H:%M") if item.date else ""
+        info = f"{KIND_TEXT.get(item.kind, '')}　{date}　{item.path.parent}"
+        if count > 1:
+            info += f"\n已選取 {count} 個檔案；這裡的按鈕只處理目前這一個，要一次處理多個請用清單下方的操作。"
+        self.page2.info_var.set(info)
+
+    def schedule_preview_render(self) -> None:
+        if self._render_job:
+            self.root.after_cancel(self._render_job)
+        self._render_job = self.root.after(120, self._render_preview_image)
 
     def _cache_preview(self, uid: int, img: Image.Image) -> None:
         self.preview_cache[uid] = img
@@ -490,7 +754,7 @@ class App:
                 return None
             self._cache_preview(item.uid, img)
             return img
-        if item.uid not in self._preview_loading:
+        if item.uid not in self._preview_loading and item.status != ERROR:
             self._preview_loading.add(item.uid)
             threading.Thread(target=self._preview_worker, args=(item.uid, item.path, item.kind), daemon=True).start()
         return None
@@ -503,173 +767,288 @@ class App:
         self.queue.put(("preview", uid, img))
 
     def _render_preview_image(self) -> None:
-        self._resize_job = None
+        self._render_job = None
+        label = self.page2.preview_label
         if self.current is None or self.current >= len(self.items):
             return
         item = self.items[self.current]
         img = self._preview_image(self.current)
         if img is None:
             self.preview_photo = None
-            loading = item.uid in self._preview_loading
-            self.image_label.configure(image="", text="讀取預覽中⋯" if loading else "（無法預覽此檔案）")
+            if item.status == ERROR:
+                text = "（無法讀取這個檔案）"
+            elif item.uid in self._preview_loading or not item.analyzed:
+                text = "讀取預覽中⋯"
+            else:
+                text = "（無法預覽此檔案）"
+            label.configure(image="", text=text)
             return
-        width, height = self.image_label.winfo_width(), self.image_label.winfo_height()
-        if width < 50 or height < 50:  # 視窗還沒排版完成
-            width, height = PREVIEW_W, PREVIEW_H
+        frame = self.page2.preview_frame
+        width, height = frame.winfo_width(), frame.winfo_height()
+        if width < 50 or height < 50:  # 還沒排版完成
+            width, height = self.px(480), self.px(300)
         shown = img.copy()
         shown.thumbnail((width, height))
         self.preview_photo = ImageTk.PhotoImage(shown)
-        self.image_label.configure(image=self.preview_photo, text="")
+        label.configure(image=self.preview_photo, text="")
 
-    def show_preview(self, index: int | None, selected_count: int = 1) -> None:
+    def _all_decided(self) -> bool:
+        return bool(self.items) and not self.analysis_running() and not any(it.status == PENDING for it in self.items)
+
+    def show_detail(self, index: int | None, selected_count: int = 1) -> None:
+        p = self.page2
         self.current = index
-        for child in self.tags_box.winfo_children():
+        for child in p.tags_frame.winfo_children():
             child.destroy()
         self.other_var.set("")
+        p.other_hint_var.set("")
+        p.undo_btn.state(["!disabled"] if self.history and not self.organizing else ["disabled"])
         if index is None:
             self.preview_photo = None
-            self.image_label.configure(image="", text="（選擇左邊清單中的檔案來預覽）")
-            self.file_var.set("")
-            self.info_var.set("")
-            for rb in self.radios:
-                rb.pack_forget()
+            p.preview_label.configure(image="", text="")
+            if self._all_decided():
+                c = Counter(item.status for item in self.items)
+                p.finished_var.set(f"已確認 {c[CONFIRMED]} 個　已略過 {c[SKIPPED]} 個　讀取失敗 {c[ERROR]} 個\n"
+                                   "可以按下方「下一步：預覽整理結果」；想回頭檢查，也可以從左邊清單選檔案。")
+                p.show_state("finished")
+            else:
+                if self.analysis_running():
+                    p.placeholder_var.set("辨識還在進行中；已辨識好的檔案可以先選來確認。")
+                elif self.items:
+                    p.placeholder_var.set("請從左邊的清單選一個檔案。")
+                else:
+                    p.placeholder_var.set("還沒有檔案。請回到第 1 步選擇資料夾並開始辨識。")
+                p.show_state("placeholder")
             self.choice_var.set("")
+            self._candidate_names = []
+            p.confirm_btn.state(["disabled"])
+            p.skip_btn.state(["disabled"])
             return
 
         item = self.items[index]
-        self._render_preview_image()
-
-        extra = f"　（已選取 {selected_count} 個項目，確認時會一起套用）" if selected_count > 1 else ""
-        self.file_var.set(item.path.name + extra)
-        date = item.date.strftime("%Y-%m-%d %H:%M") if item.date else ""
-        info = f"{KIND_TEXT.get(item.kind, '')}　{date}　{item.path.parent}"
+        p.show_state("detail")
+        self.schedule_preview_render()
+        p.file_var.set(item.path.name)
+        self._update_multi_note(selected_count)
+        floor = self.similarity_floor()
+        low = self._is_low(item)
         if item.error:
-            info += f"\n讀取失敗：{item.error}"
-        elif item.analyzed and item.top_similarity < self.similarity_floor():
-            info += "\n⚠ 這個檔案跟每個分類都不太像，建議人工確認或新增分類。"
-        self.info_var.set(info)
+            note = f"讀取失敗：{item.error}\n這個檔案不會被整理，也不會被更動。"
+        elif not item.analyzed:
+            note = "這個檔案還在辨識中，請稍候。"
+        elif item.top_similarity < floor:
+            note = "這個檔案跟每個分類都不太像。建議自己看過再選分類，或新增一個分類。"
+        elif low:
+            note = "模型對這個檔案沒有把握，請自己看過再選。"
+        else:
+            note = ""
+        p.notice_var.set(note)
+        if note:
+            p.notice_frame.grid()
+        else:
+            p.notice_frame.grid_remove()
+        p.clarity_var.set("" if not item.analyzed or item.status == ERROR else ("需要確認" if low else "建議較明確"))
 
         suggestions = item.suggestions(self.categories, 3)
-        for rb in self.radios:
-            rb.pack_forget()
-        for i, (name, prob) in enumerate(suggestions):
-            bar = "█" * max(1, round(prob * 10))
-            self.radios[i].configure(text=f"{i + 1}. {name}　{prob:.0%}　{bar}", value=name)
-            self.radios[i].pack(anchor="w", padx=6, pady=1, before=self.other_row)
-
-        if item.status == CONFIRMED:
+        self._candidate_names = [name for name, _ in suggestions]
+        for i, button in enumerate(p.candidate_buttons):
+            if i < len(suggestions):
+                button.grid()
+            else:
+                button.grid_remove()
+        if item.status == CONFIRMED and item.chosen:
             self.choice_var.set(item.chosen)
-        elif item.status == SKIPPED:
-            self.choice_var.set(SKIP)
+        elif item.status == PENDING and suggestions and not low:
+            self.choice_var.set(suggestions[0][0])
         else:
-            self.choice_var.set(suggestions[0][0] if suggestions else "")
-        if self.choice_var.get() not in {s[0] for s in suggestions} | {SKIP, ""}:
-            self.other_var.set(self.choice_var.get())
+            self.choice_var.set("")
+        choice = self.choice_var.get()
+        if choice and choice not in self._candidate_names:
+            self.other_var.set(choice)
+        self._refresh_choice_styles(item)
 
         existing = {c.name for c in self.categories}
-        row = None
-        for i, (name, prob) in enumerate(item.tags):
-            if i % 3 == 0:
-                row = ttk.Frame(self.tags_box)
-                row.pack(fill="x", padx=4, pady=1)
-            label = f"{name} {prob:.0%}" + ("（已有）" if name in existing else "")
-            ttk.Button(row, text=label, command=lambda n=name: self.add_category_from_tag(n)).pack(side="left", padx=2)
-        if not item.tags:
-            ttk.Label(self.tags_box, text="（辨識後顯示）", style="Hint.TLabel").pack(anchor="w", padx=6)
+        if item.tags:
+            ttk.Label(p.tags_frame, text="AI 還看到（點一下可以選用或新增）：", style="CardHint.TLabel").grid(
+                row=0, column=0, columnspan=3, sticky="w")
+            for k, (name, _prob) in enumerate(item.tags[:6]):
+                label = name + ("" if name in existing else "＋")
+                ttk.Button(p.tags_frame, text=label, style="Link.TButton",
+                           command=lambda n=name: self.add_category_from_tag(n)).grid(
+                    row=1 + k // 3, column=k % 3, sticky="w")
+        if item.analyzed and suggestions:
+            scores = "、".join(f"{n} {s:.0%}" for n, s in suggestions)
+            p.other_hint_var.set(f"模型分數：{scores}（僅供參考，不代表正確率）")
 
-    def _selected_indices(self) -> list[int]:
-        indices = (self._index_of(iid) for iid in self.tree.selection())
-        return [i for i in indices if i is not None]
+    def _refresh_choice_styles(self, item: Item | None = None) -> None:
+        p = self.page2
+        choice = self.choice_var.get()
+        item = item if item is not None else (self.items[self.current] if self.current is not None else None)
+        for i, button in enumerate(p.candidate_buttons):
+            if i < len(self._candidate_names):
+                name = self._candidate_names[i]
+                on = name == choice
+                button.configure(text=f"{'✓ ' if on else ''}{i + 1}　{name}" + ("　（AI 建議）" if i == 0 else ""),
+                                 style="ChoiceOn.TButton" if on else "Choice.TButton")
+        can_confirm = bool(choice) and choice != SKIP and item is not None and item.analyzed and \
+            item.status != ERROR and not self.organizing
+        p.confirm_btn.state(["!disabled"] if can_confirm else ["disabled"])
+        p.confirm_btn.configure(text="確認並看下一個" if (choice or item is None) else "請先選一個分類")
+        p.skip_btn.state(["!disabled"] if item is not None and not self.organizing else ["disabled"])
 
-    def set_selected(self, choice: str, indices: list[int] | None = None) -> None:
-        indices = indices if indices is not None else self._selected_indices()
-        for i in indices:
-            item = self.items[i]
+    def pick_suggestion(self, rank: int) -> None:
+        """選擇第 rank 個候選分類（只是選取，按「確認並看下一個」才會確認）。"""
+        if self.current is None or rank >= len(self._candidate_names):
+            return
+        self.choice_var.set(self._candidate_names[rank])
+        self.other_var.set("")
+        self._refresh_choice_styles()
+        self.tree.focus_set()  # 焦點回到清單，接著按 Enter 就是「確認並看下一個」
+
+    def on_other_selected(self, _event=None) -> None:
+        text = self.other_var.get().strip()
+        names = [c.name for c in self.categories]
+        match = next((n for n in names if n == text), None) or next((n for n in names if n.casefold() == text.casefold()), None)
+        if match is None:
+            hits = [n for n in names if text.casefold() in n.casefold()] if text else []
+            match = hits[0] if len(hits) == 1 else None
+        p = self.page2
+        if match is None:
+            p.other_hint_var.set("找不到這個分類。可以按「新增分類…」建立它。" if text else "")
+            return
+        self.other_var.set(match)
+        self.choice_var.set(match)
+        p.other_hint_var.set("")
+        self._refresh_choice_styles()
+        self.tree.focus_set()
+
+    def filter_other_list(self, event=None) -> None:
+        if event is not None and event.keysym in ("Return", "Up", "Down", "Escape", "Tab", "Left", "Right"):
+            return
+        needle = self.other_var.get().strip().casefold()
+        names = [c.name for c in self.categories]
+        hits = [n for n in names if needle in n.casefold()] if needle else names
+        self.page2.other_box["values"] = hits or names
+        self.page2.other_hint_var.set(f"符合 {len(hits)} 個分類，按 Enter 或從清單選一個" if needle and hits
+                                      else ("找不到符合的分類，可以按「新增分類…」" if needle else ""))
+
+    # ------------------------------------------------------------------ 確認、略過、撤回
+    def _decide(self, pairs: list[tuple[int, str]]) -> None:
+        """套用一組決定（索引, 分類或 SKIP），並記下來讓「撤回上一次確認」可以還原。"""
+        entry = []
+        for index, choice in pairs:
+            item = self.items[index]
+            entry.append((item.uid, item.status, item.chosen))
             if choice == SKIP:
                 item.status, item.chosen = SKIPPED, None
-            elif choice:
+            else:
                 item.status, item.chosen = CONFIRMED, choice
-            self.update_row(i)
-        self.update_counts(force=True)
+            self.update_row(index)
+        if entry:
+            self.history.append(entry)
+            del self.history[:-200]
 
-    def _goto_next(self, after_iid: str) -> None:
-        iids = self.tree.get_children()
-        if not iids:
+    def confirm_current(self) -> None:
+        if self.current is None or self.organizing:
             return
-        pos = iids.index(after_iid) + 1 if after_iid in iids else 0
-        # 優先跳到下一個還沒確認的項目
-        for iid in list(iids[pos:]) + list(iids[:pos]):
-            index = self._index_of(iid)
-            if index is not None and self.items[index].status == PENDING:
-                self._select(iid)
-                return
-        if pos < len(iids):
-            self._select(iids[pos])
+        item = self.items[self.current]
+        choice = self.choice_var.get()
+        if not choice or choice == SKIP or not item.analyzed or item.status == ERROR:
+            return
+        index = self.current
+        self._decide([(index, choice)])
+        self._advance(index)
 
-    def _select(self, iid: str) -> None:
+    def skip_current(self) -> None:
+        if self.current is None or self.organizing:
+            return
+        index = self.current
+        self._decide([(index, SKIP)])
+        self._advance(index)
+
+    def _advance(self, index: int) -> None:
+        """決定之後跳到下一個「待確認且已辨識」的檔案；沒有了就顯示「分類確認完成」。"""
+        iid = self._iid(index)
+        before = list(self.tree.get_children())
+        pos = before.index(iid) if iid in before else -1
+        if pos >= 0 and not self._visible(self.items[index]):
+            self.tree.delete(iid)  # 篩選條件下確認後不再符合的列直接拿掉
+        after = [x for x in before[pos + 1:] if self.tree.exists(x)]
+        earlier = [x for x in before[:max(pos, 0)] if self.tree.exists(x)]
+        self.update_counts(force=True)
+        for candidate in after + earlier:
+            i = self._index_of(candidate)
+            if i is not None and self.items[i].status == PENDING and self.items[i].analyzed:
+                self._select(candidate)
+                return
+        self.tree.selection_remove(self.tree.selection())
+        self.on_select()
+
+    def _select(self, iid: str, take_focus: bool = True) -> None:
         self.tree.selection_set(iid)
         self.tree.focus(iid)
         self.tree.see(iid)
+        self.on_select()
+        if take_focus:
+            self.tree.focus_set()  # 鍵盤操作（Enter、1／2／3、S）才會作用在清單上
+        self.page2.show_detail_tab()  # 視窗很窄、清單與預覽是分頁時，自動切到「目前檔案」
 
-    def confirm_current(self) -> None:
-        choice = self.choice_var.get()
-        indices = self._selected_indices()
-        if not indices or not choice:
+    def _auto_select(self) -> None:
+        if self.current is not None or self.step != 2:
             return
-        iids_before = self.tree.get_children()
-        selected_iids = [self._iid(i) for i in indices]
-        last = max(selected_iids, key=lambda iid: iids_before.index(iid) if iid in iids_before else -1)
-        after_last = iids_before[iids_before.index(last) + 1:] if last in iids_before else ()
-        self.set_selected(choice, indices)
-        flt = self.filter_var.get()
-        if flt != "全部":  # 篩選條件下，確認後不再符合的列直接拿掉（不必重建整個清單）
-            removed = [iid for i, iid in zip(indices, selected_iids, strict=True)
-                       if not self._matches(self.items[i], flt)]
-            if removed:
-                self.tree.delete(*removed)
-            if last not in removed:
-                self._goto_next(last)
+        for iid in self.tree.get_children():
+            i = self._index_of(iid)
+            if i is not None and self.items[i].status == PENDING and self.items[i].analyzed:
+                self._select(iid, take_focus=False)  # 辨識時自動選取，不搶走使用者正在輸入的欄位
                 return
-            nxt = next((iid for iid in after_last if self.tree.exists(iid)), None)
-            remaining = self.tree.get_children()
-            if nxt is None and remaining:
-                nxt = remaining[-1]
-            if nxt is not None:
-                self._select(nxt)
-            else:
-                self.show_preview(None)
-            return
-        self._goto_next(last)
 
-    def pick_suggestion(self, rank: int) -> None:
-        if self.current is None:
+    def undo_last_confirm(self) -> None:
+        if not self.history or self.organizing:
             return
-        suggestions = self.items[self.current].suggestions(self.categories, 3)
-        if rank < len(suggestions):
-            self.choice_var.set(suggestions[rank][0])
-            self.confirm_current()
+        entry = self.history.pop()
+        restored = []
+        for uid, status, chosen in entry:
+            index = self._pos.get(str(uid))
+            if index is None:
+                continue
+            item = self.items[index]
+            item.status, item.chosen = status, chosen
+            restored.append(index)
+        self.refresh_tree()
+        if restored:
+            iid = self._iid(restored[0])
+            if self.tree.exists(iid):
+                self._select(iid)
+        self.status_var.set(f"已撤回上一次的確認（{len(restored)} 個檔案）。")
 
     def apply_batch(self) -> None:
+        indices = self._selected_indices()
         name = self.batch_var.get()
-        if not name:
-            messagebox.showinfo(APP_NAME, "請先在左邊的下拉選單選擇要套用的分類。")
+        if not indices:
+            messagebox.showinfo(APP_NAME, "請先在左邊清單選取要處理的檔案（按住 Ctrl 或 Shift 可多選）。")
             return
-        self.set_selected(name)
-        self.refresh_tree()
+        if not name:
+            messagebox.showinfo(APP_NAME, "請先在下拉選單選擇要套用的分類。")
+            return
+        self._batch([(i, name) for i in indices if self.items[i].analyzed and self.items[i].status != ERROR])
 
     def accept_selected(self) -> None:
+        pairs = []
         for i in self._selected_indices():
             name, _ = self.items[i].best(self.categories)
             if name and self.items[i].status != ERROR:
-                self.set_selected(name, [i])
-        self.refresh_tree()
+                pairs.append((i, name))
+        self._batch(pairs)
 
-    def accept_confident_all(self) -> None:
-        threshold = self.settings["confidence_threshold"]
-        count = accept_confident(self.items, self.categories, threshold, self.similarity_floor())
+    def skip_selected(self) -> None:
+        self._batch([(i, SKIP) for i in self._selected_indices()])
+
+    def _batch(self, pairs: list[tuple[int, str]]) -> None:
+        if not pairs or self.organizing:
+            return
+        self._decide(pairs)
+        self.status_var.set(f"已處理 {len(pairs)} 個檔案（可用「撤回上一次確認」還原）。")
         self.refresh_tree()
-        messagebox.showinfo(APP_NAME, f"已直接採用 {count} 個 AI 有把握（信心度 ≥ {threshold:.0%}）的判斷。\n"
-                                      "剩下的請在清單中逐一確認（可用「顯示：低信心」篩選）。")
 
     # ------------------------------------------------------------------ 分類管理
     def set_categories(self, categories: list[Category], renames: dict[str, str] | None = None) -> None:
@@ -692,8 +1071,9 @@ class App:
                 if item.status == CONFIRMED and item.chosen not in names:
                     item.status, item.chosen = PENDING, None
                     reverted += 1
+        self.history.clear()
         self.refresh_tree()
-        self.show_preview(self.current)
+        self.show_detail(self.current, len(self.tree.selection()) or 1)
         if reverted:
             messagebox.showinfo(APP_NAME, f"有 {reverted} 個已確認的項目，因為分類被刪除而改回「待確認」。")
 
@@ -704,7 +1084,7 @@ class App:
             reverted = rescore(self.items, self.classifier, self.categories)
         finally:
             self.root.configure(cursor="")
-        self.status_var.set("分類已更新，AI 判斷已重新計算。")
+        self.status_var.set("分類已更新，AI 建議已重新計算。")
         return reverted
 
     def add_category(self, name: str, prompts: list[str]) -> bool:
@@ -725,6 +1105,7 @@ class App:
         if name and self.add_category(name, []):
             self.choice_var.set(name.strip())
             self.other_var.set(name.strip())
+            self._refresh_choice_styles()
 
     def add_category_from_tag(self, name: str) -> None:
         if name not in {c.name for c in self.categories}:
@@ -735,6 +1116,7 @@ class App:
                 return
         self.choice_var.set(name)
         self.other_var.set(name)
+        self._refresh_choice_styles()
 
     def open_category_dialog(self) -> None:
         CategoryDialog(self.root, self.categories, self.set_categories)
@@ -744,53 +1126,63 @@ class App:
 
     def on_settings_saved(self, settings: dict) -> None:
         model_changed = settings["model"] != self.settings["model"]
-        self.settings = settings
+        self.settings.update(settings)
         save_settings(self.settings)
-        if model_changed and self.items:
-            messagebox.showinfo(APP_NAME, "已更換 AI 模型，請重新按「開始辨識」讓新模型重新判斷。")
+        if model_changed:
+            self._start_model_status()
+            if self.items:
+                messagebox.showinfo(APP_NAME, "已更換 AI 模型，請重新按「開始辨識」讓新模型重新判斷。")
         self.refresh_tree()
 
+    def open_help(self) -> None:
+        if not HELP_FILE.exists():
+            messagebox.showinfo(APP_NAME, f"找不到說明文件：{HELP_FILE.name}")
+            return
+        try:
+            open_in_file_manager(HELP_FILE)
+        except OSError as exc:
+            show_problem(self.root, "無法開啟說明文件。", f"請直接用記事本開啟：{HELP_FILE}", str(exc))
+
+    # ------------------------------------------------------------------ 放大檢視
+    def open_viewer(self) -> None:
+        if self.current is None or self.current >= len(self.items):
+            return
+        item = self.items[self.current]
+        self._viewer_seq += 1
+        vid = self._viewer_seq
+        note = "影片只顯示代表畫面" if item.kind == "video" else ""
+        viewer = ImageViewer(self.root, item.path.name, note)
+        self._viewers[vid] = viewer
+        viewer.bind("<Destroy>", lambda e, vid=vid: self._viewers.pop(vid, None) if e.widget is viewer else None)
+
+        def work() -> None:
+            try:
+                img, error = load_preview(item.path, item.kind, None, size=2400), ""
+            except Exception as exc:  # noqa: BLE001
+                img, error = None, f"無法讀取這個檔案：{exc}"
+            self.queue.put(("viewer", vid, img, error))
+
+        threading.Thread(target=work, daemon=True).start()
+
     # ------------------------------------------------------------------ 辨識（背景執行緒）
-    def analysis_running(self) -> bool:
-        return self._analysis_active
-
-    def choose_folder(self) -> None:
-        folder = filedialog.askdirectory(initialdir=self.folder_var.get() or None, title="選擇要分類的資料夾")
-        if folder:
-            self.folder_var.set(os.path.normpath(folder))
-
-    def choose_output(self) -> None:
-        folder = filedialog.askdirectory(initialdir=self.output_var.get() or self.folder_var.get() or None,
-                                         title="選擇輸出資料夾")
-        if folder:
-            self.output_var.set(os.path.normpath(folder))
-
-    def source_dir(self) -> Path:
-        return Path(self.folder_var.get().strip()).absolute()
-
-    def output_dir(self) -> Path:
-        """輸出資料夾一律換成絕對路徑；只打資料夾名稱時放在來源資料夾裡（不會跑到程式資料夾）。"""
-        custom = self.output_var.get().strip()
-        if not custom:
-            return self.source_dir() / DEFAULT_OUTPUT_NAME
-        path = Path(custom)
-        return path if path.is_absolute() else (self.source_dir() / path).absolute()
-
-    def _set_busy(self, busy: bool) -> None:
-        """整理或復原進行中時，停用會動到檔案或清單的按鈕。"""
-        state = ["disabled"] if busy else ["!disabled"]
-        for button in (self.organize_btn, self.run_btn, self.undo_btn, self.remove_btn, self.category_btn):
-            button.state(state)
-
     def toggle_analysis(self) -> None:
+        if self.analysis_running():
+            self.stop_analysis()
+        else:
+            self.start_analysis()
+
+    def stop_analysis(self) -> None:
         if self.analysis_running():
             self.stop_event.set()
             self.status_var.set("正在停止⋯")
+            self.page2.stop_btn.state(["disabled"])
+
+    def start_analysis(self) -> None:
+        if self.analysis_running() or self.organizing:
             return
-        if self.organizing:
-            return
+        text = self.folder_var.get().strip()
         folder = self.source_dir()
-        if not folder.is_dir():
+        if not text or not folder.is_dir():
             messagebox.showwarning(APP_NAME, "請先選擇一個存在的資料夾。")
             return
         if not self.categories:
@@ -808,6 +1200,11 @@ class App:
         self.settings["last_folder"] = str(folder)
         self.settings["include_subfolders"] = self.subfolders_var.get()
         save_settings(self.settings)
+        self.session_source = folder
+        self.run_info = None
+        self.plan = None
+        self.include_pending_var.set(False)
+        self._sync_output_default()
         self._set_items([])
         self.refresh_tree()
         self.stop_event = threading.Event()  # 每一輪用新的停止旗標，舊的背景工作不會影響新的一輪
@@ -816,10 +1213,16 @@ class App:
         self._run_id += 1
         self._analysis_active = True
         self.needs_rescore = False
-        self.run_btn.configure(text="■ 停止")
-        self.organize_btn.state(["disabled"])
-        self.undo_btn.state(["disabled"])
-        self.remove_btn.state(["disabled"])
+        self._auto_switch = False
+        self._progress = (0, 0)
+        self.page1.show_notice("")
+        self.page2.analysis_var.set("準備中⋯")
+        self.page2.stop_btn.state(["!disabled"])
+        self.page2.show_toolbar(True)
+        self.status_bar.show_progress(True)
+        self._progress_indeterminate()
+        self._update_page1()
+        self._refresh_nav()
         self.worker = threading.Thread(
             target=self._analysis_worker,
             args=(self._run_id, self.stop_event, folder, self.subfolders_var.get(), self.output_dir(),
@@ -858,26 +1261,19 @@ class App:
             if stop_event.is_set():
                 post(("done", "已停止。已辨識的項目可以先確認與整理。"))
             else:
-                post(("done", f"辨識完成！共 {len(paths)} 個檔案，使用：{device}。請確認分類後按「開始整理」。"))
+                post(("done", f"辨識完成！共 {len(paths)} 個檔案，使用：{device}。請確認分類。"))
         except ImportError as exc:
             post(("error", f"缺少必要的套件（{exc}），請重新執行 install.bat。", traceback.format_exc()))
         except Exception as exc:  # noqa: BLE001 - 背景錯誤要回報到介面
             post(("error", f"{type(exc).__name__}: {exc}", traceback.format_exc()))
 
-    def _organize_worker(self, run_id: int, ops, source_dir: Path, output_dir: Path) -> None:
-        try:
-            result = execute(ops, LOG_DIR, source_dir=source_dir, output_dir=output_dir,
-                             on_progress=lambda i, n: self.queue.put(("progress", run_id, i, n)))
-            self.queue.put(("organized", run_id, ops, result))
-        except Exception as exc:  # noqa: BLE001
-            self.queue.put(("error", run_id, f"{type(exc).__name__}: {exc}", traceback.format_exc()))
+    def _progress_indeterminate(self) -> None:
+        self.progress.configure(mode="indeterminate")
+        self.progress.start(14)
 
-    def _log_worker(self, run_id: int, log: Path, func, kind: str) -> None:
-        """在背景執行「復原」或「移除原檔」。"""
-        try:
-            self.queue.put((kind, run_id, func(log)))
-        except Exception as exc:  # noqa: BLE001
-            self.queue.put(("error", run_id, f"{type(exc).__name__}: {exc}", traceback.format_exc()))
+    def _progress_value(self, done: int, total: int) -> None:
+        self.progress.stop()
+        self.progress.configure(mode="determinate", maximum=max(1, total), value=done)
 
     def _collect_garbage(self) -> None:
         """只在主執行緒回收循環參照。
@@ -895,51 +1291,84 @@ class App:
             self.root.after(100, self._poll_queue)
 
     def _drain_queue(self) -> None:
-        changed = False
+        changed = refresh_detail = False
         for _ in range(500):
             try:
                 msg = self.queue.get_nowait()
             except queue.Empty:
                 break
-            if msg[0] != "preview" and msg[1] != self._run_id:
+            kind = msg[0]
+            if kind not in NO_RUN_ID and msg[1] != self._run_id:
                 continue  # 上一輪留下來的訊息
-            args = msg[1:] if msg[0] == "preview" else msg[2:]
+            args = msg[1:] if kind in NO_RUN_ID else msg[2:]
             try:
-                changed = self._handle_message(msg[0], *args) or changed
+                result = self._handle_message(kind, *args)
             except Exception:  # noqa: BLE001 - 一則訊息出錯不影響其他訊息
                 self.log_error(traceback.format_exc())
+                continue
+            if result == "item":
+                changed = True
+            elif result == "current":
+                changed = refresh_detail = True
         if changed:
             self.update_counts()
-            children = self.tree.get_children()
-            if self.current is None and children:
-                self._select(children[0])
-            elif self.current is not None and self.items[self.current].analyzed and not self.radios[0].winfo_ismapped():
-                self.show_preview(self.current, len(self.tree.selection()))
+            if self.step == 2:
+                if refresh_detail and self.current is not None:
+                    self.show_detail(self.current, len(self.tree.selection()) or 1)
+                self._auto_select()
 
-    def _handle_message(self, kind: str, *args) -> bool:
+    def _handle_message(self, kind: str, *args):
         if kind == "status":
             self.status_var.set(args[0])
+            if "載入 AI 模型" in args[0]:
+                self._progress_indeterminate()
         elif kind == "scanned":
             self._set_items([Item(p, media_kind(p) or "image") for p in args[0]])
-            self.progress.configure(maximum=max(1, len(self.items)), value=0)
             self.refresh_tree()
+            self._refresh_nav()
         elif kind == "item":
             index, result = args
             item = self.items[index]
             item.merge_analysis(result)  # 保留使用者在辨識完成前就做的確認／略過
             self.preview_cache.pop(item.uid, None)
             self.update_row(index)
-            return True
+            if not self._auto_switch:
+                self._auto_switch = True
+                if self.step == 1:
+                    self.show_step(2)
+            return "current" if index == self.current else "item"
         elif kind == "progress":
-            self.progress.configure(maximum=max(1, args[1]), value=args[0])
+            done, total = args
+            self._progress = (done, total)
+            self._progress_value(done, total)
+            if self.organizing:
+                self.status_var.set(f"正在複製檔案⋯（{done}／{total}）")
+            elif self._analysis_active:
+                self.page2.analysis_var.set(f"辨識中：{done}／{total}")
         elif kind == "done":
             self._finish_worker(args[0])
         elif kind == "organized":
             self._finish_organize(*args)
-        elif kind == "undone":
-            self._finish_undo(args[0])
-        elif kind == "removed":
-            self._finish_remove(args[0])
+        elif kind in ("undone", "removed"):
+            self._finish_log_task(kind, args[0])
+        elif kind == "folder":
+            token, stats, error = args
+            if token == self._folder_token:
+                self.stats, self.stats_error = stats, error
+                self._update_page1()
+        elif kind == "model":
+            choice, status = args
+            if choice == self.settings["model"]:
+                self.model_note = status
+                self._update_page1()
+        elif kind == "viewer":
+            vid, img, error = args
+            viewer = self._viewers.get(vid)
+            if viewer is not None:
+                try:
+                    viewer.set_image(img, error)
+                except tk.TclError:
+                    pass
         elif kind == "preview":
             uid, img = args
             self._preview_loading.discard(uid)
@@ -949,52 +1378,67 @@ class App:
                 self._render_preview_image()
         elif kind == "error":
             message, details = args
+            was_organizing = self.organizing
             self.organizing = False
-            self._set_busy(False)
-            self._finish_worker("發生錯誤：" + message)
+            self.status_bar.show_progress(False)
+            if self._analysis_active:
+                self._finish_worker("發生錯誤：" + message)
+            if was_organizing:
+                self._set_busy(False)
             self.log_error(details)
-            self.root.after(0, lambda: self._show_error(f"發生錯誤：\n{message}\n\n詳細內容已記錄在 logs/error.log"))
-        return False
+            self.root.after(0, lambda: self._show_error(message, details))
+        return None
 
     def _finish_worker(self, message: str) -> None:
         self._analysis_active = False
         self.status_var.set(message)
-        self.run_btn.configure(text="▶ 開始辨識")
-        if not self.organizing:
-            self._set_busy(False)
+        self.status_bar.show_progress(self.organizing)
+        self.page2.analysis_var.set(message)
+        self.page2.show_toolbar(False)
+        if not self.items:
+            self.page1.show_notice(message)
         reverted = 0
         if self.needs_rescore and self.classifier is not None:
             self.needs_rescore = False
             reverted = self._rescore()
         self.refresh_tree()
+        self._auto_select()
         if self.current is not None:
-            self.show_preview(self.current, len(self.tree.selection()))
+            self.show_detail(self.current, len(self.tree.selection()) or 1)
+        else:
+            self.show_detail(None)
+        self._update_page1()
+        self._refresh_nav()
         if reverted:
             messagebox.showinfo(APP_NAME, f"有 {reverted} 個已確認的項目，因為分類被刪除而改回「待確認」。")
 
-    # ------------------------------------------------------------------ 整理檔案
-    def organize(self) -> None:
-        if self.analysis_running() or self.organizing:
+    # ------------------------------------------------------------------ 步驟 3：預覽整理結果
+    def schedule_plan(self) -> None:
+        if self.step != 3:
             return
-        floor, threshold = self.similarity_floor(), self.settings["confidence_threshold"]
-        pending = [it for it in self.items if it.status == PENDING and it.analyzed]
-        confident = [it for it in pending if not it.is_low(self.categories, threshold, floor)]
-        include_pending = False
-        if pending:
-            low_note = f"\n（其中 {len(pending) - len(confident)} 個 AI 沒把握的黃色項目不會自動整理）" \
-                if len(confident) < len(pending) else ""
-            answer = messagebox.askyesnocancel(
-                APP_NAME,
-                f"還有 {len(pending)} 個項目尚未確認。\n\n"
-                f"「是」：AI 有把握的 {len(confident)} 個依 AI 判斷一起整理{low_note}\n"
-                "「否」：只整理已確認的項目\n"
-                "「取消」：回去繼續確認",
-            )
-            if answer is None:
-                return
-            include_pending = answer
-        chosen = [it for it in self.items if it.status == CONFIRMED]
-        if include_pending:
+        if self._plan_job:
+            self.root.after_cancel(self._plan_job)
+        self._plan_job = self.root.after(250, self.refresh_plan)
+
+    def _confident_pending(self) -> list[Item]:
+        return [it for it in self.items if it.status == PENDING and it.analyzed and not self._is_low(it)]
+
+    def _rename_settings(self) -> tuple[bool, str, str | None]:
+        """回傳 (是否重新命名, 樣式, 問題說明)。"""
+        mode = self.rename_mode_var.get()
+        if mode == "keep":
+            return False, "{分類}_{序號}", None
+        if mode == "custom":
+            pattern = self.pattern_var.get().strip()
+            return True, pattern, None if pattern else "請輸入自訂的檔名格式，或改選其他命名方式。"
+        return True, RENAME_MODES[mode][1] or "{分類}_{序號}", None
+
+    def _compute_plan(self) -> Plan:
+        output = self.output_dir()
+        source = self._base_dir() or self.source_dir()
+        chosen = [it for it in self.items if it.status == CONFIRMED and it.chosen]
+        confident = self._confident_pending()
+        if self.include_pending_var.get():
             chosen += confident
         entries = []
         for it in chosen:
@@ -1006,187 +1450,454 @@ class App:
             except OSError:  # 檔案已不在：執行時會回報
                 date = datetime.now()
             entries.append((it.path.absolute(), category, date))
+        plan = Plan([], source, output, pending_count=len(confident))
+        rename, pattern, problem = self._rename_settings()
+        if problem:
+            plan.problem = problem
+            return plan
         if not entries:
-            messagebox.showinfo(APP_NAME, "沒有可以整理的項目。請先辨識並確認分類。")
-            return
-
-        output = self.output_dir()
-        pattern = self.pattern_var.get().strip() or RENAME_PATTERN_PRESETS[0]
+            return plan
         try:
-            ops = plan_operations(entries, output, rename=self.rename_var.get(), pattern=pattern)
+            plan.ops = plan_operations(entries, output, rename=rename, pattern=pattern)
         except (OSError, RuntimeError) as exc:
-            messagebox.showerror(APP_NAME, f"無法規劃整理方式：{exc}")
-            return
-        space = free_space_problem(ops)
-        if space:
-            messagebox.showwarning(APP_NAME, space)
-            return
-        counts = Counter(op.category for op in ops)
-        lines = "\n".join(f"　{name}：{n} 個" for name, n in counts.most_common(12))
-        if len(counts) > 12:
-            lines += f"\n　⋯等 {len(counts)} 個分類"
-        example = ops[0]
-        if not messagebox.askokcancel(
-            APP_NAME,
-            f"即將把 {len(ops)} 個檔案複製到：\n{output}\n\n{lines}\n\n"
-            f"範例：{example.src.name} → {example.dst.parent.name}\\{example.dst.name}\n\n"
-            "原檔不會被移動或修改。確認複本沒問題後，可以再按「移除原檔」。確定要開始嗎？",
-        ):
-            return
-
-        self.settings.update(
-            output_dir=self.output_var.get().strip(),
-            rename=self.rename_var.get(), rename_pattern=pattern,
-        )
-        save_settings(self.settings)
-        self.status_var.set("正在複製檔案⋯")
-        self.progress.configure(maximum=len(ops), value=0)
-        self.organizing = True
-        self._set_busy(True)
-        self._run_id += 1
-        threading.Thread(target=self._organize_worker, args=(self._run_id, ops, self.source_dir(), output),
-                         daemon=True).start()
-
-    def _finish_organize(self, ops, result) -> None:
-        self.organizing = False
-        self._set_busy(False)
-        processed = {str(src) for src in result.done_sources}
-        self._set_items([it for it in self.items if str(it.path.absolute()) not in processed])
-        self.refresh_tree()
-        output = ops[0].dst.parent.parent if ops else self.output_dir()
-        message = (f"完成！已把 {result.done} 個檔案複製到分類資料夾，原檔都還在原位。\n\n"
-                   "確認複本沒問題後，可以按「移除原檔」把原檔移到資源回收筒。")
-        if result.aborted:
-            message = f"整理中途停止：紀錄檔無法寫入。已複製 {result.done} 個檔案，原檔都還在原位。"
-        if result.warnings:
-            message += "\n\n注意：\n" + "\n".join(result.warnings[:8])
-        if result.errors:
-            details = "\n".join(f"{p.name}：{err}" for p, err in result.errors[:8])
-            message += f"\n\n有 {len(result.errors)} 個檔案失敗：\n{details}"
-        self.status_var.set(f"整理完成：{result.done} 個檔案 → {output}")
-        if messagebox.askyesno(APP_NAME, message + "\n\n要開啟輸出資料夾嗎？"):
+            plan.problem = f"無法規劃整理方式：{exc}"
+            return plan
+        for op in plan.ops:
             try:
-                open_in_file_manager(output)
+                plan.total_bytes += op.src.stat().st_size
             except OSError:
                 pass
+        plan.problem = free_space_problem(plan.ops)
+        return plan
 
-    def _pick_log(self, action_text: str) -> tuple[Path, list[dict], str] | None:
-        if self.organizing or self.analysis_running():
+    def refresh_plan(self) -> None:
+        self._plan_job = None
+        if self.step != 3:
+            return
+        p = self.page3
+        plan = self._compute_plan()
+        self.plan = plan
+        n = len(plan.ops)
+        c = Counter(item.status for item in self.items)
+        p.pattern_entry.state(["!disabled"] if self.rename_mode_var.get() == "custom" and not self.organizing
+                              else ["disabled"])
+        p.summary_var.set(f"已確認的 {self.confirmed_count()} 個檔案會複製到分類資料夾"
+                          + (f"，另外含 {plan.pending_count} 個建議較明確的檔案。" if self.include_pending_var.get()
+                             and plan.pending_count else "。"))
+        pending_left = c[PENDING] - (plan.pending_count if self.include_pending_var.get() else 0)
+        left = [text for text in (f"尚未確認 {pending_left} 個" if pending_left > 0 else "",
+                                  f"已略過 {c[SKIPPED]} 個" if c[SKIPPED] else "",
+                                  f"讀取失敗 {c[ERROR]} 個" if c[ERROR] else "") if text]
+        p.excluded_var.set(("不會整理：" + "、".join(left) + "。") if left else "")
+        if plan.pending_count:
+            p.include_check.configure(text=f"同時整理 {plan.pending_count} 個「建議較明確」但還沒確認的檔案（依 AI 建議的分類）")
+            if not p.include_check.winfo_ismapped():
+                p.include_check.pack(anchor="w", pady=(self.px(6), 0))
+        else:
+            p.include_check.pack_forget()
+            self.include_pending_var.set(False)
+
+        categories = Counter(op.category for op in plan.ops)
+        shown = "、".join(f"{name} {count} 個" for name, count in categories.most_common(10))
+        if len(categories) > 10:
+            shown += f"…等 {len(categories)} 個分類"
+        p.counts_var.set(f"共 {n} 個檔案，分成 {len(categories)} 個分類資料夾：{shown}" if n else "目前沒有要整理的檔案。")
+        p.tree.delete(*p.tree.get_children())
+        for op in plan.ops[:MAX_PLAN_ROWS]:
+            p.tree.insert("", "end", values=(op.src.name, f"{op.dst.parent.name}\\{op.dst.name}"))
+        p.tree_note_var.set(f"只顯示前 {MAX_PLAN_ROWS} 個，共 {n} 個。" if n > MAX_PLAN_ROWS else "")
+
+        free = self._free_space(plan)
+        p.space_var.set(f"實際輸出位置：{plan.output}\n需要空間：約 {_fmt_size(plan.total_bytes)}"
+                        + (f"　輸出位置剩餘：{_fmt_size(free)}" if free is not None else ""))
+        p.show_problem(plan.problem or "")
+        ok = bool(n) and not plan.problem and not self.organizing
+        p.copy_btn.configure(text=f"開始複製 {n:,} 個檔案" if n else "開始複製")
+        if not self.organizing:
+            p.copy_btn.state(["!disabled"] if ok else ["disabled"])
+        p.hint_var.set(f"會複製到：{plan.output}　原檔不會被更動。" if ok else
+                       ("請先處理上面紅色的問題。" if plan.problem else "沒有要整理的檔案。"))
+
+    @staticmethod
+    def _free_space(plan: Plan) -> int | None:
+        target = plan.output
+        while not target.exists() and target.parent != target:
+            target = target.parent
+        try:
+            return shutil.disk_usage(target).free
+        except OSError:
             return None
-        log = latest_log(LOG_DIR)
-        if log is None:
-            messagebox.showinfo(APP_NAME, f"目前沒有可以{action_text}的整理紀錄。")
+
+    # ------------------------------------------------------------------ 複製
+    def toggle_copy(self) -> None:
+        if self.organizing:
+            self.request_stop_copy()
+        else:
+            self.start_copy()
+
+    def request_stop_copy(self) -> None:
+        self.copy_stop.set()
+        self.status_var.set("正在停止：會先完成目前這個檔案，已複製好的都會保留。")
+        self.page3.copy_btn.state(["disabled"])
+        self.page4.retry_btn.state(["disabled"])
+
+    def start_copy(self) -> None:
+        if self.analysis_running() or self.organizing:
+            return
+        self.refresh_plan()
+        plan = self.plan
+        if plan is None or not plan.ops or plan.problem:
+            return
+        self.settings.update(output_dir=self._output_setting(), rename_mode=self.rename_mode_var.get(),
+                             rename_pattern=self.pattern_var.get().strip() or self.settings["rename_pattern"])
+        try:
+            save_settings(self.settings)
+        except OSError:
+            pass
+        self.run_info = RunInfo(list(plan.ops), plan.source, plan.output)
+        self._begin_copy(self.run_info.ops, None)
+
+    def _output_setting(self) -> str:
+        text = self.output_var.get().strip()
+        default = self._default_output()
+        return "" if default is not None and text == str(default) else text
+
+    def toggle_retry(self) -> None:
+        if self.organizing:
+            self.request_stop_copy()
+        else:
+            self.retry_remaining()
+
+    def retry_remaining(self) -> None:
+        info = self.run_info
+        if info is None or self.organizing or self.analysis_running():
+            return
+        ops = info.remaining_ops()
+        if ops:
+            append = info.log_path if info.log_path is not None and info.log_path.exists() else None
+            self._begin_copy(ops, append)
+
+    def _begin_copy(self, ops: list[PlannedOp], append_to: Path | None) -> None:
+        info = self.run_info
+        assert info is not None
+        self.copy_stop = threading.Event()
+        self.organizing = True
+        self._run_id += 1
+        self.status_var.set("正在複製檔案⋯")
+        self.status_bar.show_progress(True)
+        self._progress_value(0, len(ops))
+        self._set_busy(True)
+        for button, text in ((self.page3.copy_btn, "完成目前檔案後停止"), (self.page4.retry_btn, "完成目前檔案後停止")):
+            button.configure(text=text)
+            button.state(["!disabled"])
+        threading.Thread(target=self._organize_worker, daemon=True, args=(
+            self._run_id, ops, info.source, info.output, self.copy_stop, append_to, self.log_dir())).start()
+
+    def _organize_worker(self, run_id: int, ops, source_dir: Path, output_dir: Path, stop_event, append_to,
+                         log_dir: Path) -> None:
+        try:
+            result = execute(ops, log_dir, source_dir=source_dir, output_dir=output_dir, stop_event=stop_event,
+                             append_to=append_to,
+                             on_progress=lambda i, n: self.queue.put(("progress", run_id, i, n)))
+            self.queue.put(("organized", run_id, ops, result))
+        except Exception as exc:  # noqa: BLE001
+            self.queue.put(("error", run_id, f"{type(exc).__name__}: {exc}", traceback.format_exc()))
+
+    def _finish_organize(self, ops, result) -> None:
+        info = self.run_info
+        assert info is not None
+        done = {str(src) for src in result.done_sources}
+        info.done += result.done
+        info.done_sources |= done
+        for src, message in result.errors:
+            info.failures[str(src)] = (src, message)
+        for key in done:
+            info.failures.pop(key, None)
+        info.warnings += result.warnings
+        if result.log_path is not None:
+            info.log_path = result.log_path
+        info.stopped, info.aborted = result.stopped, result.aborted
+        self.organizing = False
+        self.status_bar.show_progress(False)
+        self._set_items([it for it in self.items if str(it.path.absolute()) not in done])
+        self.refresh_tree()
+        self._set_busy(False)
+        self.status_var.set(f"複製完成：{info.done} 個檔案 → {info.output}")
+        self.show_step(4)
+
+    # ------------------------------------------------------------------ 步驟 4：完成
+    def render_done(self) -> None:
+        info = self.run_info
+        p = self.page4
+        if info is None:
+            return
+        total = len(info.ops)
+        failed = len(info.failures)
+        remaining = len(info.remaining_ops())
+        unattempted = max(0, remaining - failed)
+        if info.aborted:
+            p.set_banner("danger", "整理中途停止",
+                         f"紀錄檔無法寫入，為了安全已停止。已複製 {info.done} 個檔案；原檔都還在原位。")
+        elif not failed and not unattempted:
+            p.set_banner("ok", f"完成：已複製 {info.done} 個檔案",
+                         f"原檔都還在原位，複本放在分類資料夾裡：{info.output}")
+        elif info.stopped and not failed:
+            p.set_banner("warn", f"已停止：已複製 {info.done}／{total} 個",
+                         f"還有 {unattempted} 個還沒複製。可以按「繼續複製剩下的 {unattempted} 個」，已複製好的不會重做。")
+        else:
+            p.set_banner("warn", f"部分完成：已複製 {info.done}／{total} 個，{failed} 個失敗",
+                         "失敗的檔案都沒有被更動。處理原因之後可以按「重試」，已複製好的不會重做。")
+        lines = [f"複製成功：{info.done} 個"]
+        if failed:
+            lines.append(f"失敗：{failed} 個")
+        if unattempted:
+            lines.append(f"還沒複製：{unattempted} 個")
+        lines.append(f"輸出位置：{info.output}")
+        if info.log_path is not None:
+            lines.append(f"整理紀錄：{info.log_path.name}（之後可用來移除複本或處理原檔）")
+        if info.warnings:
+            lines.append("注意：" + "；".join(info.warnings[:8]))
+        p.result_var.set("\n".join(lines))
+
+        p.fail_tree.delete(*p.fail_tree.get_children())
+        if failed or unattempted:
+            for i, (src, message) in enumerate(info.failures.values()):
+                p.fail_tree.insert("", "end", iid=str(i), values=(src.name, message.split("（詳細：")[0]))
+            p.fail_hint_var.set("選一列可以查看技術細節（回報問題時才需要）。" if failed else "")
+            p.retry_btn.configure(text=f"重試失敗的 {remaining} 個" if failed else f"繼續複製剩下的 {remaining} 個")
+            p.retry_btn.state(["disabled"] if self.organizing else ["!disabled"])
+            p.fail_card.pack(fill="x", pady=(0, self.px(12)), after=p.result)
+        else:
+            p.fail_card.pack_forget()
+        self._details_reset()
+
+        has_log = info.log_path is not None and info.log_path.exists() and info.done > 0
+        p.remove_btn.state(["!disabled"] if has_log and not self.organizing else ["disabled"])
+        p.open_btn.state(["disabled"] if self.organizing else ["!disabled"])
+        if self.items and not self.organizing:
+            p.back_btn.configure(text=f"回到確認分類（還有 {len(self.items)} 個檔案）")
+            p.back_btn.pack(side="left", padx=(self.px(8), 0))
+        else:
+            p.back_btn.pack_forget()
+
+    def _details_reset(self) -> None:
+        p = self.page4
+        p.details_text.pack_forget()
+        p.details_shown = False
+        p.details_btn.configure(text="顯示技術細節")
+
+    def on_fail_select(self, _event=None) -> None:
+        info, p = self.run_info, self.page4
+        selection = p.fail_tree.selection()
+        if info is None or not selection:
+            return
+        entries = list(info.failures.values())
+        index = int(selection[0])
+        if index < len(entries):
+            src, message = entries[index]
+            p.details_text.configure(state="normal")
+            p.details_text.delete("1.0", "end")
+            p.details_text.insert("1.0", f"{src}\n{message}")
+            p.details_text.configure(state="disabled")
+
+    def toggle_fail_details(self) -> None:
+        p = self.page4
+        p.details_shown = not p.details_shown
+        if p.details_shown:
+            p.details_text.pack(fill="x", pady=(self.px(8), 0))
+            p.details_btn.configure(text="隱藏技術細節")
+            if not p.fail_tree.selection() and p.fail_tree.get_children():
+                p.fail_tree.selection_set(p.fail_tree.get_children()[0])
+            self.on_fail_select()
+        else:
+            self._details_reset()
+
+    def open_folder(self, path: str | Path) -> None:
+        try:
+            open_in_file_manager(Path(path))
+        except OSError as exc:
+            show_problem(self._dialog_parent(), "無法開啟這個資料夾。", f"請自己用檔案總管前往：{path}", str(exc))
+
+    def open_output(self) -> None:
+        if self.run_info is not None:
+            self.open_folder(self.run_info.output)
+
+    def start_over(self) -> None:
+        if self.organizing:
+            return
+        if self.items and not messagebox.askyesno(
+            APP_NAME, f"還有 {len(self.items)} 個檔案沒有整理，離開後這些確認結果會清除。\n要整理其他資料夾嗎？"
+        ):
+            return
+        self._set_items([])
+        self.run_info = None
+        self.plan = None
+        self.session_source = None
+        self.refresh_tree()
+        self.page1.show_notice("")
+        self.show_step(1)
+        self.refresh_folder_stats()
+
+    def remove_originals_here(self) -> None:
+        info = self.run_info
+        if info is not None and info.log_path is not None and info.log_path.exists():
+            self.remove_originals_log(info.log_path)
+
+    # ------------------------------------------------------------------ 整理紀錄：移除複本、處理原檔
+    def log_dir(self) -> Path:
+        return LOG_DIR
+
+    def _dialog_parent(self):
+        win = self.records_win
+        if win is not None:
+            try:
+                if win.winfo_exists():
+                    return win
+            except tk.TclError:
+                pass
+        return self.root
+
+    def open_records(self) -> None:
+        if self.organizing:
+            self.status_var.set("正在處理檔案，完成後才能開啟整理紀錄。")
+            return
+        win = self.records_win
+        try:
+            if win is not None and win.winfo_exists():
+                win.lift()
+                win.refresh()
+                return
+        except tk.TclError:
+            pass
+        self.records_win = RecordsDialog(self.root, self.log_dir, self.undo_log, self.remove_originals_log,
+                                         self.open_folder, self.set_aside)
+
+    def set_aside(self, path: Path) -> None:
+        parent = self._dialog_parent()
+        if not messagebox.askyesno(
+            APP_NAME,
+            f"要把整理紀錄「{Path(path).name}」移到旁邊嗎？\n會改名為「無法讀取_…」，內容保留；檔案本身都不會被更動。",
+            parent=parent,
+        ):
+            return
+        try:
+            set_aside_log(Path(path))
+        except OSError as exc:
+            show_problem(parent, "無法移動這份紀錄。", "請確認紀錄檔沒有被其他程式開啟。", str(exc))
+
+    def _review_log(self, path: Path, mode: str):
+        """讀取紀錄、預檢，並讓使用者看過完整清單後確認。回傳確認過的紀錄快照，取消或不能處理回傳 None。"""
+        parent = self._dialog_parent()
+        if self.organizing or self.analysis_running():
+            messagebox.showinfo(APP_NAME, "正在處理其他檔案，請等它完成後再操作。", parent=parent)
             return None
         try:
-            rows = read_log(log)
+            snap = snapshot_log(Path(path))
         except (OSError, ValueError) as exc:
-            if messagebox.askyesno(
-                APP_NAME,
-                f"無法讀取整理紀錄「{log.name}」：\n{exc}\n\n"
-                "要把這份紀錄移到旁邊（改名為「無法讀取_…」，內容保留）嗎？\n"
-                "這樣才能處理更早的整理紀錄。檔案本身都不會被更動。",
-            ):
-                try:
-                    moved = set_aside_log(log)
-                    messagebox.showinfo(APP_NAME, f"已移到：{moved.name}")
-                except OSError as move_exc:
-                    messagebox.showerror(APP_NAME, f"無法移動紀錄檔：{move_exc}")
+            show_problem(parent, "無法讀取這份整理紀錄。",
+                         "可以在「整理紀錄」選這一份，按「移到旁邊」，再處理其他紀錄。檔案本身都不會被更動。", str(exc))
             return None
-        if not rows:
-            if messagebox.askyesno(
-                APP_NAME,
-                f"整理紀錄「{log.name}」裡沒有可以{action_text}的項目（可能是空的或只寫了一半）。\n\n"
-                "要把這份紀錄移到旁邊（內容保留）嗎？這樣才能處理更早的整理紀錄。",
-            ):
-                try:
-                    set_aside_log(log)
-                except OSError as move_exc:
-                    messagebox.showerror(APP_NAME, f"無法移動紀錄檔：{move_exc}")
+        if not snap.rows:
+            messagebox.showinfo(APP_NAME, "這份紀錄裡沒有可以處理的項目（可能是空的或只寫了一半）。"
+                                          "可以在「整理紀錄」按「移到旁邊」。", parent=parent)
             return None
-        when = datetime.fromtimestamp(log.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-        return log, rows, when
-
-    def _confirm_rows(self, rows: list[dict], key: str, question: str, notes: list[str], ok_text: str) -> bool:
-        """列出這次要處理的「每一個」檔案讓使用者確認（不省略）。
-
-        紀錄的來源資料夾跟目前選擇的資料夾不同時，最上面顯示警告：紀錄可能不是這次的，或被修改過。
-        """
-        source, output = log_roots(rows)
-        header = []
+        classified = classify_rows(snap.rows, mode)
+        active = [row for row, note in classified if note is None]
+        kept = len(classified) - len(active)
+        source, output = log_roots(snap.rows)
+        if not active:
+            reasons = "\n".join(sorted({note for _, note in classified if note})[:6])
+            messagebox.showinfo(APP_NAME, f"這份紀錄裡沒有符合條件、可以處理的檔案。\n\n{reasons}", parent=parent)
+            return None
+        when = datetime.fromtimestamp(Path(path).stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        key = "新路徑" if mode == "undo" else "原始路徑"
+        base = output if mode == "undo" else source
+        lines = []
+        for row, note in classified:
+            target = Path(row[key])
+            try:
+                name = str(target.relative_to(base))
+            except ValueError:
+                name = str(target)
+            lines.append(name if note is None else f"{name}　（{note}）")
+        if mode == "undo":
+            head = (f"要移除 {when} 這次整理建立的複本嗎？\n來源資料夾：{source}\n輸出資料夾：{output}\n\n"
+                    f"會處理 {len(active)} 個複本（移到資源回收筒），\n原檔不會被動到。")
+            ok_text, list_title = "移除這次建立的複本", "會移除的複本（含不處理的原因）"
+        else:
+            head = (f"要把 {when} 整理的原檔移到資源回收筒嗎？\n來源資料夾：{source}\n輸出資料夾：{output}\n\n"
+                    f"會處理 {len(active)} 個原檔。\n"
+                    "・只有跟複本內容完全相同的原檔才會移除，而且可以從資源回收筒救回\n"
+                    "・資源回收筒裡的檔名會多一個「(整理前)」標記，還原後改回即可\n"
+                    "・移除之後，這次整理就不能再用「移除這次建立的複本」還原\n"
+                    "・建議先打開輸出資料夾確認結果")
+            ok_text, list_title = "將原檔移到回收筒", "會移到資源回收筒的原檔（含不處理的原因）"
+        if kept:
+            head += f"\n\n另有 {kept} 個不符合條件，會保留不動。"
+        warning = None
         current = self.folder_var.get().strip()
         if current and not _same_folder(source, current):
-            header.append(f"⚠注意：這份紀錄的來源資料夾（{source}）跟目前選擇的資料夾（{current}）不同，"
-                          "請確認清單中的檔案是你要處理的。")
-        header += [question, f"來源資料夾：{source}", f"輸出資料夾：{output}", *notes]
-        base = source if key == "原始路徑" else output
-        lines = []
-        for row in rows:
-            path = Path(row[key])
-            try:
-                lines.append(str(path.relative_to(base)))
-            except ValueError:
-                lines.append(str(path))
-        return confirm_with_list(self.root, APP_NAME, "\n".join(header),
-                                 [f"共 {len(lines)} 個檔案：", *lines], ok_text)
+            warning = (f"這份紀錄的來源資料夾（{source}）跟你目前選擇的資料夾（{current}）不同。"
+                       "請確認清單中的檔案就是你要處理的。")
+        if not confirm_with_list(parent, APP_NAME, head, lines, ok_text, warning=warning, danger=True,
+                                 list_title=list_title):
+            return None
+        return snap
 
-    def _start_log_task(self, log: Path, func, kind: str, status: str) -> None:
+    def undo_log(self, path: Path) -> None:
+        snap = self._review_log(path, "undo")
+        if snap is not None:
+            self._start_log_task(snap, undo, "undone", "正在移除複本⋯")
+
+    def remove_originals_log(self, path: Path) -> None:
+        snap = self._review_log(path, "remove")
+        if snap is not None:
+            self._start_log_task(snap, remove_originals, "removed", "正在把原檔移到資源回收筒⋯")
+
+    def _start_log_task(self, snap, func, kind: str, status: str) -> None:
         self.organizing = True
-        self._set_busy(True)
-        self.status_var.set(status)
         self._run_id += 1
-        threading.Thread(target=self._log_worker, args=(self._run_id, log, func, kind), daemon=True).start()
+        self.status_var.set(status)
+        self.status_bar.show_progress(True)
+        self._progress_indeterminate()
+        self._set_busy(True)
+        threading.Thread(target=self._log_worker, daemon=True, args=(self._run_id, snap, func, kind)).start()
 
-    def undo_last(self) -> None:
-        picked = self._pick_log("復原")
-        if picked is None:
-            return
-        log, rows, when = picked
-        if not self._confirm_rows(
-            rows, "新路徑", f"要復原 {when} 的整理嗎？下列 {len(rows)} 個複本會移到資源回收筒，原檔不受影響。",
-            ["（原檔已經移除，或複本後來被修改過的，會保留複本不動）"], "復原",
-        ):
-            return
-        self._start_log_task(log, undo, "undone", "正在復原⋯")
+    def _log_worker(self, run_id: int, snap, func, kind: str) -> None:
+        """在背景執行「移除複本」或「移除原檔」；只執行使用者確認過的那一份紀錄內容。"""
+        try:
+            self.queue.put((kind, run_id, func(snap.path, expected_digest=snap.digest)))
+        except Exception as exc:  # noqa: BLE001
+            self.queue.put(("error", run_id, str(exc) if isinstance(exc, ValueError) else f"{type(exc).__name__}: {exc}",
+                            traceback.format_exc()))
 
-    def remove_originals_last(self) -> None:
-        picked = self._pick_log("移除原檔")
-        if picked is None:
-            return
-        log, rows, when = picked
-        if not self._confirm_rows(
-            rows, "原始路徑", f"要把 {when} 整理的下列 {len(rows)} 個原檔移到資源回收筒嗎？",
-            ["・只有跟複本內容完全相同的原檔才會移除",
-             "・資源回收筒裡的檔名會多一個「(整理前)」標記，還原後改回即可",
-             "・移除原檔之後，這次整理就不能再用「復原上次整理」",
-             "建議先打開輸出資料夾確認分類結果。"], "移到資源回收筒",
-        ):
-            return
-        self._start_log_task(log, remove_originals, "removed", "正在把原檔移到資源回收筒⋯")
-
-    def _report(self, title: str, result, retry_hint: str) -> str:
+    def _finish_log_task(self, kind: str, result) -> None:
+        self.organizing = False
+        self.status_bar.show_progress(False)
+        self._set_busy(False)
+        if kind == "undone":
+            self.status_var.set(f"已移除 {result.done} 個複本")
+            title = f"已移除 {result.done} 個複本，原檔都在原位。"
+            hint = "再開啟一次「整理紀錄」重試這些檔案"
+        else:
+            self.status_var.set(f"已把 {result.done} 個原檔移到資源回收筒")
+            title = f"已把 {result.done} 個原檔移到資源回收筒（可從資源回收筒救回）。"
+            hint = "這些原檔都沒有被移除；排除原因後可以再試一次"
         message = title
         if result.warnings:
             message += "\n\n注意：\n" + "\n".join(result.warnings[:8])
         if result.errors:
-            message += (f"\n\n{len(result.errors)} 個失敗（{retry_hint}）：\n"
+            message += (f"\n\n{len(result.errors)} 個失敗（{hint}）：\n"
                         + "\n".join(f"{p.name}：{e}" for p, e in result.errors[:8]))
-        return message
-
-    def _finish_undo(self, result) -> None:
-        self.organizing = False
-        self._set_busy(False)
-        self.status_var.set(f"復原完成：{result.done} 個複本已移除")
-        messagebox.showinfo(APP_NAME, self._report(
-            f"已移除 {result.done} 個複本，原檔都在原位。", result, "再按一次「復原上次整理」會重試這些檔案")
-            + "\n\n如需重新分類，請再按一次「開始辨識」。")
-
-    def _finish_remove(self, result) -> None:
-        self.organizing = False
-        self._set_busy(False)
-        self.status_var.set(f"已把 {result.done} 個原檔移到資源回收筒")
-        messagebox.showinfo(APP_NAME, self._report(
-            f"已把 {result.done} 個原檔移到資源回收筒（可從資源回收筒救回）。", result,
-            "這些原檔都沒有被移除；排除原因後再按一次「移除原檔」會重試"))
+        win = self._dialog_parent()
+        messagebox.showinfo(APP_NAME, message, parent=win)
+        if self.records_win is not None:
+            try:
+                if self.records_win.winfo_exists():
+                    self.records_win.refresh()
+            except tk.TclError:
+                pass
+        self._refresh_step_controls()
 
     # ------------------------------------------------------------------ 其他
     def log_error(self, text: str) -> None:
@@ -1197,233 +1908,50 @@ class App:
         except OSError:
             pass
 
-    def _show_error(self, message: str) -> None:
-        """同一時間只顯示一個錯誤對話框，避免錯誤對話框一直疊出來。"""
+    def _show_error(self, message: str, details: str = "") -> None:
+        """同一時間只顯示一個錯誤視窗，避免錯誤視窗一直疊出來。"""
         if self._error_dialog_open:
             self.status_var.set(message.replace("\n", " ")[:200])
             return
         self._error_dialog_open = True
         try:
-            messagebox.showerror(APP_NAME, message)
+            show_problem(self._dialog_parent(), f"發生問題：{message}",
+                         "詳細內容已記錄在 logs\\error.log。如果需要回報問題，請附上這個檔案。", details)
         finally:
             self._error_dialog_open = False
 
     def on_tk_error(self, exc_type, exc, tb) -> None:
-        self.log_error("".join(traceback.format_exception(exc_type, exc, tb)))
-        self._show_error(f"發生錯誤：{exc}\n\n詳細內容已記錄在 logs/error.log")
+        details = "".join(traceback.format_exception(exc_type, exc, tb))
+        self.log_error(details)
+        self._show_error(f"程式發生非預期的錯誤（{exc}）", details)
+
+    def shutdown(self) -> None:
+        """關閉前取消所有排程中的工作（避免視窗銷毀後還有計時器在跑）。"""
+        self.stop_event.set()
+        try:
+            for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
+                self.root.after_cancel(job)
+        except tk.TclError:
+            pass
 
     def on_close(self) -> None:
         if self.organizing:
             messagebox.showinfo(APP_NAME, "正在處理檔案，請等待完成後再關閉程式。")
             return
         self.stop_event.set()
+        self._save_sash()
         self.settings.update(
             last_folder=self.folder_var.get().strip(), include_subfolders=self.subfolders_var.get(),
-            output_dir=self.output_var.get().strip(),
-            rename=self.rename_var.get(), rename_pattern=self.pattern_var.get().strip() or RENAME_PATTERN_PRESETS[0],
+            output_dir=self._output_setting(), rename_mode=self.rename_mode_var.get(),
+            rename_pattern=self.pattern_var.get().strip() or self.settings["rename_pattern"],
+            split_ratio=self._sash_ratio,
         )
         try:
             save_settings(self.settings)
         except OSError:
             pass
+        self.shutdown()
         self.root.destroy()
-
-
-class CategoryDialog(tk.Toplevel):
-    """編輯分類清單：名稱＋給 AI 的描述（每行一個）。"""
-
-    def __init__(self, master, categories: list[Category], on_save):
-        super().__init__(master)
-        self.title("分類設定")
-        self.geometry("720x480")
-        self.transient(master)
-        self.on_save = on_save
-        self.work = [Category(c.name, list(c.prompts)) for c in categories]
-        self.origins: list[str | None] = [c.name for c in categories]  # 每一列原本的名稱（用來辨認「改名」）
-        self.index: int | None = None
-
-        body = ttk.Frame(self, padding=8)
-        body.pack(fill="both", expand=True)
-        left = ttk.Frame(body)
-        left.pack(side="left", fill="y")
-        self.listbox = tk.Listbox(left, width=18, height=18, exportselection=False)
-        self.listbox.pack(fill="y", expand=True)
-        self.listbox.bind("<<ListboxSelect>>", self.on_pick)
-        buttons = ttk.Frame(left)
-        buttons.pack(fill="x", pady=4)
-        ttk.Button(buttons, text="新增", width=6, command=self.add).pack(side="left")
-        ttk.Button(buttons, text="刪除", width=6, command=self.remove).pack(side="left", padx=2)
-        ttk.Button(buttons, text="↑", width=3, command=lambda: self.move(-1)).pack(side="left")
-        ttk.Button(buttons, text="↓", width=3, command=lambda: self.move(1)).pack(side="left")
-
-        right = ttk.Frame(body, padding=(12, 0, 0, 0))
-        right.pack(side="left", fill="both", expand=True)
-        ttk.Label(right, text="分類名稱（也會是資料夾名稱）：").pack(anchor="w")
-        self.name_var = tk.StringVar()
-        ttk.Entry(right, textvariable=self.name_var).pack(fill="x", pady=(0, 8))
-        ttk.Label(right, text="給 AI 的描述（每行一個，中文或英文皆可；越具體越準，可留白）：").pack(anchor="w")
-        self.prompts = tk.Text(right, height=10, wrap="word")
-        self.prompts.pack(fill="both", expand=True)
-        ttk.Label(
-            right, style="Hint.TLabel", wraplength=440,
-            text="小技巧：英文描述通常最準，例如「a photo of a cat」。想區分的東西越相近（如貓 vs 老虎），描述要寫得越具體。",
-        ).pack(anchor="w", pady=4)
-
-        bottom = ttk.Frame(self, padding=8)
-        bottom.pack(fill="x")
-        ttk.Button(bottom, text="還原預設分類", command=self.reset).pack(side="left")
-        ttk.Button(bottom, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(bottom, text="儲存", style="Accent.TButton", command=self.save).pack(side="right", padx=6)
-
-        self.reload_list(0)
-        self.grab_set()
-
-    def reload_list(self, select: int | None) -> None:
-        self.listbox.delete(0, "end")
-        for c in self.work:
-            self.listbox.insert("end", c.name)
-        self.index = None
-        if self.work and select is not None:
-            select = max(0, min(select, len(self.work) - 1))
-            self.listbox.selection_set(select)
-            self.load(select)
-        else:
-            self.name_var.set("")
-            self.prompts.delete("1.0", "end")
-
-    def load(self, index: int) -> None:
-        self.index = index
-        self.name_var.set(self.work[index].name)
-        self.prompts.delete("1.0", "end")
-        self.prompts.insert("1.0", "\n".join(self.work[index].prompts))
-
-    def commit(self) -> None:
-        if self.index is None or self.index >= len(self.work):
-            return
-        name = self.name_var.get().strip() or self.work[self.index].name
-        prompts = [line.strip() for line in self.prompts.get("1.0", "end").splitlines() if line.strip()]
-        self.work[self.index] = Category(name, prompts)
-        self.listbox.delete(self.index)
-        self.listbox.insert(self.index, name)
-
-    def on_pick(self, _event=None) -> None:
-        selection = self.listbox.curselection()
-        if not selection or selection[0] == self.index:
-            return
-        self.commit()
-        self.load(selection[0])
-
-    def add(self) -> None:
-        self.commit()
-        name = simpledialog.askstring("新增分類", "分類名稱：", parent=self)
-        if name and name.strip():
-            self.work.append(Category(name.strip(), []))
-            self.origins.append(None)
-            self.reload_list(len(self.work) - 1)
-
-    def remove(self) -> None:
-        if self.index is None:
-            return
-        del self.work[self.index]
-        del self.origins[self.index]
-        self.reload_list(self.index)
-
-    def move(self, delta: int) -> None:
-        if self.index is None:
-            return
-        self.commit()
-        j = self.index + delta
-        if 0 <= j < len(self.work):
-            self.work[self.index], self.work[j] = self.work[j], self.work[self.index]
-            self.origins[self.index], self.origins[j] = self.origins[j], self.origins[self.index]
-            self.reload_list(j)
-
-    def reset(self) -> None:
-        if messagebox.askyesno("分類設定", "要還原成預設分類嗎？目前的自訂分類會被取代。", parent=self):
-            self.work = [Category(c.name, list(c.prompts)) for c in DEFAULT_CATEGORIES]
-            self.origins = [None] * len(self.work)
-            self.reload_list(0)
-
-    def save(self) -> None:
-        self.commit()
-        names = [c.name for c in self.work]
-        duplicates = sorted({n for n in names if names.count(n) > 1})
-        if duplicates:
-            messagebox.showwarning("分類設定", f"分類名稱重複：{'、'.join(duplicates)}", parent=self)
-            return
-        if not self.work:
-            messagebox.showwarning("分類設定", "至少需要一個分類。", parent=self)
-            return
-        by_folder: dict[str, list[str]] = {}
-        for n in names:
-            by_folder.setdefault(folder_key(n), []).append(n)
-        clashes = [group for group in by_folder.values() if len(group) > 1]
-        if clashes:
-            pairs = "；".join("、".join(group) for group in clashes)
-            messagebox.showwarning("分類設定", f"這些分類會用到同一個資料夾（只差大小寫或特殊符號），請改名：\n{pairs}",
-                                   parent=self)
-            return
-        renames = {old: cat.name for old, cat in zip(self.origins, self.work, strict=True) if old and old != cat.name}
-        self.destroy()
-        self.on_save(self.work, renames)
-
-
-class SettingsDialog(tk.Toplevel):
-    def __init__(self, master, settings: dict, on_save):
-        super().__init__(master)
-        self.title("設定")
-        self.transient(master)
-        self.resizable(False, False)
-        self.settings = dict(settings)
-        self.on_save = on_save
-        body = ttk.Frame(self, padding=12)
-        body.pack(fill="both", expand=True)
-
-        labels = list(MODEL_CHOICES.values())
-        keys = list(MODEL_CHOICES.keys())
-        self.model_var = tk.StringVar(value=MODEL_CHOICES.get(self.settings["model"], labels[0]))
-        self.frames_var = tk.IntVar(value=int(self.settings["video_frames"]))
-        self.threshold_var = tk.IntVar(value=round(float(self.settings["confidence_threshold"]) * 100))
-        self.batch_var = tk.IntVar(value=int(self.settings["batch_size"]))
-        self.keys = dict(zip(labels, keys, strict=True))
-
-        rows = [
-            ("AI 模型：", ttk.Combobox(body, textvariable=self.model_var, values=labels, state="readonly", width=46)),
-            ("影片取樣畫面數：", ttk.Spinbox(body, from_=1, to=32, textvariable=self.frames_var, width=8)),
-            ("低信心門檻（%）：", ttk.Spinbox(body, from_=5, to=95, increment=5, textvariable=self.threshold_var, width=8)),
-            ("每批處理張數：", ttk.Spinbox(body, from_=1, to=256, textvariable=self.batch_var, width=8)),
-        ]
-        hints = [
-            "有 NVIDIA 顯示卡時會自動使用 CUDA 加速",
-            "每支影片平均擷取幾張畫面來判斷，越多越準但越慢",
-            "AI 信心低於此值的項目會標黃色，建議人工確認",
-            "顯示卡記憶體不足時請調低（例如 8）",
-        ]
-        for r, ((label, widget), hint) in enumerate(zip(rows, hints, strict=True)):
-            ttk.Label(body, text=label).grid(row=r * 2, column=0, sticky="w", pady=(6, 0))
-            widget.grid(row=r * 2, column=1, sticky="w", pady=(6, 0))
-            ttk.Label(body, text=hint, style="Hint.TLabel").grid(row=r * 2 + 1, column=1, sticky="w")
-
-        buttons = ttk.Frame(body)
-        buttons.grid(row=len(rows) * 2, column=0, columnspan=2, sticky="e", pady=(12, 0))
-        ttk.Button(buttons, text="儲存", command=self.save).pack(side="left", padx=4)
-        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="left")
-        self.grab_set()
-
-    def save(self) -> None:
-        try:
-            frames = max(1, min(32, int(self.frames_var.get())))
-            threshold = max(5, min(95, int(self.threshold_var.get()))) / 100
-            batch = max(1, min(256, int(self.batch_var.get())))
-        except (tk.TclError, ValueError):
-            messagebox.showwarning("設定", "請輸入有效的數字。", parent=self)
-            return
-        self.settings.update(
-            model=self.keys.get(self.model_var.get(), "auto"),
-            video_frames=frames, confidence_threshold=threshold, batch_size=batch,
-        )
-        self.destroy()
-        self.on_save(self.settings)
 
 
 def _enable_windows_dpi_awareness() -> None:

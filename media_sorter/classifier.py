@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import numpy as np
 
@@ -199,6 +200,27 @@ class Classifier:
                 [[zh, en, f"a photo of {en}"] for zh, en in VOCABULARY]
             )
         return self._vocab_embeddings
+
+
+def model_status(choice: str = "auto") -> tuple[str, bool | None] | None:
+    """給介面顯示用：(模型名稱, 是否已下載)。已下載＝這台電腦的 Hugging Face 快取裡已有模型檔案。
+
+    判斷不出來（沒安裝套件、找不到設定）就回傳 None，介面就不顯示這一行，而不是猜一個答案。
+    """
+    try:
+        import open_clip
+        from huggingface_hub import constants
+
+        device, _, vram_gb = detect_device()
+        preset = resolve_preset(choice, device, vram_gb, total_ram_gb())
+        info = MODEL_PRESETS[preset]
+        repo = open_clip.get_pretrained_cfg(info["arch"], info["pretrained"]).get("hf_hub", "").strip("/")
+        if not repo:
+            return None
+        folder = Path(constants.HF_HUB_CACHE) / ("models--" + repo.replace("/", "--")) / "snapshots"
+        return info["label"], any(folder.glob("*/*")) if folder.is_dir() else False
+    except Exception:  # noqa: BLE001 - 只是提示資訊，任何原因失敗都不影響使用
+        return None
 
 
 def download_model(choice: str = "auto") -> None:
