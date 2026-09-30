@@ -61,7 +61,7 @@ def test_names_match_the_program(text):
 
 
 def test_mentioned_files_exist(text):
-    for name in ("install.bat", "start.bat", "README.md"):
+    for name in ("install.bat", "start.bat", "uninstall.bat", "README.md"):
         assert name in text and (ROOT / name).exists()
 
 

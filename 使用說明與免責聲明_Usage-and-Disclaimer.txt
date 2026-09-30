@@ -94,8 +94,8 @@ counterpart.
 
 
 --------------------------------------------------------------------
-4. 安裝（只需要做一次）
-   Installation (only once)
+4. 安裝與解除安裝
+   Installation and uninstallation
 --------------------------------------------------------------------
 
 ・在 ZIP 檔上按右鍵「全部解壓縮」，放到一般資料夾（例如
@@ -118,6 +118,54 @@ counterpart.
 ・看到「安裝完成」後，雙擊 start.bat 開啟程式。
    When you see the installation-complete message, double-click
    start.bat to open the program.
+
+・解除安裝：先關閉程式，再雙擊 uninstall.bat。它會列出每一項會做什麼、
+　多大，你輸入 Y 之後才開始。預設只移除程式運作環境（.venv 資料夾，
+　含 Python 套件與 PyTorch）；你的設定與分類清單、整理紀錄、AI 模型檔案
+　都要各自同意才會移除。
+   Uninstall: close the program, then double-click uninstall.bat. It
+   lists what each step does and how big it is, and only starts after
+   you type Y. By default it removes only the runtime environment (the
+   .venv folder with the Python packages and PyTorch); your settings and
+   category list, the organize records, and the AI model files are
+   removed only if you agree to each one separately.
+
+・解除安裝不會動到：你的照片與影片、整理輸出的資料夾（例如「已分類」）、
+　資源回收筒，以及 logs\復原移除 裡的檔案（沒有資源回收筒時，被搬開的
+　複本放在那裡，是你的檔案）。程式資料夾本身也不會被刪除，不需要時請
+　自行刪除整個資料夾。
+   Uninstalling never touches: your photos and videos, the output
+   folders (for example "已分類"), the Recycle Bin, and the files in
+   logs\復原移除 (copies moved aside when no Recycle Bin was available;
+   they are your files). The program folder itself is not deleted
+   either; delete the whole folder yourself when you no longer need it.
+
+・AI 模型檔案放在 Hugging Face 的快取（預設是 %USERPROFILE%\.cache\
+　huggingface），可能跟其他程式共用，所以要另外同意才會移除，而且只會
+　移除本程式使用的兩個模型，不會動快取裡的其他東西。
+   The AI model files live in the Hugging Face cache (by default
+   %USERPROFILE%\.cache\huggingface), which may be shared with other
+   programs. They are therefore removed only with your separate consent,
+   and only this program's two models are removed; nothing else in the
+   cache is touched.
+
+・移除整理紀錄後，就無法再用本程式「移除這次建立的複本」或「將這批原檔
+　移到回收筒」（檔案本身不受影響）；有還沒處理完的紀錄時，解除安裝程式
+　會提醒你。
+   Once the organize records are removed, this program can no longer
+   "移除這次建立的複本" (remove the copies) or "將這批原檔移到回收筒"
+   (move the originals to the Recycle Bin) for those runs; the files
+   themselves are not affected. The uninstaller warns you when there are
+   records that have not been finished.
+
+・解除安裝程式只會刪除清單裡的項目，每一項在刪除前都會再確認位置；
+　連結（捷徑式資料夾）只移除連結本身；程式還開著時會拒絕執行。任何一項
+　失敗都會如實回報，不會假裝成功。
+   The uninstaller only deletes the items on its list and re-checks the
+   location of each one before deleting. A link (shortcut-style folder)
+   is removed as a link only, and the uninstaller refuses to run while
+   the program is open. Any failure is reported honestly instead of
+   being hidden.
 
 
 --------------------------------------------------------------------
@@ -312,6 +360,15 @@ counterpart.
 ・AI 模型會下載到使用者資料夾底下的 .cache\huggingface。
    The AI model is downloaded to .cache\huggingface under your user
    folder.
+
+・本程式不寫入 Windows 登錄檔，也不建立捷徑、服務或開機自動啟動項目。
+　它留在電腦上的東西只有：程式資料夾（含 .venv）、AI 模型快取，以及
+　pip 下載套件時 pip 自己的快取（可用 pip cache purge 清除）。
+   The program does not modify the Windows registry and does not create
+   shortcuts, services or startup entries. The only things it leaves on
+   the computer are the program folder (including .venv), the AI model
+   cache, and pip's own download cache from installing packages (which
+   you can clear with pip cache purge).
 
 
 --------------------------------------------------------------------
