@@ -159,12 +159,14 @@ counterpart.
 
 ・給管理員：靜默安裝 setup.exe /S（加 /D=資料夾 可指定位置，/SKIPDEPS 略過下載）；
 　靜默解除安裝 uninstall.exe /S，預設保留個人資料，可加 /REMOVE_SETTINGS、
-　/REMOVE_LOGS、/REMOVE_MODEL 一併移除。
+　/REMOVE_LOGS、/REMOVE_MODEL 一併移除。結束代碼：0 完成、2 AI 元件沒下載完
+　（可稍後修復）、5 程式正在執行（什麼都沒動）。
    For administrators: silent install with setup.exe /S (add /D=folder
    to choose the location, /SKIPDEPS to skip the download); silent
    uninstall with uninstall.exe /S, which keeps personal data by
    default; add /REMOVE_SETTINGS, /REMOVE_LOGS or /REMOVE_MODEL to remove
-   it too.
+   it too. Exit codes: 0 done, 2 AI components not fully downloaded
+   (repair later), 5 the program is running (nothing was changed).
 
 ・免安裝版（ZIP）：在 ZIP 檔上按右鍵「全部解壓縮」，放到一般資料夾（例如
 　C:\AI媒體分類器），不要直接在 ZIP 裡雙擊執行，也建議避開 OneDrive 同步

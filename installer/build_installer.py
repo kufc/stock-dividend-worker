@@ -24,6 +24,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(HERE))
 
 APP_FILES = ["requirements.txt", "README.md", "使用說明與免責聲明_Usage-and-Disclaimer.txt"]
 # 內建 Python 執行環境裡用不到、可以刪掉以縮小安裝檔的東西
@@ -87,6 +88,8 @@ def main() -> int:
     parser.add_argument("--python", default="3.12", help="內建 Python 的版本（預設 3.12）")
     parser.add_argument("--publisher", default="AI Media Sorter", help="顯示在「設定 → 應用程式」的發行者名稱")
     parser.add_argument("--makensis", default="makensis", help="makensis 的路徑")
+    parser.add_argument("--sign", action="store_true",
+                        help="為 setup.exe 與 uninstall.exe 加上數位簽章（設定見 installer/sign.py，憑證由環境變數提供）")
     args = parser.parse_args()
 
     from media_sorter import __version__
@@ -112,7 +115,13 @@ def main() -> int:
 
     exe = out / f"AI-Media-Sorter-Setup-{__version__}.exe"
     cmd = [args.makensis, "-V2", f"-DVERSION={__version__}", f"-DSTAGE={staging}", f"-DOUTFILE={exe}",
-           f"-DPUBLISHER={args.publisher}", str(HERE / "setup.nsi")]
+           f"-DPUBLISHER={args.publisher}"]
+    if args.sign:
+        import sign  # 先檢查設定，避免建置到最後才失敗
+
+        sign.build_command(exe, dict(os.environ))
+        cmd.append(f'-DSIGN_CMD="{sys.executable}" "{HERE / "sign.py"}" "%1"')
+    cmd.append(str(HERE / "setup.nsi"))
     print(" ".join(cmd))
     env = dict(os.environ)
     if os.name != "nt":  # Linux 上讓 makensis 能讀寫中文檔名

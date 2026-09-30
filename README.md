@@ -207,7 +207,10 @@ AI 一定會把檔案歸到「最像」的分類，所以分類太少時，不�
 - 程式檔案與內建 Python、捷徑、登錄項目一定會移除；安裝資料夾本身**只有在已經空了**時才會移除，
   裡面若有你自己放的東西就保留
 - 程式還開著時，安裝、升級與解除安裝都會拒絕執行
-- 給管理員：`uninstall.exe /S` 靜默解除安裝（預設保留個人資料；`/REMOVE_SETTINGS`、`/REMOVE_LOGS`、`/REMOVE_MODEL` 一併移除）
+- 給管理員：`uninstall.exe /S` 靜默解除安裝（預設保留個人資料；`/REMOVE_SETTINGS`、`/REMOVE_LOGS`、`/REMOVE_MODEL` 一併移除）。
+  需要結束代碼時加 `_?=安裝資料夾`（放在最後、不加引號）：0＝完成、5＝程式正在執行（什麼都沒刪）；
+  這種方式下 `uninstall.exe` 本身會留在資料夾裡，請在之後刪除。安裝程式 `/S` 的結束代碼：0＝完成、
+  2＝AI 元件下載沒完成（之後可從開始功能表「修復」）、5＝程式正在執行
 
 **免安裝版**：關閉程式後雙擊 **`uninstall.bat`**。它會先列出每一項會做什麼、多大，你輸入 **Y** 才會開始：
 
@@ -296,5 +299,18 @@ python installer/build_installer.py --publisher "你的公司名稱"
 - 安裝程式內建 64 位元 Python 3.12（conda-forge 的 Windows 版，含 tkinter 與 pip），使用者不需要自己安裝 Python；
   安裝的最後一步才在使用者的電腦上依顯示卡下載 PyTorch 與 AI 模型。內建套件清單在安裝後的 `app\\RUNTIME-PACKAGES.txt`
 - 在 Linux 上可以用 Wine 實際跑一次「安裝 → 使用 → 解除安裝」驗證：`installer/test_in_wine.sh dist/AI-Media-Sorter-Setup-版本.exe`
-- **正式販售前**：安裝程式與程式檔案目前沒有數位簽章，Windows SmartScreen 會顯示「已保護您的電腦」；
-  請用程式碼簽章憑證簽署 `setup.exe`（例如 `signtool sign`）。授權條款、發行者名稱與隱私權聲明也請依你的實際情況補上
+- 程式圖示與安裝精靈圖片由 `python installer/make_icon.py` 產生（原創圖形，無第三方素材）
+
+**數位簽章（正式販售前必做）**：沒有簽章時，Windows SmartScreen 會顯示「已保護您的電腦」。取得程式碼簽章憑證
+（.pfx）後，用環境變數提供憑證，再加 `--sign` 建置，`setup.exe` 與安裝後的 `uninstall.exe` 都會被簽章：
+
+```bash
+export MEDIA_SORTER_SIGN_PFX=/安全的位置/憑證.pfx
+export MEDIA_SORTER_SIGN_PASSWORD=憑證密碼          # 只從環境變數讀取，不會出現在指令列或建置紀錄
+export MEDIA_SORTER_SIGN_TIMESTAMP=http://timestamp.digicert.com   # 預設值；憑證供應商有指定時請照它的
+python installer/build_installer.py --publisher "你的公司名稱" --sign
+```
+
+Windows 上使用 Windows SDK 的 `signtool`，Linux 上使用 `osslsigncode`（`apt install osslsigncode`）。
+EV 憑證或雲端簽章服務（例如 Azure Trusted Signing）請依供應商說明調整 `installer/sign.py`。
+授權條款、發行者名稱與隱私權聲明也請依你的實際情況補上。

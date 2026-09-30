@@ -16,7 +16,7 @@ trap 'kill $XVFB 2>/dev/null' EXIT
 export DISPLAY=:77
 sleep 2
 # 執行 Windows 程式並等到它啟動的所有子程序都結束（解除安裝程式會複製自己到暫存資料夾再執行）
-W() { timeout "${T:-110}" wine64 "$@" 2>&1 | grep -v "X connection"; local rc=${PIPESTATUS[0]}; timeout 60 wineserver -w 2>/dev/null; return $rc; }
+W() { timeout "${T:-110}" wine64 "$@" 2>&1 | grep -v "X connection"; local rc=${PIPESTATUS[0]}; [ -z "${NOWAIT:-}" ] && timeout 60 wineserver -w 2>/dev/null; return $rc; }
 LOCAL="$WINEPREFIX/drive_c/users/$(whoami)/AppData/Local"
 PROG="$LOCAL/Programs/AI Media Sorter"; DATA="$LOCAL/AI Media Sorter"
 START="$WINEPREFIX/drive_c/users/$(whoami)/AppData/Roaming/Microsoft/Windows/Start Menu/Programs"
@@ -30,6 +30,9 @@ W "$SETUP" /S /SKIPDEPS; echo "  結束代碼 $?"
 check "程式與內建 Python 已安裝" '[ -f "$PROG/python/python.exe" ] && [ -f "$PROG/app/media_sorter/app.py" ] && [ -f "$PROG/uninstall.exe" ]'
 check "有安裝標記 installed.flag" '[ -f "$PROG/app/installed.flag" ]'
 check "開始功能表有捷徑" '[ "$(find "$START" -name "*.lnk" | wc -l)" -ge 4 ]'
+if command -v osslsigncode >/dev/null && osslsigncode verify -in "$SETUP" >/dev/null 2>&1 || osslsigncode verify -in "$SETUP" 2>&1 | grep -q "Signer's certificate"; then
+  check "安裝好的 uninstall.exe 也有數位簽章" 'osslsigncode verify -in "$PROG/uninstall.exe" 2>&1 | grep -q "Signer.s certificate"'
+fi
 check "「設定 → 應用程式」有登錄項目" 'W reg query "$UNKEY" | grep -q "DisplayVersion"'
 check "登錄項目有靜默解除安裝指令" 'W reg query "$UNKEY" | grep -q "QuietUninstallString"'
 echo "== 內建 Python 可以執行、找得到使用者資料夾、tkinter 可用"
@@ -54,20 +57,23 @@ mkdir -p "$LOCAL/../../Documents/照片" && echo 原檔 > "$LOCAL/../../Document
 
 echo "== 程式開著時，解除安裝要拒絕"
 rm -f /tmp/wine-locked.flag
-( cd "$PROG/app" && T=60 W ../python/python.exe -c "
+( cd "$PROG/app" && NOWAIT=1 T=150 W ../python/python.exe -c "
 from media_sorter.config import acquire_app_lock
-import time; h = acquire_app_lock(); open('Z:/tmp/wine-locked.flag', 'w').write('x'); time.sleep(25)" ) &
+import time; h = acquire_app_lock(); open('Z:/tmp/wine-locked.flag', 'w').write('x'); time.sleep(60)" ) &
 HOLD=$!
-for _ in $(seq 40); do [ -f /tmp/wine-locked.flag ] && break; sleep 1; done
-W "$PROG/uninstall.exe" /S _?="$WINPROG"; echo "  解除安裝結束代碼 $?"
+for _ in $(seq 60); do [ -f /tmp/wine-locked.flag ] && break; sleep 1; done
+# 管理工具的用法：uninstall.exe /S _?=安裝資料夾（_?= 後面的路徑不能加引號，所以經由批次檔呼叫）
+printf '@"%s\\uninstall.exe" /S _?=%s\r\n@exit /b %%errorlevel%%\r\n' "$WINPROG" "$WINPROG" > /tmp/wine-uninstall.bat
+NOWAIT=1 W cmd /c 'Z:\tmp\wine-uninstall.bat'; rc=$?; echo "  解除安裝結束代碼 $rc"
+check "解除安裝：程式開著時拒絕（結束代碼 5）" '[ $rc -eq 5 ]'
 check "解除安裝：程式開著時什麼都沒被刪" '[ -f "$PROG/python/python.exe" ] && [ -f "$PROG/app/media_sorter/app.py" ] && [ -f "$DATA/settings.json" ]'
-W "$SETUP" /S /SKIPDEPS; rc=$?; echo "  安裝／升級結束代碼 $rc"
+NOWAIT=1 W "$SETUP" /S /SKIPDEPS; rc=$?; echo "  安裝／升級結束代碼 $rc"
 check "程式開著時，升級安裝拒絕（結束代碼 5）" '[ $rc -eq 5 ]'
-wait $HOLD; sleep 1
+wait $HOLD; timeout 60 wineserver -w; sleep 1
 
 echo "== 解除安裝（靜默，不加 _?=：跟使用者在「設定 → 應用程式」按解除安裝時一樣）：預設保留所有個人資料"
 W "$PROG/uninstall.exe" /S; echo "  結束代碼 $?"
-check "程式與 Python 已移除" '[ ! -d "$PROG/python" ] && [ ! -d "$PROG/app" ]'
+check "程式與 Python 已移除（含下載的套件）" '[ ! -d "$PROG/python" ] && [ ! -d "$PROG/app" ]'
 check "開始功能表捷徑已移除" '[ "$(find "$START" -name "*.lnk" | wc -l)" -eq 0 ]'
 check "登錄項目已移除" '! W reg query "$UNKEY" | grep -q "DisplayName"'
 check "設定與整理紀錄都還在" '[ -f "$DATA/settings.json" ] && [ -f "$DATA/logs/整理紀錄_20240101_000000.csv" ]'

@@ -100,3 +100,32 @@ def test_truststore_probe_only_reports_real_crashes(monkeypatch):
 def test_install_bat_no_longer_calls_pip_directly():
     text = (Path(config.ROOT) / "install.bat").read_text(encoding="utf-8")
     assert "-m pip install" not in text  # pip 的呼叫都集中在 installer.py（含憑證備援）
+
+
+def test_pip_never_leaves_a_download_cache(monkeypatch):
+    monkeypatch.setattr(installer, "LEGACY_CERTS", False)
+    rec = Recorder([0])
+    monkeypatch.setattr(installer.subprocess, "call", rec)
+    installer.pip("numpy")
+    assert "--no-cache-dir" in rec.calls[0]
+
+
+def test_missing_components_are_explained_and_repair_is_offered(monkeypatch, tmp_path):
+    import media_sorter.__main__ as entry
+
+    monkeypatch.setattr(entry, "missing_packages", lambda: ["PIL", "numpy"])
+    monkeypatch.setattr(config, "INSTALLED", True)
+    monkeypatch.setattr(config, "ROOT", tmp_path)
+    (tmp_path / "setup-deps.cmd").write_text("x")
+    asked, started = [], []
+    monkeypatch.setattr(entry, "_ask_yes_no", lambda text: asked.append(text) or True)
+    monkeypatch.setattr(entry.subprocess, "Popen", lambda cmd, **k: started.append(cmd))
+    assert entry._required_packages_present() is False
+    assert "AI 元件還沒有安裝完成" in asked[0] and "PIL" in asked[0]
+    assert started and started[0][-2].endswith("setup-deps.cmd")
+    shown = []
+    monkeypatch.setattr(config, "INSTALLED", False)
+    monkeypatch.setattr(entry, "_show_error_box", shown.append)
+    assert entry._required_packages_present() is False and "install.bat" in shown[0]
+    monkeypatch.setattr(entry, "missing_packages", lambda: [])
+    assert entry._required_packages_present() is True

@@ -34,6 +34,11 @@ Unicode true
 !define APP_KEY "Software\AIMediaSorter"
 !define LICENSE_FILE "使用說明與免責聲明_Usage-and-Disclaimer.txt"
 
+!ifdef SIGN_CMD
+  !finalize '${SIGN_CMD}'
+  !uninstfinalize '${SIGN_CMD}'
+!endif
+
 Name "${APPNAME}"
 OutFile "${OUTFILE}"
 InstallDir "$LOCALAPPDATA\Programs\${APPDIR}"
@@ -51,6 +56,12 @@ VIAddVersionKey "CompanyName" "${PUBLISHER}"
 VIAddVersionKey "LegalCopyright" "${PUBLISHER}"
 
 !define MUI_ICON "app.ico"
+!define MUI_WELCOMEFINISHPAGE_BITMAP "wizard.bmp"
+!define MUI_UNWELCOMEFINISHPAGE_BITMAP "wizard.bmp"
+!define MUI_HEADERIMAGE
+!define MUI_HEADERIMAGE_RIGHT
+!define MUI_HEADERIMAGE_BITMAP "header.bmp"
+!define MUI_HEADERIMAGE_UNBITMAP "header.bmp"
 !define MUI_UNICON "app.ico"
 !define MUI_ABORTWARNING
 !define MUI_UNABORTWARNING
@@ -83,6 +94,7 @@ Var UnActive
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirLeave
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW FinishShow
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -131,10 +143,12 @@ LangString UN_CB_LOGS ${LANG_TRADCHINESE} "整理紀錄與錯誤紀錄（移除�
 LangString UN_CB_LOGS ${LANG_ENGLISH} "Organize records and error logs (without them the program can no longer remove copies or handle originals)"
 LangString UN_CB_MODEL ${LANG_TRADCHINESE} "AI 模型檔案（Hugging Face 快取；可能跟其他程式共用，下次使用要重新下載）"
 LangString UN_CB_MODEL ${LANG_ENGLISH} "AI model files (Hugging Face cache; may be shared with other programs and must be downloaded again next time)"
-LangString UN_ACTIVE_PRE ${LANG_TRADCHINESE} "⚠ 目前有 "
+LangString UN_ACTIVE_PRE ${LANG_TRADCHINESE} "注意：目前有 "
 LangString UN_ACTIVE_PRE ${LANG_ENGLISH} "Warning: there are "
 LangString UN_ACTIVE_POST ${LANG_TRADCHINESE} " 份整理紀錄還沒處理完；勾選「整理紀錄」後就無法再用本程式移除那些複本或原檔（檔案本身不受影響）。"
 LangString UN_ACTIVE_POST ${LANG_ENGLISH} " organize records that are not finished; if you remove the records, this program can no longer remove those copies or originals (the files themselves are not affected)."
+LangString FIN_NODEPS ${LANG_TRADCHINESE} "AI 元件（PyTorch 與 AI 模型）還沒有安裝完成，程式暫時無法使用。$\r$\n$\r$\n請確認網路連線後，從開始功能表執行「AI 媒體分類器 → 修復（重新下載 AI 元件）」。"
+LangString FIN_NODEPS ${LANG_ENGLISH} "The AI components (PyTorch and the AI model) are not installed yet, so the program cannot be used for now.$\r$\n$\r$\nCheck your internet connection, then run Start menu > AI 媒體分類器 > Repair."
 LangString UN_LEFT ${LANG_TRADCHINESE} "有些檔案無法移除（可能被其他程式使用中）。請關閉相關程式後手動刪除這個資料夾："
 LangString UN_LEFT ${LANG_ENGLISH} "Some files could not be removed (they may be in use). Close other programs and delete this folder manually:"
 
@@ -190,7 +204,18 @@ Function CheckNotRunning
   ${EndIf}
 FunctionEnd
 
+Function FinishShow
+  ${IfNot} ${FileExists} "$INSTDIR\app\install-ok.txt"
+    SendMessage $mui.FinishPage.Run ${BM_SETCHECK} ${BST_UNCHECKED} 0
+    ShowWindow $mui.FinishPage.Run ${SW_HIDE}
+    SendMessage $mui.FinishPage.Text ${WM_SETTEXT} 0 "STR:$(FIN_NODEPS)"
+  ${EndIf}
+FunctionEnd
+
 Function LaunchApp
+  ${IfNot} ${FileExists} "$INSTDIR\app\install-ok.txt"
+    Return
+  ${EndIf}
   SetOutPath "$INSTDIR\app"
   Exec '"$INSTDIR\python\pythonw.exe" -m media_sorter'
 FunctionEnd
@@ -214,10 +239,12 @@ FunctionEnd
 
 Section "$(SEC_MAIN)" SecMain
   SectionIn RO
+  AddSize 7340032 ; 安裝時下載的 PyTorch（CUDA 版約 3~4 GB）與 AI 模型（1.5~5 GB），約 7 GB
   Call CheckNotRunning
   SetOutPath "$INSTDIR"
   ; 內建的 Python 執行環境（含 tkinter）；程式本體；解除安裝程式
   File /r "${STAGE}\python"
+  RMDir /r "$INSTDIR\app\media_sorter" ; 只清掉舊版的程式碼；使用者資料不在這裡
   SetOutPath "$INSTDIR\app"
   File /r "${STAGE}\app\*.*"
   SetOutPath "$INSTDIR"
@@ -320,13 +347,30 @@ Function un.onInit
     Pop $0
     Pop $1
     ${If} $0 == 42
-      ${If} ${Silent}
-        SetErrorLevel 5
-        Abort
-      ${EndIf}
+    ${AndIfNot} ${Silent}
       MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(MSG_RUNNING)" IDRETRY retry
       Abort
     ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+Function un.CheckNotRunning
+  ; 解除安裝真正開始前再檢查一次（靜默模式只有在這裡中止，結束代碼 5 才會帶出去）
+  ${IfNot} ${FileExists} "$INSTDIR\python\python.exe"
+    Return
+  ${EndIf}
+  Call un.SetPyEnv
+  retry:
+  nsExec::ExecToStack '"$INSTDIR\python\python.exe" -m media_sorter.uninstaller --check-running --data-dir "$DataDir"'
+  Pop $0
+  Pop $1
+  ${If} $0 == 42
+    ${IfNot} ${Silent}
+      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(MSG_RUNNING)" IDRETRY retry
+    ${EndIf}
+    ; 解除安裝程式用 Abort 中止時不會帶出 SetErrorLevel 的代碼，所以用 Quit（同樣不會刪任何東西）
+    SetErrorLevel 5
+    Quit
   ${EndIf}
 FunctionEnd
 
@@ -338,12 +382,14 @@ Function un.DataPageCreate
   ${EndIf}
   ${NSD_CreateLabel} 0 0 100% 30u "$(UN_INTRO)"
   Pop $0
-  ${NSD_CreateCheckbox} 8u 36u 100% 12u "$(UN_CB_SETTINGS)"
+  ${NSD_CreateCheckbox} 8u 34u -8u 12u "$(UN_CB_SETTINGS)"
   Pop $UnCbSettings
-  ${NSD_CreateCheckbox} 8u 52u 100% 12u "$(UN_CB_LOGS)"
+  ${NSD_CreateCheckbox} 8u 50u -8u 20u "$(UN_CB_LOGS)"
   Pop $UnCbLogs
-  ${NSD_CreateCheckbox} 8u 68u 100% 12u "$(UN_CB_MODEL)"
+  ${NSD_AddStyle} $UnCbLogs ${BS_MULTILINE}
+  ${NSD_CreateCheckbox} 8u 74u -8u 20u "$(UN_CB_MODEL)"
   Pop $UnCbModel
+  ${NSD_AddStyle} $UnCbModel ${BS_MULTILINE}
   StrCpy $UnActive "0"
   ${If} ${FileExists} "$INSTDIR\python\python.exe"
     nsExec::ExecToStack '"$INSTDIR\python\python.exe" -m media_sorter.uninstaller --active-logs --data-dir "$DataDir"'
@@ -355,7 +401,7 @@ Function un.DataPageCreate
     ${EndIf}
   ${EndIf}
   ${If} $UnActive != "0"
-    ${NSD_CreateLabel} 0 88u 100% 30u "$(UN_ACTIVE_PRE)$UnActive$(UN_ACTIVE_POST)"
+    ${NSD_CreateLabel} 0 100u 100% 30u "$(UN_ACTIVE_PRE)$UnActive$(UN_ACTIVE_POST)"
     Pop $0
   ${EndIf}
   nsDialogs::Show
@@ -368,6 +414,7 @@ Function un.DataPageLeave
 FunctionEnd
 
 Section "Uninstall"
+  Call un.CheckNotRunning
   ; 1) 使用者資料：只處理有勾選的項目，由程式內的解除安裝邏輯（有各種安全檢查）執行
   StrCpy $R2 ""
   ${If} $UnRmSettings == "1"

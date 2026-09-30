@@ -145,7 +145,9 @@ def truststore_crashes() -> bool:
 
 def pip(*args: str) -> bool:
     global LEGACY_CERTS
-    base = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--retries", "8", "--timeout", "60"]
+    # --no-cache-dir：不在 %LOCALAPPDATA%\\pip 留下數 GB 的下載快取（解除安裝後才不會殘留）
+    base = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", "--retries", "8",
+            "--timeout", "60"]
     while True:
         cmd = base + (["--use-deprecated=legacy-certs"] if LEGACY_CERTS else []) + list(args)
         print(">", " ".join(cmd), flush=True)
@@ -230,10 +232,10 @@ def main() -> int:
         print(f"已安裝相符的 PyTorch {current[0]}，略過。")
     else:
         index_args = ["--index-url", TORCH_INDEX.format(build[0])] if build else []
-        ok = pip("--upgrade", "--no-cache-dir", "torch", "torchvision", *index_args)
+        ok = pip("--upgrade", "torch", "torchvision", *index_args)
         if not ok and build:
             print("\n⚠ CUDA 版 PyTorch 安裝失敗，改裝 CPU 版本（之後仍可重新執行 install.bat）。")
-            ok = pip("--upgrade", "--no-cache-dir", "torch", "torchvision")
+            ok = pip("--upgrade", "torch", "torchvision")
         if not ok:
             print(f"\n✘ PyTorch 安裝失敗。請確認網路連線後重試（{FIX_HINT}）。"
                   + ("" if INSTALLED else "若你的 Python 版本太新，請改裝 Python 3.12。"))

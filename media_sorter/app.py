@@ -1263,7 +1263,10 @@ class App:
             else:
                 post(("done", f"辨識完成！共 {len(paths)} 個檔案，使用：{device}。請確認分類。"))
         except ImportError as exc:
-            post(("error", f"缺少必要的套件（{exc}），請重新執行 install.bat。", traceback.format_exc()))
+            from .config import INSTALLED
+
+            fix = "請從開始功能表執行「修復（重新下載 AI 元件）」" if INSTALLED else "請重新執行 install.bat"
+            post(("error", f"AI 元件沒有安裝完整（{exc}），{fix}。", traceback.format_exc()))
         except Exception as exc:  # noqa: BLE001 - 背景錯誤要回報到介面
             post(("error", f"{type(exc).__name__}: {exc}", traceback.format_exc()))
 

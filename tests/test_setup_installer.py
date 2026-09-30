@@ -95,3 +95,67 @@ def test_script_compiles_and_stages_the_right_files(tmp_path):
     from media_sorter import __version__
 
     assert exes[0].name == f"AI-Media-Sorter-Setup-{__version__}.exe"
+
+
+def test_running_program_blocks_silent_uninstall_with_exit_code_5():
+    section = NSI[NSI.index('Section "Uninstall"'):]
+    assert section.split("\n")[1].strip() == "Call un.CheckNotRunning"  # 區段一開始就檢查（靜默模式在這裡才帶得出代碼）
+    func = NSI[NSI.index("Function un.CheckNotRunning"):NSI.index("Function un.DataPageCreate")]
+    assert "SetErrorLevel 5" in func and "Abort" in func
+
+
+def test_disk_space_includes_the_downloads_and_upgrade_cleans_old_code():
+    assert re.search(r"AddSize \d{7,}", NSI)  # 「所需空間」要算進數 GB 的下載
+    main = NSI[NSI.index('Section "$(SEC_MAIN)"'):NSI.index("SectionEnd")]
+    assert main.index('RMDir /r "$INSTDIR\\app\\media_sorter"') < main.index('File /r "${STAGE}\\app\\*.*"')
+
+
+def test_finish_page_only_offers_to_run_when_components_are_ready():
+    show = NSI[NSI.index("Function FinishShow"):NSI.index("Function LaunchApp")]
+    assert "install-ok.txt" in show and "SW_HIDE" in show and "FIN_NODEPS" in show
+    launch = NSI[NSI.index("Function LaunchApp"):]
+    assert "install-ok.txt" in launch.split("FunctionEnd")[0]
+
+
+def test_wizard_uses_our_own_artwork_and_no_tofu_symbols():
+    for name in ("wizard.bmp", "header.bmp"):
+        assert name in NSI and (ROOT / "installer" / name).stat().st_size > 1000
+    assert "⚠" not in NSI  # 部分 Windows 字型沒有這個符號，會顯示成方框
+
+
+def test_optional_code_signing_signs_setup_and_uninstaller():
+    assert "!finalize '${SIGN_CMD}'" in NSI and "!uninstfinalize '${SIGN_CMD}'" in NSI
+
+
+def test_sign_helper_builds_commands_without_leaking_the_password(tmp_path, monkeypatch):
+    sys.path.insert(0, str(ROOT / "installer"))
+    import sign
+
+    pfx = tmp_path / "c.pfx"
+    pfx.write_bytes(b"x")
+    monkeypatch.setattr(sign.shutil, "which", lambda name: "/usr/bin/" + name if name == "osslsigncode" else None)
+    cmd, out = sign.build_command(tmp_path / "a.exe", {"MEDIA_SORTER_SIGN_PFX": str(pfx),
+                                                      "MEDIA_SORTER_SIGN_PASSWORD": "pw"})
+    assert cmd[:2] == ["/usr/bin/osslsigncode", "sign"] and "-ts" in cmd and out.name == "a.exe.signed"
+    cmd, _ = sign.build_command(tmp_path / "a.exe", {"MEDIA_SORTER_SIGN_PFX": str(pfx),
+                                                    "MEDIA_SORTER_SIGN_TIMESTAMP": ""})
+    assert "-ts" not in cmd and "-pass" not in cmd
+    with pytest.raises(SystemExit):
+        sign.build_command(tmp_path / "a.exe", {"MEDIA_SORTER_SIGN_PFX": str(tmp_path / "missing.pfx")})
+
+
+@pytest.mark.skipif(not (shutil.which("osslsigncode") and shutil.which("openssl")), reason="需要 osslsigncode 與 openssl")
+def test_sign_helper_reports_failures(tmp_path):
+    sys.path.insert(0, str(ROOT / "installer"))
+    import sign
+
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", str(tmp_path / "k.pem"), "-out",
+                    str(tmp_path / "c.pem"), "-days", "2", "-nodes", "-subj", "/CN=Test"], check=True, capture_output=True)
+    subprocess.run(["openssl", "pkcs12", "-export", "-out", str(tmp_path / "t.pfx"), "-inkey", str(tmp_path / "k.pem"),
+                    "-in", str(tmp_path / "c.pem"), "-passout", "pass:pw"], check=True, capture_output=True)
+    exe = tmp_path / "a.exe"
+    exe.write_bytes(b"not a PE file")  # 不是執行檔：簽章一定失敗，要回報錯誤而不是假裝成功
+    with pytest.raises(SystemExit) as info:
+        sign.sign(exe, {"MEDIA_SORTER_SIGN_PFX": str(tmp_path / "t.pfx"), "MEDIA_SORTER_SIGN_PASSWORD": "pw",
+                        "MEDIA_SORTER_SIGN_TIMESTAMP": ""})
+    assert "簽章失敗" in str(info.value) and " pw" not in str(info.value)

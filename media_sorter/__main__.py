@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import traceback
 from datetime import datetime
@@ -73,6 +74,60 @@ def _report_startup_error(text: str) -> None:
     _show_error_box(f"程式無法啟動，{fix}。\n\n" + text[-1500:])
 
 
+REQUIRED_PACKAGES = ("PIL", "numpy", "av", "send2trash")  # 開啟視窗就需要的套件（torch 等到辨識時才載入）
+
+
+def missing_packages() -> list[str]:
+    import importlib.util
+
+    return [name for name in REQUIRED_PACKAGES if importlib.util.find_spec(name) is None]
+
+
+def _required_packages_present() -> bool:
+    """必要套件沒裝好（安裝最後一步失敗、或被中斷）：說明原因並提供修復，而不是跳出一大段錯誤。"""
+    missing = missing_packages()
+    if not missing:
+        return True
+    from .config import INSTALLED, ROOT
+
+    repair = ROOT / "setup-deps.cmd"
+    text = ("AI 元件還沒有安裝完成，程式暫時無法使用。\n"
+            f"（缺少：{'、'.join(missing)}）\n\n")
+    if INSTALLED and repair.is_file():
+        if _ask_yes_no(text + "要現在下載並安裝嗎？需要網路連線，會下載數 GB 的檔案，完成後再開啟程式即可。"):
+            try:
+                subprocess.Popen(["cmd.exe", "/c", str(repair), "pause"], cwd=str(ROOT),
+                                 creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+            except OSError as exc:
+                _show_error_box(f"無法啟動修復程式：{exc}\n請從開始功能表執行「修復（重新下載 AI 元件）」。")
+    else:
+        _show_error_box(text + "請重新執行 install.bat。")
+    return False
+
+
+def _ask_yes_no(text: str) -> bool:
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        answer = messagebox.askyesno("AI 媒體分類器", text)
+        root.destroy()
+        return bool(answer)
+    except Exception:  # noqa: BLE001 - 沒有 tkinter 時改用 Windows 原生對話框
+        pass
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            return ctypes.windll.user32.MessageBoxW(None, text, "AI 媒體分類器", 0x4 | 0x20) == 6
+        except (AttributeError, OSError):
+            pass
+    print(text, file=sys.stderr)
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     _ensure_console_streams()
     parser = argparse.ArgumentParser(prog="media_sorter", description="AI 媒體分類器")
@@ -90,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
         download_model(args.download_model)
         return 0
 
+    if not _required_packages_present():
+        return 1
     try:
         from .app import main as run_app
 
