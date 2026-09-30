@@ -1,0 +1,411 @@
+﻿====================================================================
+  AI 媒體分類器　使用說明與免責聲明
+  AI Media Sorter - User Guide and Disclaimer
+====================================================================
+版本 Version：1.0.0
+最後更新 Last updated：2026-09-30
+
+閱讀方式 How to read this file：
+每一項先寫中文，緊接著是縮排的英文對照。
+Each item is written in Chinese first, followed by its indented English
+counterpart.
+
+
+--------------------------------------------------------------------
+1. 重要提醒（請先閱讀）
+   Important notice (please read first)
+--------------------------------------------------------------------
+
+・整理前，請先備份重要的照片與影片。本程式會複製檔案，並在你確認之後
+　移除原檔；任何處理檔案的軟體都有出錯的可能。
+   Back up your important photos and videos before organizing. This
+   program copies files and, only after you confirm, removes the
+   originals. Any software that handles files can fail.
+
+・「開始整理」只會複製，原檔完全不動。確認結果沒問題後，才使用
+　「移除原檔…」，原檔會被移到 Windows 的資源回收筒。
+   "開始整理" (Start organizing) only copies; your originals are left
+   untouched. Use "移除原檔…" (Remove originals) only after you have
+   checked the results. Originals are moved to the Windows Recycle Bin.
+
+・AI 的判斷可能出錯。按下任何確認視窗的確定之前，請先看過完整清單。
+   The AI can be wrong. Read the full list before you click OK in any
+   confirmation window.
+
+・使用本程式，即表示你已閱讀並接受第 10 節的免責聲明。
+   By using this program you acknowledge that you have read and accepted
+   the disclaimer in Section 10.
+
+
+--------------------------------------------------------------------
+2. 這個程式做什麼
+   What this program does
+--------------------------------------------------------------------
+
+・AI 先看過資料夾裡的照片與影片，告訴你「這看起來像什麼」；你確認或
+　修改分類後，程式依分類把檔案複製到資料夾，並重新命名。
+   The AI first looks at the photos and videos in a folder and suggests
+   what each one looks like. After you confirm or change the categories,
+   the program copies the files into per-category folders and renames
+   them.
+
+・分類可以自訂，也可以直接使用中文名稱。
+   Categories are customizable, and Chinese names work directly.
+
+・辨識在你自己的電腦上進行。有 NVIDIA 顯示卡時使用顯示卡加速，否則
+　使用 CPU（較慢）。
+   Recognition runs on your own computer. It uses an NVIDIA GPU when one
+   is available; otherwise it uses the CPU (slower).
+
+・支援的圖片：JPG、PNG、HEIC／HEIF、WEBP、GIF、BMP、TIFF。
+　支援的影片：MP4、MOV、AVI、MKV、WMV、M4V、WEBM、FLV、3GP、MTS、MPG。
+   Supported images: JPG, PNG, HEIC/HEIF, WEBP, GIF, BMP, TIFF.
+   Supported videos: MP4, MOV, AVI, MKV, WMV, M4V, WEBM, FLV, 3GP, MTS,
+   MPG.
+
+
+--------------------------------------------------------------------
+3. 系統需求
+   System requirements
+--------------------------------------------------------------------
+
+・Windows 10 或 11。本文的操作步驟以 Windows 為準。
+   Windows 10 or 11. The steps in this file assume Windows.
+
+・64 位元的 Python 3.10 以上，建議 3.12。安裝 Python 時，請勾選
+　「Add python.exe to PATH」與「tcl/tk and IDLE」。
+   64-bit Python 3.10 or newer; 3.12 is recommended. When installing
+   Python, check "Add python.exe to PATH" and "tcl/tk and IDLE".
+
+・記憶體 8 GB 以上（使用「高精準」模型建議 12 GB 以上）。
+   At least 8 GB of RAM (12 GB or more is recommended for the "accurate"
+   model).
+
+・硬碟空間約 12 GB；整理時另外需要與被整理照片相同大小的空間，因為
+　程式是先複製。
+   About 12 GB of disk space, plus free space equal to the size of the
+   files being organized, because the program copies first.
+
+・NVIDIA 顯示卡為選配，建議安裝最新的驅動程式。
+   An NVIDIA GPU is optional; the latest driver is recommended.
+
+
+--------------------------------------------------------------------
+4. 安裝（只需要做一次）
+   Installation (only once)
+--------------------------------------------------------------------
+
+・在 ZIP 檔上按右鍵「全部解壓縮」，放到一般資料夾（例如
+　C:\AI媒體分類器）。不要直接在 ZIP 裡雙擊執行，也建議避開 OneDrive
+　同步資料夾。
+   Right-click the ZIP file and choose "Extract All" into a normal
+   folder (for example C:\AI-Media-Sorter). Do not run anything from
+   inside the ZIP, and avoid OneDrive-synced folders.
+
+・雙擊 install.bat。如果出現「Windows 已保護您的電腦」，按「其他資訊」
+　再按「仍要執行」。
+   Double-click install.bat. If Windows shows "Windows protected your
+   PC", click "More info" and then "Run anyway".
+
+・第一次安裝會從網路下載數 GB 的檔案（PyTorch 與 AI 模型），需要時間
+　與網路流量。
+   The first installation downloads several GB from the internet
+   (PyTorch and the AI model). It takes time and uses data.
+
+・看到「安裝完成」後，雙擊 start.bat 開啟程式。
+   When you see the installation-complete message, double-click
+   start.bat to open the program.
+
+
+--------------------------------------------------------------------
+5. 使用步驟
+   How to use
+--------------------------------------------------------------------
+
+・選擇要整理的資料夾，按「開始辨識」。
+   Choose the folder to organize and click "開始辨識" (Start
+   recognition).
+
+・逐一確認分類：按 Enter 同意 AI 的判斷、按 1／2／3 選擇候選、按 S 略過。
+　黃色的列表示 AI 沒有把握，建議你自己看過。
+   Confirm categories one by one: press Enter to accept the AI's choice,
+   1/2/3 to pick a candidate, S to skip. Yellow rows mean the AI is not
+   sure, so please check them yourself.
+
+・按「開始整理」：檔案會被複製到輸出資料夾（預設是來源資料夾裡的
+　「已分類」），原檔不動。
+   Click "開始整理" (Start organizing): files are copied into the output
+   folder (by default "已分類" inside the source folder). Originals are
+   not touched.
+
+・打開輸出資料夾，檢查分類結果。
+   Open the output folder and check the results.
+
+・結果沒問題：按「移除原檔…」，看清楚確認視窗裡的完整清單，再按
+　「移到資源回收筒」。
+   If the results are fine: click "移除原檔…" (Remove originals), read
+   the full list in the confirmation window, and then click "移到資源回
+   收筒" (Move to Recycle Bin).
+
+・結果不滿意：在移除原檔之前，按「復原上次整理」，把這次建立的複本
+　移到資源回收筒。
+   If you are not satisfied: before removing the originals, click
+   "復原上次整理" (Undo last organize) to send the copies created in
+   this run to the Recycle Bin.
+
+
+--------------------------------------------------------------------
+6. 檔案的處理方式與保護機制
+   How files are handled and the safeguards
+--------------------------------------------------------------------
+
+・整理只會複製。程式不會覆蓋任何既有檔案；檔名重複時會自動換成下一個
+　編號。
+   Organizing only copies. The program never overwrites an existing
+   file; when a name is taken it moves on to the next number.
+
+・每一次移除（移除原檔，或復原時移除複本）之前，都會確認「另一份內容
+　逐位元組完全相同的檔案仍然存在」，而且一律送到資源回收筒。
+   Before every removal (removing originals, or removing copies during
+   undo), the program checks that another file with byte-for-byte
+   identical content still exists, and it always sends the file to the
+   Recycle Bin.
+
+・移除前，檔案會先暫時改名（檔名會多一個「(整理前)」或「(複本)」標記）。
+　在 Windows 上，直到送出為止，其他程式無法寫入這兩份檔案；如果任何
+　一份正被其他程式開著寫入，程式會回報「使用中」並保留檔案。
+   Before removal the file is temporarily renamed (a "(整理前)" or
+   "(複本)" tag is added to its name). On Windows, other programs cannot
+   write to either file until it has been sent off; if either file is
+   open for writing in another program, the program reports "in use" and
+   keeps the file.
+
+・原檔被移到資源回收筒後，檔名會帶有「(整理前)」；從資源回收筒還原
+　之後，請自行把檔名改回來。
+   After an original is moved to the Recycle Bin its name carries the
+   "(整理前)" tag; after you restore it from the Recycle Bin, please
+   rename it back yourself.
+
+・移除原檔之後，就不能再使用「復原上次整理」；要找回原檔，請到資源
+　回收筒還原。
+   Once the originals have been removed, "Undo last organize" can no
+   longer be used; to get an original back, restore it from the Recycle
+   Bin.
+
+・整理紀錄（logs 資料夾）只是操作的依據，沒有防竄改的能力，不是安全
+　機制。真正的保護是上面的「另一份相同內容」檢查，以及確認視窗中的
+　完整清單。
+   The organize log (the logs folder) is only a working record. It
+   cannot detect tampering and is not a security mechanism. The real
+   protections are the "another identical copy" check above and the full
+   list shown in the confirmation window.
+
+・掃描時會跳過資源回收筒、System Volume Information、NAS 縮圖資料夾
+　（@eaDir）與系統檔。
+   Scanning skips the Recycle Bin, System Volume Information, NAS
+   thumbnail folders (@eaDir) and system files.
+
+
+--------------------------------------------------------------------
+7. 已知限制
+   Known limitations
+--------------------------------------------------------------------
+
+・本程式主要是在非 Windows 的環境中開發與自動測試。Windows 專屬的行為
+　（資源回收筒、檔案使用中、禁止寫入）只有少量的專屬測試，可能還有
+　沒被發現的差異。
+   This program was developed and automatically tested mainly in a
+   non-Windows environment. Windows-specific behavior (Recycle Bin,
+   files in use, write locking) has only a few dedicated tests and may
+   still contain undiscovered differences.
+
+・「禁止其他程式寫入」的保護只有 Windows 上有；其他系統只能做到改名
+　與再次比對。
+   The "block other programs from writing" protection exists only on
+   Windows; other systems only get the rename and the second comparison.
+
+・網路磁碟機（NAS）在 Windows 上通常沒有資源回收筒，檔案送出時可能
+　被直接刪除（刪除前仍會確認另一份相同內容存在）。
+   Network drives (NAS) usually have no Recycle Bin on Windows, so a
+   file may be deleted outright when it is sent off (the check for
+   another identical copy still applies).
+
+・雲端同步的資料夾（例如 OneDrive）在複製與改名期間可能同時進行同步，
+　建議先暫停同步。
+   Cloud-synced folders (for example OneDrive) may sync while files are
+   being copied or renamed; consider pausing synchronization first.
+
+・分類太少時，AI 仍會把每個檔案歸到「最像」的那一類，不相關的照片也會
+　被硬塞進去；建議至少設定 3 個分類，並留意黃色標示。
+   With too few categories the AI still files every item under the
+   "closest" one, so unrelated photos get forced into a category. Use at
+   least 3 categories and pay attention to the yellow rows.
+
+・影片是平均抽出幾張畫面來判斷，可能漏掉只出現一瞬間的內容。
+   Videos are judged from a few frames sampled evenly, so content that
+   appears only briefly may be missed.
+
+・並未在所有型號的顯示卡、所有 Python 版本與所有檔案格式上測試過。
+   The program has not been tested on every GPU model, every Python
+   version or every file format.
+
+
+--------------------------------------------------------------------
+8. 資料、隱私與網路連線
+   Data, privacy and network use
+--------------------------------------------------------------------
+
+・照片與影片的辨識都在你的電腦上進行，程式本身不會上傳你的檔案。
+   Recognition of photos and videos happens on your computer. The
+   program itself does not upload your files.
+
+・安裝與第一次使用時，會連線到網路下載元件：Python 套件（PyPI）、
+　PyTorch（download.pytorch.org）與 AI 模型（Hugging Face）。這些網站
+　可能會看到你的 IP 位址與下載請求，並適用它們各自的隱私政策。
+   Installation and first use connect to the internet to download
+   components: Python packages (PyPI), PyTorch (download.pytorch.org)
+   and the AI model (Hugging Face). Those sites may see your IP address
+   and download requests, and their own privacy policies apply.
+
+・程式會在你的電腦上保存：settings.json（設定）、categories.json
+　（分類）、logs 資料夾（整理紀錄、錯誤紀錄與主控台輸出）。整理紀錄
+　含有檔案的完整路徑；回報問題時若要貼出紀錄，請先檢查其中是否有個人
+　資訊。
+   The program stores these on your computer: settings.json (settings),
+   categories.json (categories) and the logs folder (organize logs,
+   error logs and console output). Organize logs contain full file
+   paths; if you paste logs when reporting a problem, check them for
+   personal information first.
+
+・AI 模型會下載到使用者資料夾底下的 .cache\huggingface。
+   The AI model is downloaded to .cache\huggingface under your user
+   folder.
+
+
+--------------------------------------------------------------------
+9. 疑難排解（簡要）
+   Troubleshooting (brief)
+--------------------------------------------------------------------
+
+・雙擊 start.bat 沒有反應：程式可能已經開著（請看工作列）；也可以查看
+　logs 資料夾裡的 error.log 與 console.log。
+   Nothing happens when you double-click start.bat: the program may
+   already be open (check the taskbar); you can also look at error.log
+   and console.log in the logs folder.
+
+・顯示卡沒有啟用：更新 NVIDIA 驅動程式後，重新執行 install.bat。
+   The GPU is not used: update the NVIDIA driver and run install.bat
+   again.
+
+・顯示卡記憶體不足：在「設定」把「每批處理張數」調低，或改用「標準」
+　模型。
+   GPU out of memory: lower "batch size" in Settings, or switch to the
+   "standard" model.
+
+・完整說明請看 README.md。
+   See README.md for the full documentation.
+
+
+--------------------------------------------------------------------
+10. 免責聲明
+    Disclaimer
+--------------------------------------------------------------------
+
+・現狀提供，不附任何保證。本程式依「現狀」提供，不提供任何明示或默示的
+　保證，包括但不限於適售性、特定用途適用性、不侵權，以及沒有錯誤或
+　不會中斷的保證。
+   Provided "as is", without warranty. This program is provided "as is"
+   without warranty of any kind, express or implied, including but not
+   limited to warranties of merchantability, fitness for a particular
+   purpose, non-infringement, or that it will be error-free or
+   uninterrupted.
+
+・責任限制。在法律允許的最大範圍內，作者與貢獻者對任何直接、間接、
+　附帶、特殊或衍生的損害不負責任，包括但不限於資料遺失、檔案損毀或
+　誤刪、營業中斷、利潤損失，即使事先已被告知可能發生。
+   Limitation of liability. To the maximum extent permitted by law, the
+   authors and contributors are not liable for any direct, indirect,
+   incidental, special or consequential damages, including but not
+   limited to data loss, file corruption or accidental deletion,
+   business interruption or loss of profits, even if advised of the
+   possibility.
+
+・你的責任。你須自行備份資料、先用少量檔案或複本測試、在確認視窗中
+　檢查完整清單，並自行決定是否移除原檔。
+   Your responsibility. You are responsible for making backups, testing
+   with a few files or copies first, checking the full list in the
+   confirmation windows, and deciding whether to remove the originals.
+
+・AI 結果不保證正確。分類結果可能有誤或有偏差（AI 模型是用網路上的
+　資料訓練的，可能帶有偏見）。請不要把它當作法律、醫療、安全或身分
+　辨識等重要決定的唯一依據。
+   AI results are not guaranteed to be correct. Classifications may be
+   wrong or biased (the AI model was trained on internet data and may
+   carry bias). Do not use it as the sole basis for legal, medical,
+   safety or identification decisions.
+
+・內容與合法使用。你必須有權處理這些檔案；處理他人的照片前，請取得
+　必要的同意，並遵守所在地的法律。作者不對你處理的內容負責。
+   Content and lawful use. You must have the right to process the files.
+   Obtain any necessary consent before processing other people's photos
+   and comply with the laws where you live. The authors are not
+   responsible for the content you process.
+
+・未經認證。本程式沒有經過任何專業機構的認證，也不保證適用於特定用途。
+　不建議用在沒有備份的唯一珍貴資料，或商業、關鍵任務的環境。
+   Not certified. This program has not been certified by any
+   professional body and is not guaranteed to suit any particular
+   purpose. It is not recommended for irreplaceable data that has no
+   backup, or for commercial or mission-critical environments.
+
+・不負支援義務。作者沒有義務提供更新、修正、技術支援或客服。
+   No support obligation. The authors have no obligation to provide
+   updates, fixes, technical support or customer service.
+
+・本聲明不是法律意見，也不排除依法不能排除的責任。
+   This notice is not legal advice, and it does not exclude any
+   liability that cannot be excluded under applicable law.
+
+
+--------------------------------------------------------------------
+11. 第三方元件與商標
+    Third-party components and trademarks
+--------------------------------------------------------------------
+
+・本程式使用開放原始碼與第三方元件，例如 Python、PyTorch、OpenCLIP、
+　Hugging Face Transformers、Pillow、pillow-heif、PyAV（FFmpeg）、
+　NumPy、send2trash，以及 LAION 發布的多語言 CLIP 模型權重。它們各自
+　依自己的授權條款提供；使用或散布時，請自行查閱並遵守。
+   This program uses open-source and third-party components, for example
+   Python, PyTorch, OpenCLIP, Hugging Face Transformers, Pillow,
+   pillow-heif, PyAV (FFmpeg), NumPy, send2trash, and the multilingual
+   CLIP model weights published by LAION. Each is provided under its own
+   license terms; please read and comply with them when you use or
+   distribute the program.
+
+・AI 模型權重由第三方提供。本專案不擁有它們，也不保證它們的品質，或它們
+　的授權適用於你的用途（包括商業使用）。
+   The AI model weights come from third parties. This project does not
+   own them and does not guarantee their quality or that their licenses
+   fit your use (including commercial use).
+
+・文中提到的產品名稱與商標（例如 Windows、NVIDIA、OneDrive）屬於各自的
+　所有者；本專案與這些公司沒有隸屬、贊助或背書的關係。
+   Product names and trademarks mentioned here (for example Windows,
+   NVIDIA, OneDrive) belong to their respective owners; this project is
+   not affiliated with, sponsored by or endorsed by those companies.
+
+
+--------------------------------------------------------------------
+12. 語言與更新
+    Language and updates
+--------------------------------------------------------------------
+
+・如果中文與英文的內容有出入，以中文為準。
+   If the Chinese and English texts differ, the Chinese text prevails.
+
+・本文件可能隨程式版本更新；請以程式隨附的最新版本與 README.md 為準。
+   This document may change with new versions of the program; the latest
+   version shipped with the program and README.md take precedence.
+
+====================================================================

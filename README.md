@@ -1,5 +1,7 @@
 # AI 媒體分類器（AI Media Sorter）
 
+> 📄 **使用前請先閱讀**：[使用說明與免責聲明（中英對照）](使用說明與免責聲明_Usage-and-Disclaimer.txt)　｜　Please read first: [User Guide and Disclaimer (Chinese / English)](使用說明與免責聲明_Usage-and-Disclaimer.txt)
+
 雙擊就能用的桌面程式：AI 先幫你看一遍資料夾裡的**照片與影片**，告訴你「這看起來像什麼」，
 你確認（或修改）分類後，一鍵**依分類複製到資料夾並重新命名**，確認沒問題再把原檔移到資源回收筒。
 
