@@ -6,9 +6,9 @@
 - 「復原」只做一件事：把這次建立的複本移到資源回收筒，而且只有在原檔仍在、
   且兩者內容逐位元組相同時才會移除；原檔不在或內容不同就保留複本
 - 「移除原檔」只移除跟複本內容逐位元組相同的原檔，而且只送到資源回收筒（可從 Windows 救回）
-- 每一次移除都是「比對 → 先在同一個資料夾內改名 → 用『禁止其他人寫入』的方式開檔再比對一次 → 才送資源回收筒」：
-  改名後，照原路徑存檔的程式只會產生新檔；第二次比對的開檔方式（Windows）在任何程式握著可寫入的
-  控制代碼時都會失敗，所以「已經開著檔案、之後才寫入」的情況也會被發現而保留檔案
+- 每一次移除都是「比對 → 先在同一個資料夾內改名 → 用『禁止其他程式寫入』的方式開啟兩份檔案 →
+  握著它們再比對一次、送資源回收筒 → 最後才放開」：從比對到送出為止，沒有程式能修改任何一份；
+  任何一份已被其他程式開著寫入時，開檔會失敗而保留檔案
   （限制：這個強制保護只有 Windows 有；其他系統只能做到改名與第二次比對）
 - 紀錄記著這次整理的來源資料夾與輸出資料夾，每一列都必須落在這兩個資料夾內。
   注意：這些資料夾本身也寫在紀錄裡，能改紀錄的人可以一起改，所以這只是一致性檢查，不是安全邊界；
@@ -443,7 +443,7 @@ def _open_deny_write(path: Path):
     return os.fdopen(fd, "rb")
 
 
-def _same_content(a: Path, b: Path, chunk: int = 1 << 20, reader_a=None) -> bool:
+def _same_content(a: Path, b: Path, chunk: int = 1 << 20, reader_a=None, reader_b=None) -> bool:
     """逐位元組比對兩個不同的檔案。
 
     - 不用 filecmp.cmp：它會依「大小＋修改時間」快取結果，內容改了但時間沒變時會沿用舊答案
@@ -454,14 +454,23 @@ def _same_content(a: Path, b: Path, chunk: int = 1 << 20, reader_a=None) -> bool
         return False
     if a.stat().st_size != b.stat().st_size:
         return False
-    with (reader_a or open(a, "rb")) as fa, open(b, "rb") as fb:
+    # 呼叫端傳入的控制代碼（禁止寫入的保護）由呼叫端負責關閉：這裡絕不能提早關掉
+    fa = reader_a if reader_a is not None else open(a, "rb")
+    fb = reader_b if reader_b is not None else open(b, "rb")
+    try:
         fa.seek(0)
+        fb.seek(0)
         while True:
             block_a, block_b = fa.read(chunk), fb.read(chunk)
             if block_a != block_b:
                 return False
             if not block_a:
                 return True
+    finally:
+        if reader_a is None:
+            fa.close()
+        if reader_b is None:
+            fb.close()
 
 
 def _write_rows_atomic(path: Path, rows: list[dict]) -> None:
@@ -520,13 +529,14 @@ def _remove_verified(path: Path, reference: Path, mark: str, sink: Callable[[Pat
                      precheck: bool = True) -> Path | None:
     """把 path 移除（交給 sink：資源回收筒或隔離資料夾），但只有在移除的那一刻它跟 reference 內容相同時。
 
-    「比對完再移除」中間有空檔，其他程式可能剛好改寫檔案，所以：
-    1. 先把檔案在同一個資料夾內改名：之後照原路徑存檔的程式只會產生新檔，不會動到我們這一份
-    2. 用「禁止其他人寫入」的方式開啟改名後的檔案（見 _open_deny_write）再比對一次：
-       已經握著可寫入控制代碼的程式會讓這一步失敗（檔案保留、改回原名）；
-       比對期間也沒有程式能新開寫入。之後要寫入它，得知道改名後的暫時檔名
-    3. 才交給 sink
-    回傳 sink 的結果（隔離位置或 None）。
+    「比對完再移除」中間有空檔，其他程式可能剛好改寫其中一份，所以：
+    1. 先把 path 在同一個資料夾內改名：之後照原路徑存檔的程式只會產生新檔，不會動到我們這一份
+    2. 用「禁止其他程式寫入」的方式同時開啟兩份檔案（見 _open_deny_write）：
+       任何一份已被其他程式開著寫入，這一步就會失敗（保留、改回原名）
+    3. 握著這兩個控制代碼比對內容，而且一直握到 sink 完成才放開：
+       從比對到送出為止，沒有程式能修改要移除的那一份或留下的那一份
+    （強制的「禁止寫入」只有 Windows 有；其他系統只做得到改名與再次比對）
+    任何一步失敗都把檔案改回原名、不移除。回傳 sink 的結果（隔離位置或 None）。
     """
     if precheck and not _same_content(path, reference):
         raise OSError(f"內容跟另一份不同，為了安全保留：{path}")
@@ -540,20 +550,21 @@ def _remove_verified(path: Path, reference: Path, mark: str, sink: Callable[[Pat
             guard = _open_deny_write(staged)
         except OSError as exc:
             raise OSError(f"檔案正被其他程式開啟寫入，為了安全保留：{path}（{exc}）") from exc
-        try:
-            same = _same_content(staged, reference, reader_a=guard)
-        finally:
-            guard.close()  # 關閉後，想寫入的程式得知道改名後的暫時檔名；照原路徑存檔只會產生新檔
-        if not same:
-            raise OSError(f"移除前內容被其他程式修改，已保留：{path}")
-        return sink(staged)
+        with guard:
+            try:
+                reference_guard = _open_deny_write(reference)
+            except OSError as exc:
+                raise OSError(f"另一份（{reference}）正被其他程式開啟寫入，為了安全保留：{path}（{exc}）") from exc
+            with reference_guard:
+                if not _same_content(staged, reference, reader_a=guard, reader_b=reference_guard):
+                    raise OSError(f"移除前內容被其他程式修改，已保留：{path}")
+                return sink(staged)  # 兩個控制代碼都還握著：送出的內容 = 留下的內容
     except BaseException as exc:
         try:
             _rename_no_clobber(staged, path)
         except OSError:
             raise OSError(f"{exc}（檔案目前在：{staged}，請自行改回原檔名）") from exc
         raise
-
 
 def undo(log_path: Path) -> ExecuteResult:
     """復原一次整理：把這次建立的複本移到資源回收筒，原檔不受影響。
