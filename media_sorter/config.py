@@ -115,7 +115,7 @@ def load_categories(path: Path = CATEGORIES_FILE) -> list[Category]:
         return [Category(c.name, list(c.prompts)) for c in DEFAULT_CATEGORIES]
     categories = []
     for entry in data["categories"]:
-        name = str(entry.get("name", "")).strip()
+        name = " ".join(str(entry.get("name", "")).split())  # 名稱中的換行、定位字元一律換成空白
         if name:
             categories.append(Category(name, [str(p) for p in entry.get("prompts", [])]))
     return categories

@@ -176,9 +176,10 @@ def test_correctly_signed_row_outside_output_folder_is_still_rejected(tmp_path):
     out = tmp_path / "out"
     elsewhere = touch(tmp_path / "elsewhere" / "sub" / "a.jpg", "KEEP")
     src = tmp_path / "src" / "a.jpg"
+    batch = "0123456789abcdef"
     rows = [
-        ["move", src, elsewhere, "貓", "", "4", "0", out],  # 新路徑不在宣稱的輸出資料夾內
-        ["move", tmp_path / "src" / "b.jpg", touch(out / "貓" / "b.exe", "EXE"), "貓", "", "3", "0", out],
+        ["move", src, elsewhere, "貓", "", "4", "0", out, batch],  # 新路徑不在宣稱的輸出資料夾內
+        ["move", tmp_path / "src" / "b.jpg", touch(out / "貓" / "b.exe", "EXE"), "貓", "", "3", "0", out, batch],
     ]
     log = tmp_path / "logs" / "整理紀錄_signed.csv"
     log.parent.mkdir(parents=True)
