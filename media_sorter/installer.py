@@ -98,6 +98,21 @@ def driver_too_old(driver: str | None) -> bool:
         return False
 
 
+def public_version(version: str) -> str:
+    """去掉版本字串的本機標籤：2.14.0+cpu → 2.14.0。
+
+    PyPI 上的 Windows 版 PyTorch 安裝後會回報「2.14.0+cpu」，但這個標籤只存在於本機；
+    若把帶標籤的版本寫進 pip 的限制檔（torch==2.14.0+cpu），pip 會找不到符合的版本而無法安裝。
+    只寫公開版本（torch==2.14.0）時，依 PEP 440 會比對到已安裝的 2.14.0+cpu／2.14.0+cu128。
+    """
+    return version.strip().split("+", 1)[0]
+
+
+def torch_constraints(torch_version: str, torchvision_version: str) -> str:
+    """限制檔內容：鎖定已裝好的 PyTorch 版本，避免其他套件把它換成別的版本（例如 CPU 版）。"""
+    return f"torch=={public_version(torch_version)}\ntorchvision=={public_version(torchvision_version)}\n"
+
+
 def pip(*args: str) -> bool:
     cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", *args]
     print(">", " ".join(cmd), flush=True)
@@ -182,10 +197,11 @@ def main() -> int:
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as constraints:
         if code == 0:  # 鎖定剛裝好的 PyTorch，避免其他套件把它換成 CPU 版
             torch_v, vision_v = versions.splitlines()[-2:]
-            constraints.write(f"torch=={torch_v}\ntorchvision=={vision_v}\n")
+            constraints.write(torch_constraints(torch_v, vision_v))
     try:
         if not pip("-r", str(ROOT / "requirements.txt"), "-c", constraints.name):
-            print("\n✘ 套件安裝失敗，請檢查網路連線後重新執行 install.bat。")
+            print("\n✘ 套件安裝失敗。可能是網路連線中斷，也可能是套件版本衝突；")
+            print("  請把上面的錯誤訊息（特別是 ERROR 開頭的幾行）截圖回報，網路問題可直接重新執行 install.bat。")
             return 1
     finally:
         Path(constraints.name).unlink(missing_ok=True)
