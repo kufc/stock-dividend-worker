@@ -8,3 +8,6 @@ __pycache__/
 categories.json
 settings.json
 logs/
+
+# 安裝程式建置輸出
+dist/

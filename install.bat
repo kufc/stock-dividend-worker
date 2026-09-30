@@ -52,7 +52,7 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 :install
-".venv\Scripts\python.exe" -m pip install --upgrade pip
+rem （更新 pip 與後續安裝都由 media_sorter.installer 處理，含 pip 憑證元件當掉時的自動改用備援）
 ".venv\Scripts\python.exe" -m media_sorter.installer
 if errorlevel 1 (
     echo.

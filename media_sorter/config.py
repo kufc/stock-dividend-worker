@@ -1,6 +1,9 @@
 """設定檔與分類清單的讀寫。
 
-使用者資料都放在程式資料夾（start.bat 旁邊），方便找到與備份：
+使用者資料的位置：
+- 用安裝程式（setup.exe）安裝時：程式在安裝資料夾，使用者資料放在 %LOCALAPPDATA%\\AI Media Sorter
+- 免安裝（ZIP＋install.bat）時：放在程式資料夾（start.bat 旁邊），方便找到與備份
+內容：
 - categories.json：分類清單（可在程式內「分類設定」編輯）
 - settings.json：其他設定（模型、影片取樣張數、上次使用的資料夾⋯）
 - logs/：每次整理的紀錄（可用來復原）與錯誤紀錄
@@ -13,7 +16,23 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-APP_DIR = Path(os.environ.get("MEDIA_SORTER_HOME", Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+INSTALLED = (ROOT / "installed.flag").is_file()  # 由安裝程式（setup.exe）安裝的版本
+DATA_DIR_NAME = "AI Media Sorter"
+DATA_MARKER = ".media-sorter-data"  # 資料資料夾裡的標記檔；解除安裝程式只會清理有這個標記的資料夾
+
+
+def default_data_dir() -> Path:
+    override = os.environ.get("MEDIA_SORTER_HOME")
+    if override:
+        return Path(override)
+    if INSTALLED:
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / DATA_DIR_NAME
+    return ROOT
+
+
+APP_DIR = default_data_dir()
 CATEGORIES_FILE = APP_DIR / "categories.json"
 SETTINGS_FILE = APP_DIR / "settings.json"
 LOG_DIR = APP_DIR / "logs"
@@ -102,6 +121,20 @@ DEFAULT_CATEGORIES = [
 ]
 
 
+def ensure_data_dir(path: Path | None = None) -> None:
+    """建立使用者資料夾並放入標記檔（資料夾就是程式資料夾本身時不需要）。失敗不影響使用。"""
+    path = Path(path) if path is not None else APP_DIR
+    if path == ROOT:
+        return
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        marker = path / DATA_MARKER
+        if not marker.exists():
+            marker.write_text("AI Media Sorter user data. Do not delete this file.\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _read_json(path: Path):
     try:
         with open(path, encoding="utf-8") as f:
@@ -112,6 +145,8 @@ def _read_json(path: Path):
 
 def _write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent == APP_DIR:
+        ensure_data_dir()
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -183,6 +218,8 @@ def acquire_app_lock(lock_dir: Path | None = None):
     lock_dir = lock_dir or LOG_DIR
     try:
         lock_dir.mkdir(parents=True, exist_ok=True)
+        if lock_dir == LOG_DIR:
+            ensure_data_dir()
         handle = open(lock_dir / "app.lock", "a+")
     except OSError:
         return None

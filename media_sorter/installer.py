@@ -15,8 +15,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-INSTALL_MARKER = ROOT / ".venv" / "install-ok.txt"
+from .config import INSTALLED, ROOT  # INSTALLED：由 setup.exe 安裝，Python 在安裝資料夾裡，沒有 .venv
+
+
+INSTALL_MARKER = ROOT / "install-ok.txt" if INSTALLED else ROOT / ".venv" / "install-ok.txt"
+CRASH_CODES = {3221225477, -1073741819}  # 0xC0000005：存取違規（程式當掉）
+LEGACY_CERTS = False  # True：pip 改用內建憑證，不用 Windows 憑證元件（truststore）
+FIX_HINT = ("請重新執行安裝程式，或到開始功能表選「修復」" if INSTALLED
+            else "請刪除 .venv 資料夾後重新執行 install.bat")
 TORCH_INDEX = "https://download.pytorch.org/whl/{}"
 # RTX 50 系列（Blackwell）需要 CUDA 12.8 以上；運算能力 7.5 以下（GTX 10 系列、TITAN V 等）用 CUDA 12.6 版本。
 CUDA_NEW, CUDA_NEW_VERSION = "cu128", "12.8"
@@ -113,10 +119,47 @@ def torch_constraints(torch_version: str, torchvision_version: str) -> str:
     return f"torch=={public_version(torch_version)}\ntorchvision=={public_version(torchvision_version)}\n"
 
 
+def pip_version() -> tuple[int, ...]:
+    code, out, _ = run_python("import pip; print(pip.__version__)")
+    try:
+        return tuple(int(x) for x in out.splitlines()[-1].split(".")[:3])
+    except (ValueError, IndexError):
+        return (0,)
+
+
+def truststore_crashes() -> bool:
+    """pip 24.2 起預設用 Windows 憑證元件（truststore，透過 ctypes）驗證 HTTPS；
+    少數電腦上它會「存取違規」當掉（pip 顯示 OSError: exception: access violation writing 0x…）。
+    先實際連一次 PyPI 試試看；只有「當掉」才回傳 True（一般的網路錯誤不算）。"""
+    if sys.platform != "win32" or pip_version() < (24, 2):
+        return False
+    probe = (
+        "import ssl, urllib.request\n"
+        "from pip._vendor import truststore\n"
+        "ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)\n"
+        "urllib.request.urlopen('https://pypi.org/simple/pip/', context=ctx, timeout=30).read(16)\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, errors="replace")
+    return proc.returncode in CRASH_CODES or "access violation" in proc.stderr.lower()
+
+
 def pip(*args: str) -> bool:
-    cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", *args]
-    print(">", " ".join(cmd), flush=True)
-    return subprocess.call(cmd) == 0
+    global LEGACY_CERTS
+    base = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--retries", "8", "--timeout", "60"]
+    while True:
+        cmd = base + (["--use-deprecated=legacy-certs"] if LEGACY_CERTS else []) + list(args)
+        print(">", " ".join(cmd), flush=True)
+        code = subprocess.call(cmd)
+        if code == 0:
+            return True
+        if not LEGACY_CERTS and pip_version() >= (24, 2) and sys.platform == "win32":
+            print("\n⚠ 下載失敗；改用 pip 內建的憑證（不使用 Windows 憑證元件）再試一次⋯", flush=True)
+            LEGACY_CERTS = True
+            continue
+        if code in CRASH_CODES:
+            print("\n✘ Python 的網路元件當掉了（存取違規）。常見原因是防毒、VPN 或代理軟體干擾，"
+                  "請暫時關閉後再試一次。", flush=True)
+        return False
 
 
 def run_python(code: str) -> tuple[int, str, str]:
@@ -147,6 +190,7 @@ def app_is_running() -> bool:
 
 
 def main() -> int:
+    global LEGACY_CERTS
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
@@ -156,10 +200,10 @@ def main() -> int:
     print("=" * 60)
     print(f"Python {sys.version.split()[0]}  ({sys.executable})")
     if sys.version_info < (3, 10) or struct.calcsize("P") != 8:
-        print("需要 64 位元的 Python 3.10 以上版本（建議 3.12）。請安裝後刪除 .venv 資料夾，再重新執行 install.bat。")
+        print(f"需要 64 位元的 Python 3.10 以上版本（建議 3.12）。請安裝後，{FIX_HINT}。")
         return 1
     if app_is_running():
-        print("✘ AI 媒體分類器正在執行中，請先關閉程式視窗再重新安裝。")
+        print("✘ AI 媒體分類器正在執行中，請先關閉程式視窗再繼續。")
         return 1
 
     gpus, driver = detect_nvidia()
@@ -173,6 +217,12 @@ def main() -> int:
     else:
         print("沒有偵測到 NVIDIA 顯示卡（或驅動程式未安裝），將安裝 CPU 版本。")
 
+    if truststore_crashes():
+        LEGACY_CERTS = True
+        print("⚠ 這台電腦的 Windows 憑證元件會讓 pip 當掉，安裝時改用 pip 內建的憑證。", flush=True)
+    if not INSTALLED:  # 免安裝版才需要更新 pip（安裝版內建的已經夠新）
+        pip("--upgrade", "pip")
+
     print("\n[1/4] 安裝 PyTorch（CUDA 版本約 2~3 GB，請耐心等候）⋯", flush=True)
     current = installed_torch()
     wanted_cuda = build[1] if build else None
@@ -185,11 +235,12 @@ def main() -> int:
             print("\n⚠ CUDA 版 PyTorch 安裝失敗，改裝 CPU 版本（之後仍可重新執行 install.bat）。")
             ok = pip("--upgrade", "--no-cache-dir", "torch", "torchvision")
         if not ok:
-            print("\n✘ PyTorch 安裝失敗。若你的 Python 版本太新，請改裝 Python 3.12，刪除 .venv 資料夾後再試一次。")
+            print(f"\n✘ PyTorch 安裝失敗。請確認網路連線後重試（{FIX_HINT}）。"
+                  + ("" if INSTALLED else "若你的 Python 版本太新，請改裝 Python 3.12。"))
             return 1
         current = installed_torch()
         if current is None:
-            print("\n✘ PyTorch 安裝後無法載入，請刪除 .venv 資料夾後重新執行 install.bat。")
+            print(f"\n✘ PyTorch 安裝後無法載入，{FIX_HINT}。")
             return 1
 
     print("\n[2/4] 安裝其他套件⋯", flush=True)
@@ -231,7 +282,7 @@ def main() -> int:
     )
     _, out, _ = run_python(check)
     print(out.splitlines()[-1] if out else "")
-    print("\n安裝完成！之後雙擊 start.bat 即可開啟程式。")
+    print("\n安裝完成！" + ("從開始功能表開啟「AI 媒體分類器」即可。" if INSTALLED else "之後雙擊 start.bat 即可開啟程式。"))
     return 0
 
 

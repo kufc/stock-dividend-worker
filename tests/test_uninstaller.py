@@ -294,3 +294,93 @@ def test_docs_and_readme_describe_uninstall():
     for text in (readme, doc):
         assert "uninstall.bat" in text and "復原移除" in text
     assert "not modify the registry" in doc or "登錄檔" in doc
+
+
+# ---------------------------------------------------------------------------- 安裝版（setup.exe）：只處理使用者資料
+def make_data_dir(base: Path) -> Path:
+    data = base / "LocalAppData" / "AI Media Sorter"
+    (data / "logs" / U.QUARANTINE_DIR / "x").mkdir(parents=True)
+    (data / U.DATA_MARKER).write_text("marker")
+    (data / "settings.json").write_text("{}")
+    (data / "categories.json").write_text("{}")
+    (data / "logs" / "整理紀錄_20240101_000000.csv").write_text("log")
+    (data / "logs" / "error.log").write_text("e")
+    (data / "logs" / U.QUARANTINE_DIR / "x" / "複本.jpg").write_text("你的檔案")
+    return data
+
+
+def run_data(env, data, *args, cache=None):
+    lines = []
+    code = U.run(["--data-only", "--data-dir", str(data), *args], root=env["root"],
+                 cache_dir=cache or env["root"].parent / "hf-none", say=lines.append)
+    return code, "\n".join(lines)
+
+
+def test_data_only_removes_just_the_ticked_items(env, tmp_path):
+    data = make_data_dir(tmp_path)
+    code, _ = run_data(env, data, "--yes")  # 什麼都沒勾 → 什麼都不刪
+    assert code == U.EXIT_OK and (data / "settings.json").exists() and (data / "logs" / "error.log").exists()
+    code, _ = run_data(env, data, "--yes", "--remove-settings")
+    assert code == U.EXIT_OK
+    assert not (data / "settings.json").exists() and (data / "logs" / "error.log").exists()
+    code, _ = run_data(env, data, "--yes", "--remove-logs")
+    assert code == U.EXIT_OK and not (data / "logs" / "error.log").exists()
+    assert (data / "logs" / U.QUARANTINE_DIR / "x" / "複本.jpg").read_text() == "你的檔案"  # 使用者的檔案永遠保留
+    assert (data / U.DATA_MARKER).exists()  # 還有東西，標記檔與資料夾都留著
+    assert user_files_intact(env)
+
+
+def test_data_dir_is_removed_only_when_nothing_else_is_left(env, tmp_path):
+    data = tmp_path / "LocalAppData" / "AI Media Sorter"
+    (data / "logs").mkdir(parents=True)
+    (data / U.DATA_MARKER).write_text("m")
+    (data / "settings.json").write_text("{}")
+    (data / "logs" / "error.log").write_text("e")
+    code, _ = run_data(env, data, "--yes", "--remove-settings", "--remove-logs")
+    assert code == U.EXIT_OK and not data.exists()
+
+
+def test_data_only_refuses_directories_that_are_not_ours(env, tmp_path, monkeypatch):
+    stranger = tmp_path / "Documents"
+    stranger.mkdir()
+    (stranger / "settings.json").write_text("別人的設定")
+    code, out = run_data(env, stranger, "--yes", "--remove-settings")
+    assert code == U.EXIT_FAILED and "沒有本程式的標記檔" in out and (stranger / "settings.json").exists()
+    assert U.validate_data_dir(tmp_path / "不存在")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    (tmp_path / U.DATA_MARKER).write_text("m")
+    assert "不是本程式的資料夾" in U.validate_data_dir(tmp_path)  # 使用者資料夾本身就算有標記檔也不行
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="用 flock 模擬「程式開著」")
+def test_data_only_check_running_and_active_logs(env, tmp_path):
+    from media_sorter.config import acquire_app_lock
+
+    data = make_data_dir(tmp_path)
+    assert U.run(["--check-running", "--data-dir", str(data)], root=env["root"], say=lambda s: None) == U.EXIT_OK
+    lock = acquire_app_lock(data / "logs")
+    try:
+        assert U.run(["--check-running", "--data-dir", str(data)], root=env["root"],
+                     say=lambda s: None) == U.EXIT_RUNNING
+        code, out = run_data(env, data, "--yes", "--remove-settings")
+        assert code == U.EXIT_FAILED and "正在執行中" in out and (data / "settings.json").exists()
+    finally:
+        lock.close()
+    assert U.run(["--active-logs", "--data-dir", str(data)], root=env["root"], say=lambda s: None) == 1
+
+
+def test_model_removal_in_data_mode(env, tmp_path):
+    data = make_data_dir(tmp_path)
+    cache = tmp_path / "hf" / "hub"
+    (cache / MODEL_B).mkdir(parents=True)
+    (cache / MODEL_B / "m.bin").write_text("m")
+    code, _ = run_data(env, data, "--yes", "--remove-model", cache=cache)
+    assert code == U.EXIT_OK and not (cache / MODEL_B).exists() and (data / "settings.json").exists()
+
+
+def test_bat_uninstaller_refuses_an_installed_version(env):
+    (env["root"] / "installed.flag").write_text("x")
+    code, out = run(env, "--yes")
+    assert code == U.EXIT_FAILED and "安裝程式安裝的版本" in out
+    assert (env["root"] / ".venv" / "install-ok.txt").exists() and user_files_intact(env)

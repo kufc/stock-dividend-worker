@@ -24,8 +24,10 @@ from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
+DATA_MARKER = ".media-sorter-data"  # 使用者資料夾裡的標記檔（跟 config.DATA_MARKER 相同；這裡不 import config 以免依賴它）
 EXIT_OK = 0
 EXIT_FAILED = 1
+EXIT_RUNNING = 42  # --check-running：程式正在執行
 EXIT_REMOVE_VENV_LATER = 10  # 正在用 .venv 裡的 Python 執行：請呼叫端（uninstall.bat）在結束後移除 .venv
 
 # 程式資料夾裡「有可能是這個程式」的標記檔案：缺任何一個就拒絕執行（避免在錯的資料夾裡刪東西）
@@ -84,8 +86,26 @@ def validate_root(root: Path) -> str | None:
     return None
 
 
+def validate_data_dir(data_dir: Path) -> str | None:
+    """安裝版的使用者資料夾：必須真的存在、有本程式的標記檔，而且不是危險的位置。"""
+    try:
+        data_dir = Path(data_dir).resolve()
+    except OSError as exc:
+        return f"無法確認資料夾：{exc}"
+    if not data_dir.is_dir():
+        return f"找不到資料夾：{data_dir}"
+    home = Path.home().resolve()
+    if data_dir == data_dir.parent or data_dir == home or data_dir in home.parents:
+        return f"這不是本程式的資料夾（{data_dir}）。"
+    if not (data_dir / DATA_MARKER).is_file():
+        return f"{data_dir} 裡沒有本程式的標記檔（{DATA_MARKER}），不確定是本程式的資料夾，所以不會刪除任何東西。"
+    return None
+
+
 def app_is_running(root: Path) -> bool:
-    """程式開著時會鎖住 logs\\app.lock（跟 install.bat 用的是同一個鎖）。沒有鎖檔就代表沒開；不會為了檢查而建立資料夾。"""
+    """程式開著時會鎖住 logs\\app.lock（跟視窗程式、install.bat 用的是同一個鎖）。沒有鎖檔就代表沒開；不會為了檢查而建立資料夾。
+
+    root 是放 logs 資料夾的地方（免安裝版是程式資料夾，安裝版是使用者資料夾）。"""
     lock = root / "logs" / "app.lock"
     if not lock.is_file():
         return False
@@ -171,24 +191,32 @@ def running_inside_venv(root: Path, prefix: str | None = None) -> bool:
 
 
 # ---------------------------------------------------------------------------- 清單
-def collect(root: Path, cache_dir: Path | None = None) -> list[Target]:
+def count_active_logs(data: Path) -> int:
+    logs = Path(data) / "logs"
+    return len(list(logs.glob(ACTIVE_LOG_PATTERN))) if logs.is_dir() else 0
+
+
+def collect(root: Path, cache_dir: Path | None = None, data_dir: Path | None = None,
+            include_venv: bool = True) -> list[Target]:
+    """root：程式資料夾；data_dir：使用者資料所在（免安裝版就是 root）。"""
     root = Path(root)
+    data = Path(data_dir) if data_dir is not None else root
     targets: list[Target] = []
     venv = root / ".venv"
-    if venv.exists() or _is_link(venv):
+    if include_venv and (venv.exists() or _is_link(venv)):
         targets.append(Target("venv", "程式運作環境（.venv：Python 與 PyTorch 等套件）",
                               "解除安裝的主體；之後要再用，重新執行 install.bat 即可。", [venv], root,
                               0 if _is_link(venv) else dir_size(venv), default=True))
-    settings = [root / name for name in SETTINGS_FILES if (root / name).is_file()]
+    settings = [data / name for name in SETTINGS_FILES if (data / name).is_file()]
     if settings:
         targets.append(Target("settings", "你的設定與分類清單（" + "、".join(p.name for p in settings) + "）",
-                              "刪除後，重新安裝會回到預設分類與設定。", settings, root,
+                              "刪除後，重新安裝會回到預設分類與設定。", settings, data,
                               sum(p.stat().st_size for p in settings)))
-    logs = root / "logs"
+    logs = data / "logs"
     log_files = sorted({p for pattern in LOG_FILE_PATTERNS for p in logs.glob(pattern) if p.is_file()}) \
         if logs.is_dir() else []
     if log_files:
-        active = len(list(logs.glob(ACTIVE_LOG_PATTERN)))
+        active = count_active_logs(data)
         note = "這些是每次整理的紀錄與錯誤紀錄，不含你的照片。"
         if active:
             note += (f"\n    ⚠ 其中有 {active} 份整理紀錄還沒處理完；刪除後就無法再用本程式「移除這次建立的複本」或"
@@ -263,13 +291,13 @@ def remove_target(target: Target) -> list[str]:
 
 
 # ---------------------------------------------------------------------------- 主流程
-def _print_plan(root: Path, targets: list[Target], say: Callable[[str], None]) -> None:
+def _print_plan(root: Path, targets: list[Target], say: Callable[[str], None], data: Path | None = None) -> None:
     say("")
-    say(f"程式資料夾：{root}")
+    say(f"程式資料夾：{root}" if data is None else f"使用者資料夾：{data}")
     say("")
     say("【不會被動到】你的照片與影片、整理輸出的資料夾（例如「已分類」）、資源回收筒、")
     say("　　　　　　　logs\\復原移除 裡的檔案，以及程式資料夾以外的其他東西。")
-    quarantine = root / "logs" / QUARANTINE_DIR
+    quarantine = (data or root) / "logs" / QUARANTINE_DIR
     if quarantine.is_dir():
         say(f"　　　　　　　（注意：{quarantine} 裡有復原時搬開的複本，這些是你的檔案，會保留。）")
     say("")
@@ -288,12 +316,24 @@ def run(argv: list[str] | None = None, *, root: Path | None = None, cache_dir: P
     parser.add_argument("--remove-settings", action="store_true", help="一併移除設定與分類清單")
     parser.add_argument("--remove-logs", action="store_true", help="一併移除整理紀錄與錯誤紀錄")
     parser.add_argument("--remove-model", action="store_true", help="一併移除本程式使用的 AI 模型檔案")
+    parser.add_argument("--data-only", action="store_true",
+                        help="只處理使用者資料（設定、整理紀錄、AI 模型）；給安裝程式的解除安裝流程使用，需搭配 --data-dir")
+    parser.add_argument("--data-dir", help="使用者資料夾（安裝版：%%LOCALAPPDATA%%\\AI Media Sorter）")
+    parser.add_argument("--check-running", action="store_true", help="程式開著就回傳 42，否則回傳 0")
+    parser.add_argument("--active-logs", action="store_true", help="以結束代碼回傳還沒處理完的整理紀錄數量（最多 100）")
     args = parser.parse_args(argv)
+
+    if args.data_only or args.check_running or args.active_logs:
+        return _run_data_mode(args, root, cache_dir, input_func, say)
 
     root = Path(root) if root is not None else ROOT
     say("=" * 60)
     say(" AI 媒體分類器 - 解除安裝")
     say("=" * 60)
+    if (root / "installed.flag").is_file():
+        say("\n✘ 這是用安裝程式安裝的版本，請從 Windows「設定 → 應用程式 → 已安裝的應用程式」或"
+            "開始功能表的「解除安裝」來移除。")
+        return EXIT_FAILED
     problem = validate_root(root)
     if problem:
         say(f"\n✘ {problem}")
@@ -371,6 +411,56 @@ def run(argv: list[str] | None = None, *, root: Path | None = None, cache_dir: P
     say("✔ 解除安裝完成。")
     say("  程式資料夾本身（包含 install.bat、start.bat 與這個檔案）沒有被刪除，")
     say("  不需要時請自行刪除整個資料夾。你的照片與整理結果都沒有被動到。")
+    return EXIT_OK
+
+
+def _run_data_mode(args, root, cache_dir, input_func, say) -> int:
+    """安裝版解除安裝時用：只處理使用者資料夾裡的東西（程式檔案由安裝程式自己移除）。"""
+    root = Path(root) if root is not None else ROOT
+    if not args.data_dir:
+        say("✘ 需要 --data-dir。")
+        return EXIT_FAILED
+    data = Path(args.data_dir)
+    if args.check_running or args.active_logs:
+        # 只讀取資訊，不需要標記檔；資料夾不存在就代表沒有東西
+        if args.check_running:
+            return EXIT_RUNNING if app_is_running(data) else EXIT_OK
+        return min(count_active_logs(data), 100)
+    problem = validate_data_dir(data)
+    if problem:
+        say(f"\n✘ {problem}")
+        return EXIT_FAILED
+    data = data.resolve()
+    if app_is_running(data):
+        say("\n✘ AI 媒體分類器正在執行中，請先關閉程式視窗。")
+        return EXIT_FAILED
+    targets = collect(root, cache_dir, data_dir=data, include_venv=False)
+    if not targets:
+        say("\n沒有找到需要移除的使用者資料。")
+        return EXIT_OK
+    wanted = {"settings": args.remove_settings, "logs": args.remove_logs, "model": args.remove_model}
+    chosen = [t for t in targets if wanted.get(t.key)]
+    if args.dry_run:
+        say("這是試跑，會移除：" + ("、".join(t.label for t in chosen) or "（無）"))
+        return EXIT_OK
+    failures: list[str] = []
+    for t in chosen:
+        say(f"移除：{t.label.split('（')[0]}⋯")
+        failures += remove_target(t)
+    if failures:
+        say("✘ 有些項目沒有移除成功：")
+        for line in failures:
+            say(f"  ・{line}")
+        return EXIT_FAILED
+    # 沒有其他東西了才順便移除標記檔與（空的）資料夾；還有使用者的檔案（例如復原移除）就整個保留
+    remaining = [p for p in data.iterdir() if p.name != DATA_MARKER]
+    if not remaining:
+        try:
+            (data / DATA_MARKER).unlink()
+            data.rmdir()
+        except OSError:
+            pass
+    say("✔ 完成。")
     return EXIT_OK
 
 

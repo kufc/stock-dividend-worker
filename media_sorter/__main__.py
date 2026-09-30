@@ -67,7 +67,10 @@ def _report_startup_error(text: str) -> None:
             f.write(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}] 啟動失敗\n{text}\n")
     except OSError:
         pass
-    _show_error_box("程式無法啟動，請重新執行 install.bat。\n\n" + text[-1500:])
+    from .config import INSTALLED
+
+    fix = "請到開始功能表執行「修復」，或重新執行安裝程式" if INSTALLED else "請重新執行 install.bat"
+    _show_error_box(f"程式無法啟動，{fix}。\n\n" + text[-1500:])
 
 
 def main(argv: list[str] | None = None) -> int:

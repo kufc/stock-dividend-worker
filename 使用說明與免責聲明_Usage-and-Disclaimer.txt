@@ -75,10 +75,15 @@ counterpart.
 ・Windows 10 或 11。本文的操作步驟以 Windows 為準。
    Windows 10 or 11. The steps in this file assume Windows.
 
-・64 位元的 Python 3.10 以上，建議 3.12。安裝 Python 時，請勾選
-　「Add python.exe to PATH」與「tcl/tk and IDLE」。
-   64-bit Python 3.10 or newer; 3.12 is recommended. When installing
-   Python, check "Add python.exe to PATH" and "tcl/tk and IDLE".
+・64 位元的 Windows。用安裝程式（setup.exe）安裝時，Python 已經內建，不需要
+　另外安裝；只有用「免安裝版」（ZIP＋install.bat）時，才需要自己安裝 64 位元
+　的 Python 3.10 以上（建議 3.12），並勾選「Add python.exe to PATH」與
+　「tcl/tk and IDLE」。
+   64-bit Windows. Python is bundled when you use the installer
+   (setup.exe), so you do not need to install it yourself. Only the
+   portable version (ZIP plus install.bat) needs your own 64-bit Python
+   3.10 or newer (3.12 recommended), with "Add python.exe to PATH" and
+   "tcl/tk and IDLE" checked.
 
 ・記憶體 8 GB 以上（使用「高精準」模型建議 12 GB 以上）。
    At least 8 GB of RAM (12 GB or more is recommended for the "accurate"
@@ -98,47 +103,100 @@ counterpart.
    Installation and uninstallation
 --------------------------------------------------------------------
 
-・在 ZIP 檔上按右鍵「全部解壓縮」，放到一般資料夾（例如
-　C:\AI媒體分類器）。不要直接在 ZIP 裡雙擊執行，也建議避開 OneDrive
-　同步資料夾。
-   Right-click the ZIP file and choose "Extract All" into a normal
-   folder (for example C:\AI-Media-Sorter). Do not run anything from
-   inside the ZIP, and avoid OneDrive-synced folders.
+・建議用安裝程式：雙擊 AI-Media-Sorter-Setup-版本.exe，跟著精靈操作。
+　如果出現「Windows 已保護您的電腦」，按「其他資訊」再按「仍要執行」。
+　安裝程式需要你先閱讀並接受本文件（授權頁），然後選擇資料夾與是否建立
+　桌面捷徑。不需要系統管理員權限，程式只會安裝給目前的使用者。
+   Recommended: use the installer. Double-click
+   AI-Media-Sorter-Setup-version.exe and follow the wizard. If Windows
+   shows "Windows protected your PC", click "More info" and then "Run
+   anyway". The installer asks you to read and accept this document (the
+   license page), then lets you choose the folder and whether to create
+   a desktop shortcut. It does not need administrator rights and
+   installs for the current user only.
 
-・雙擊 install.bat。如果出現「Windows 已保護您的電腦」，按「其他資訊」
-　再按「仍要執行」。
-   Double-click install.bat. If Windows shows "Windows protected your
-   PC", click "More info" and then "Run anyway".
+・安裝資料夾一定會建在名為「AI Media Sorter」的資料夾裡（就算選了 C:\
+　或「文件」，也只會在它底下建立這個子資料夾）。你的設定、整理紀錄與
+　錯誤紀錄放在 %LOCALAPPDATA%\AI Media Sorter，跟程式檔案分開，重新
+　安裝或升級不會被蓋掉。
+   The installation folder is always created inside a folder named "AI
+   Media Sorter" (even if you pick C:\ or Documents, only that subfolder
+   is created). Your settings, organize records and error logs live in
+   %LOCALAPPDATA%\AI Media Sorter, separate from the program files, so
+   reinstalling or upgrading does not overwrite them.
 
-・第一次安裝會從網路下載數 GB 的檔案（PyTorch 與 AI 模型），需要時間
-　與網路流量。
-   The first installation downloads several GB from the internet
-   (PyTorch and the AI model). It takes time and uses data.
+・安裝程式最後會下載 PyTorch 與 AI 模型（數 GB，需要網路，可能要幾分鐘到
+　幾十分鐘），進度會顯示在另一個黑色視窗，請不要關閉它。失敗時可以按
+　「重試」，或先完成安裝，之後從開始功能表執行「修復」補裝；補裝完成前
+　程式還不能使用。
+   At the end the installer downloads PyTorch and the AI model (several
+   GB, needs internet, may take minutes to tens of minutes). Progress
+   is shown in a separate black window; please do not close it. If it
+   fails you can click Retry, or finish setup and complete it later with
+   Repair from the Start menu; the program cannot be used until then.
 
-・看到「安裝完成」後，雙擊 start.bat 開啟程式。
-   When you see the installation-complete message, double-click
-   start.bat to open the program.
+・解除安裝：到 Windows「設定 → 應用程式 → 已安裝的應用程式」選「AI 媒體
+　分類器」按解除安裝，或用開始功能表裡的「解除安裝」。精靈會問你要不要
+　一併移除「設定與分類清單」、「整理紀錄與錯誤紀錄」、「AI 模型檔案」；
+　三項預設都保留，要各自勾選才會移除。
+   Uninstall: open Windows "Settings, Apps, Installed apps", choose "AI
+   媒體分類器" and click Uninstall, or use "解除安裝" (Uninstall) in the
+   Start menu. The wizard asks whether to also remove your settings and
+   category list, the organize records and error logs, and the AI model
+   files; all three are kept by default and are removed only if you
+   tick them.
 
-・解除安裝：先關閉程式，再雙擊 uninstall.bat。它會列出每一項會做什麼、
-　多大，你輸入 Y 之後才開始。預設只移除程式運作環境（.venv 資料夾，
-　含 Python 套件與 PyTorch）；你的設定與分類清單、整理紀錄、AI 模型檔案
-　都要各自同意才會移除。
-   Uninstall: close the program, then double-click uninstall.bat. It
-   lists what each step does and how big it is, and only starts after
-   you type Y. By default it removes only the runtime environment (the
-   .venv folder with the Python packages and PyTorch); your settings and
-   category list, the organize records, and the AI model files are
-   removed only if you agree to each one separately.
+・解除安裝只會移除安裝程式放進去的程式檔案與內建 Python（安裝資料夾裡的
+　python 與 app 兩個資料夾）、捷徑和登錄項目；最後只有在安裝資料夾已經空了
+　的時候才會移除它，裡面若有你自己放的東西就保留。程式還開著時，安裝、
+　升級與解除安裝都會拒絕執行。
+   Uninstalling removes only the program files and bundled Python that
+   the installer put there (the python and app folders inside the
+   installation folder), the shortcuts and the registry entries; the
+   installation folder itself is removed only when it is empty, so
+   anything you put there is kept. Installing, upgrading and
+   uninstalling all refuse to run while the program is open.
 
-・解除安裝不會動到：你的照片與影片、整理輸出的資料夾（例如「已分類」）、
-　資源回收筒，以及 logs\復原移除 裡的檔案（沒有資源回收筒時，被搬開的
-　複本放在那裡，是你的檔案）。程式資料夾本身也不會被刪除，不需要時請
-　自行刪除整個資料夾。
-   Uninstalling never touches: your photos and videos, the output
+・給管理員：靜默安裝 setup.exe /S（加 /D=資料夾 可指定位置，/SKIPDEPS 略過下載）；
+　靜默解除安裝 uninstall.exe /S，預設保留個人資料，可加 /REMOVE_SETTINGS、
+　/REMOVE_LOGS、/REMOVE_MODEL 一併移除。
+   For administrators: silent install with setup.exe /S (add /D=folder
+   to choose the location, /SKIPDEPS to skip the download); silent
+   uninstall with uninstall.exe /S, which keeps personal data by
+   default; add /REMOVE_SETTINGS, /REMOVE_LOGS or /REMOVE_MODEL to remove
+   it too.
+
+・免安裝版（ZIP）：在 ZIP 檔上按右鍵「全部解壓縮」，放到一般資料夾（例如
+　C:\AI媒體分類器），不要直接在 ZIP 裡雙擊執行，也建議避開 OneDrive 同步
+　資料夾；雙擊 install.bat 安裝，看到「安裝完成」後雙擊 start.bat 開啟程式。
+   Portable version (ZIP): right-click the ZIP file and choose "Extract
+   All" into a normal folder (for example C:\AI-Media-Sorter), do not run
+   anything from inside the ZIP, and avoid OneDrive-synced folders;
+   double-click install.bat to install, and when you see the
+   installation-complete message, double-click start.bat to open the
+   program.
+
+・免安裝版的解除安裝：先關閉程式，再雙擊 uninstall.bat。它會列出每一項會做
+　什麼、多大，你輸入 Y 之後才開始。預設只移除程式運作環境（.venv 資料夾，
+　含 Python 套件與 PyTorch）；設定與分類清單、整理紀錄、AI 模型檔案都要
+　各自同意才會移除。程式資料夾本身不會被刪除，不需要時請自行刪除整個
+　資料夾。
+   Uninstalling the portable version: close the program, then
+   double-click uninstall.bat. It lists what each step does and how big
+   it is, and only starts after you type Y. By default it removes only
+   the runtime environment (the .venv folder with the Python packages
+   and PyTorch); your settings and category list, the organize records
+   and the AI model files are removed only if you agree to each one
+   separately. The program folder itself is not deleted; delete the
+   whole folder yourself when you no longer need it.
+
+・任何一種解除安裝都不會動到：你的照片與影片、整理輸出的資料夾（例如
+　「已分類」）、資源回收筒，以及 logs\復原移除 裡的檔案（沒有資源回收筒
+　時，被搬開的複本放在那裡，是你的檔案）。
+   No kind of uninstall ever touches: your photos and videos, the output
    folders (for example "已分類"), the Recycle Bin, and the files in
    logs\復原移除 (copies moved aside when no Recycle Bin was available;
-   they are your files). The program folder itself is not deleted
-   either; delete the whole folder yourself when you no longer need it.
+   they are your files).
 
 ・AI 模型檔案放在 Hugging Face 的快取（預設是 %USERPROFILE%\.cache\
 　huggingface），可能跟其他程式共用，所以要另外同意才會移除，而且只會
@@ -158,14 +216,14 @@ counterpart.
    themselves are not affected. The uninstaller warns you when there are
    records that have not been finished.
 
-・解除安裝程式只會刪除清單裡的項目，每一項在刪除前都會再確認位置；
-　連結（捷徑式資料夾）只移除連結本身；程式還開著時會拒絕執行。任何一項
-　失敗都會如實回報，不會假裝成功。
-   The uninstaller only deletes the items on its list and re-checks the
-   location of each one before deleting. A link (shortcut-style folder)
-   is removed as a link only, and the uninstaller refuses to run while
-   the program is open. Any failure is reported honestly instead of
-   being hidden.
+・免安裝版的解除安裝程式只會刪除清單裡的項目，每一項在刪除前都會再確認
+　位置；連結（捷徑式資料夾）只移除連結本身；程式還開著時會拒絕執行。
+　任何一項失敗都會如實回報，不會假裝成功。
+   The portable version's uninstaller only deletes the items on its list
+   and re-checks the location of each one before deleting. A link
+   (shortcut-style folder) is removed as a link only, and it refuses to
+   run while the program is open. Any failure is reported honestly
+   instead of being hidden.
 
 
 --------------------------------------------------------------------
@@ -361,12 +419,19 @@ counterpart.
    The AI model is downloaded to .cache\huggingface under your user
    folder.
 
-・本程式不寫入 Windows 登錄檔，也不建立捷徑、服務或開機自動啟動項目。
-　它留在電腦上的東西只有：程式資料夾（含 .venv）、AI 模型快取，以及
-　pip 下載套件時 pip 自己的快取（可用 pip cache purge 清除）。
-   The program does not modify the Windows registry and does not create
-   shortcuts, services or startup entries. The only things it leaves on
-   the computer are the program folder (including .venv), the AI model
+・免安裝版不寫入 Windows 登錄檔；用安裝程式安裝時，只會為目前的使用者寫入
+　兩個登錄項目（讓「設定 → 應用程式」能列出並解除安裝它），解除安裝時
+　會一併移除。不會建立服務或開機自動啟動項目，安裝版只建立開始功能表
+　捷徑（桌面捷徑要你勾選）。它留在電腦上的東西只有：程式檔案、你的
+　使用者資料、AI 模型快取，以及 pip 下載套件時 pip 自己的快取（可用
+　pip cache purge 清除）。
+   The portable version does not modify the Windows registry. The
+   installer writes only two registry entries for the current user (so
+   that "Settings, Apps" can list and uninstall it) and removes them
+   when you uninstall. It creates no services or startup entries, and
+   the installed version creates Start menu shortcuts only (the desktop
+   shortcut is optional and you must tick it). The only things left on
+   the computer are the program files, your user data, the AI model
    cache, and pip's own download cache from installing packages (which
    you can clear with pip cache purge).
 
