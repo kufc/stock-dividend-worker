@@ -68,7 +68,8 @@ def alias_of(path: Path) -> Path | None:
     否則用一個指向該資料夾的符號連結；兩者都做不到就回傳 None（測試會略過）。"""
     upper = path.with_name(path.name.swapcase())
     try:
-        if upper != path and upper.exists() and os.path.samefile(upper, path):
+        # 用字串比較：Windows 的路徑物件比較本身就不分大小寫，upper != path 會永遠是假
+        if str(upper) != str(path) and upper.exists() and os.path.samefile(upper, path):
             return upper
     except OSError:
         pass

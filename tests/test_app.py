@@ -70,9 +70,8 @@ def test_full_flow(app, tmp_path, monkeypatch):
 
     # 復原
     import media_sorter.app as app_module
-    from tkinter import messagebox
 
-    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(app_module, "confirm_with_list", lambda *a, **k: True)
     app.undo_last()
     pump(app.root, lambda: not app.organizing)
     assert red.exists() and video.exists()
@@ -116,7 +115,6 @@ def test_manual_choice_skip_and_batch(app, tmp_path):
 
 def test_remove_originals_after_review(app, tmp_path, monkeypatch):
     import shutil
-    from tkinter import messagebox
 
     import media_sorter.app as app_module
     from media_sorter import organizer
@@ -135,7 +133,7 @@ def test_remove_originals_after_review(app, tmp_path, monkeypatch):
     copy = src / "已分類" / "紅" / "紅_001.jpg"
     assert red.exists() and copy.exists()
 
-    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(app_module, "confirm_with_list", lambda *a, **k: True)
     app.remove_originals_last()
     pump(app.root, lambda: not app.organizing)
     assert not red.exists() and (bin_dir / "r (整理前).jpg").exists() and copy.exists()  # 原檔進回收筒，複本留著

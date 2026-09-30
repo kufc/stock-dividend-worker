@@ -184,7 +184,6 @@ def test_unreadable_log_can_be_set_aside(app, tmp_path, monkeypatch):
 
 
 def test_confirmation_lists_folders_and_files(app, tmp_path, monkeypatch):
-    from tkinter import messagebox
 
     from media_sorter.organizer import execute, plan_operations
 
@@ -192,7 +191,49 @@ def test_confirmation_lists_folders_and_files(app, tmp_path, monkeypatch):
     a = make_image(src / "sub" / "IMG_1.png", (250, 10, 10))
     ops = plan_operations([(a, "紅", __import__("datetime").datetime(2024, 1, 1))], src / "已分類")
     execute(ops, tmp_path / "logs", source_dir=src, output_dir=src / "已分類")
-    texts = []
-    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: texts.append(a[1]) or False)
+    import media_sorter.app as app_module
+
+    shown = []
+    monkeypatch.setattr(app_module, "confirm_with_list",
+                        lambda master, title, message, lines, ok: shown.append((message, lines)) or False)
+    app.folder_var.set(str(src))
     app.remove_originals_last()
-    assert "來源資料夾" in texts[0] and str(src) in texts[0] and "IMG_1.png" in texts[0]
+    message, lines = shown[0]
+    assert "來源資料夾" in message and str(src) in message and "⚠" not in message
+    assert any("IMG_1.png" in line for line in lines)
+
+
+def test_confirmation_lists_every_file_and_warns_on_other_folder(app, tmp_path, monkeypatch):
+    import media_sorter.app as app_module
+    from media_sorter.organizer import execute, plan_operations
+
+    src = tmp_path / "photos"
+    files = [make_image(src / f"IMG_{i:02d}.png", (250, 10, 10)) for i in range(15)]
+    when = __import__("datetime").datetime(2024, 1, 1)
+    ops = plan_operations([(f, "紅", when) for f in files], src / "已分類")
+    execute(ops, tmp_path / "logs", source_dir=src, output_dir=src / "已分類")
+    shown = []
+    monkeypatch.setattr(app_module, "confirm_with_list",
+                        lambda master, title, message, lines, ok: shown.append((message, lines)) or False)
+    app.folder_var.set(str(tmp_path / "別的資料夾"))
+    app.remove_originals_last()
+    message, lines = shown[0]
+    assert all(any(f.name in line for line in lines) for f in files)  # 15 個全部列出，不省略
+    assert "⚠" in message  # 紀錄的來源資料夾跟目前選的不同
+
+
+def test_header_only_log_can_be_set_aside(app, tmp_path, monkeypatch):
+    from tkinter import messagebox
+
+    import media_sorter.app as app_module
+    from media_sorter import organizer
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    empty = logs / "整理紀錄_20240101_000000.csv"
+    empty.write_text(",".join(organizer.LOG_FIELDS) + "\n", encoding="utf-8-sig")
+    asked = []
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: asked.append(a[1]) or True)
+    app.undo_last()
+    assert asked and "沒有可以" in asked[0]
+    assert app_module.latest_log(logs) is None  # 不再卡在這份空紀錄

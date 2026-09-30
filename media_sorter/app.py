@@ -77,6 +77,49 @@ def open_in_file_manager(path: Path) -> None:
         subprocess.Popen(["xdg-open", str(path)])
 
 
+def confirm_with_list(master, title: str, message: str, lines: list[str], ok_text: str) -> bool:
+    """確認視窗：上方說明，下方可捲動的完整清單（不省略），按「確定」才回傳 True。"""
+    dialog = tk.Toplevel(master)
+    dialog.title(title)
+    dialog.transient(master)
+    dialog.geometry("760x560")
+    result = {"ok": False}
+    body = ttk.Frame(dialog, padding=10)
+    body.pack(fill="both", expand=True)
+    ttk.Label(body, text=message, wraplength=720, justify="left").pack(anchor="w")
+    frame = ttk.Frame(body)
+    frame.pack(fill="both", expand=True, pady=8)
+    text = tk.Text(frame, wrap="none", height=16)
+    scroll_y = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+    scroll_x = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
+    text.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+    scroll_y.pack(side="right", fill="y")
+    scroll_x.pack(side="bottom", fill="x")
+    text.pack(side="left", fill="both", expand=True)
+    text.insert("1.0", "\n".join(lines))
+    text.configure(state="disabled")
+    buttons = ttk.Frame(body)
+    buttons.pack(fill="x")
+
+    def choose(ok: bool) -> None:
+        result["ok"] = ok
+        dialog.destroy()
+
+    ttk.Button(buttons, text="取消", command=lambda: choose(False)).pack(side="right")
+    ttk.Button(buttons, text=ok_text, style="Accent.TButton", command=lambda: choose(True)).pack(side="right", padx=6)
+    dialog.protocol("WM_DELETE_WINDOW", lambda: choose(False))
+    dialog.grab_set()
+    master.wait_window(dialog)
+    return result["ok"]
+
+
+def _same_folder(a: str | Path, b: str | Path) -> bool:
+    try:
+        return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+    except (OSError, ValueError):
+        return False
+
+
 def _default_classifier_factory(preset: str):
     from .classifier import Classifier
 
@@ -1050,26 +1093,41 @@ class App:
                     messagebox.showerror(APP_NAME, f"無法移動紀錄檔：{move_exc}")
             return None
         if not rows:
-            messagebox.showinfo(APP_NAME, f"整理紀錄「{log.name}」裡沒有可以{action_text}的項目。")
+            if messagebox.askyesno(
+                APP_NAME,
+                f"整理紀錄「{log.name}」裡沒有可以{action_text}的項目（可能是空的或只寫了一半）。\n\n"
+                "要把這份紀錄移到旁邊（內容保留）嗎？這樣才能處理更早的整理紀錄。",
+            ):
+                try:
+                    set_aside_log(log)
+                except OSError as move_exc:
+                    messagebox.showerror(APP_NAME, f"無法移動紀錄檔：{move_exc}")
             return None
         when = datetime.fromtimestamp(log.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
         return log, rows, when
 
-    @staticmethod
-    def _describe_rows(rows: list[dict], key: str, limit: int = 6) -> str:
-        """確認視窗用：來源／輸出資料夾與前幾個檔名，讓使用者看得到要處理什麼。"""
+    def _confirm_rows(self, rows: list[dict], key: str, question: str, notes: list[str], ok_text: str) -> bool:
+        """列出這次要處理的「每一個」檔案讓使用者確認（不省略）。
+
+        紀錄的來源資料夾跟目前選擇的資料夾不同時，最上面顯示警告：紀錄可能不是這次的，或被修改過。
+        """
         source, output = log_roots(rows)
-        names = []
-        for row in rows[:limit]:
+        header = []
+        current = self.folder_var.get().strip()
+        if current and not _same_folder(source, current):
+            header.append(f"⚠注意：這份紀錄的來源資料夾（{source}）跟目前選擇的資料夾（{current}）不同，"
+                          "請確認清單中的檔案是你要處理的。")
+        header += [question, f"來源資料夾：{source}", f"輸出資料夾：{output}", *notes]
+        base = source if key == "原始路徑" else output
+        lines = []
+        for row in rows:
             path = Path(row[key])
             try:
-                names.append(str(path.relative_to(source if key == "原始路徑" else output)))
+                lines.append(str(path.relative_to(base)))
             except ValueError:
-                names.append(path.name)
-        listing = "\n".join(f"　・{n}" for n in names)
-        if len(rows) > limit:
-            listing += f"\n　　⋯還有 {len(rows) - limit} 個"
-        return f"來源資料夾：{source}\n輸出資料夾：{output}\n\n{listing}"
+                lines.append(str(path))
+        return confirm_with_list(self.root, APP_NAME, "\n".join(header),
+                                 [f"共 {len(lines)} 個檔案：", *lines], ok_text)
 
     def _start_log_task(self, log: Path, func, kind: str, status: str) -> None:
         self.organizing = True
@@ -1083,11 +1141,9 @@ class App:
         if picked is None:
             return
         log, rows, when = picked
-        if not messagebox.askyesno(
-            APP_NAME,
-            f"要復原 {when} 的整理嗎？\n{self._describe_rows(rows, '新路徑')}\n\n"
-            f"會把這 {len(rows)} 個複本移到資源回收筒，原檔不受影響。\n"
-            "（原檔已經移除，或複本後來被修改過的，會保留複本不動）",
+        if not self._confirm_rows(
+            rows, "新路徑", f"要復原 {when} 的整理嗎？下列 {len(rows)} 個複本會移到資源回收筒，原檔不受影響。",
+            ["（原檔已經移除，或複本後來被修改過的，會保留複本不動）"], "復原",
         ):
             return
         self._start_log_task(log, undo, "undone", "正在復原⋯")
@@ -1097,13 +1153,12 @@ class App:
         if picked is None:
             return
         log, rows, when = picked
-        if not messagebox.askyesno(
-            APP_NAME,
-            f"要把 {when} 整理的 {len(rows)} 個原檔移到資源回收筒嗎？\n{self._describe_rows(rows, '原始路徑')}\n\n"
-            "・只有跟複本內容完全相同的原檔才會移除\n"
-            "・資源回收筒裡的檔名會多一個「(整理前)」標記，還原後改回即可\n"
-            "・移除原檔之後，這次整理就不能再用「復原上次整理」\n\n"
-            "建議先打開輸出資料夾確認分類結果。確定要移除嗎？",
+        if not self._confirm_rows(
+            rows, "原始路徑", f"要把 {when} 整理的下列 {len(rows)} 個原檔移到資源回收筒嗎？",
+            ["・只有跟複本內容完全相同的原檔才會移除",
+             "・資源回收筒裡的檔名會多一個「(整理前)」標記，還原後改回即可",
+             "・移除原檔之後，這次整理就不能再用「復原上次整理」",
+             "建議先打開輸出資料夾確認分類結果。"], "移到資源回收筒",
         ):
             return
         self._start_log_task(log, remove_originals, "removed", "正在把原檔移到資源回收筒⋯")

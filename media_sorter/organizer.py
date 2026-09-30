@@ -6,11 +6,13 @@
 - 「復原」只做一件事：把這次建立的複本移到資源回收筒，而且只有在原檔仍在、
   且兩者內容逐位元組相同時才會移除；原檔不在或內容不同就保留複本
 - 「移除原檔」只移除跟複本內容逐位元組相同的原檔，而且只送到資源回收筒（可從 Windows 救回）
-- 每一次移除都是「比對 → 先在同一個資料夾內改名 → 再比對一次 → 才送資源回收筒」：
-  改名是原子操作，檔案正被其他程式使用時（Windows）改名會失敗而被回報；改名後其他程式若照原路徑存檔，
-  只會產生新檔，我們手上這份不受影響。所以送進資源回收筒的內容，一定跟留下來的那一份相同
-- 紀錄記著這次整理的來源資料夾與輸出資料夾，每一列都必須落在這兩個資料夾內；
-  確認視窗會列出資料夾與檔名，讓使用者按下去之前看得到要處理什麼
+- 每一次移除都是「比對 → 先在同一個資料夾內改名 → 用『禁止其他人寫入』的方式開檔再比對一次 → 才送資源回收筒」：
+  改名後，照原路徑存檔的程式只會產生新檔；第二次比對的開檔方式（Windows）在任何程式握著可寫入的
+  控制代碼時都會失敗，所以「已經開著檔案、之後才寫入」的情況也會被發現而保留檔案
+  （限制：這個強制保護只有 Windows 有；其他系統只能做到改名與第二次比對）
+- 紀錄記著這次整理的來源資料夾與輸出資料夾，每一列都必須落在這兩個資料夾內。
+  注意：這些資料夾本身也寫在紀錄裡，能改紀錄的人可以一起改，所以這只是一致性檢查，不是安全邊界；
+  真正的保護是「刪除前一定有另一份內容相同的檔案」與確認視窗列出的完整清單
 - 因為每一次刪除都要求「另一份內容完全相同的檔案仍然存在」，紀錄檔就算寫到一半、
   被竄改或被重新放回，最壞情況也只是某個檔案沒被處理，不會造成資料遺失
 """
@@ -411,7 +413,37 @@ def _validate_row(row: dict) -> str | None:
     return None
 
 
-def _same_content(a: Path, b: Path, chunk: int = 1 << 20) -> bool:
+def _open_deny_write(path: Path):
+    """開檔讀取，同時禁止任何程式寫入這個檔案（Windows）。
+
+    share mode 不含 FILE_SHARE_WRITE：只要已經有程式握著可寫入的控制代碼，開檔就會失敗
+    （共用違規 WinError 32），我們就知道檔案正在被寫入；開成功之後、關閉之前，也沒有程式能再開寫入。
+    其他系統沒有這種強制鎖，只是一般開檔。
+    """
+    if os.name != "nt":
+        return open(path, "rb")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    generic_read, file_share_read, file_share_delete, open_existing = 0x80000000, 0x1, 0x4, 3
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                            wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(str(path), generic_read, file_share_read | file_share_delete, None, open_existing, 0x80, None)
+    if handle is None or handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+    except OSError:
+        kernel32.CloseHandle(wintypes.HANDLE(handle))
+        raise
+    return os.fdopen(fd, "rb")
+
+
+def _same_content(a: Path, b: Path, chunk: int = 1 << 20, reader_a=None) -> bool:
     """逐位元組比對兩個不同的檔案。
 
     - 不用 filecmp.cmp：它會依「大小＋修改時間」快取結果，內容改了但時間沒變時會沿用舊答案
@@ -422,7 +454,8 @@ def _same_content(a: Path, b: Path, chunk: int = 1 << 20) -> bool:
         return False
     if a.stat().st_size != b.stat().st_size:
         return False
-    with open(a, "rb") as fa, open(b, "rb") as fb:
+    with (reader_a or open(a, "rb")) as fa, open(b, "rb") as fb:
+        fa.seek(0)
         while True:
             block_a, block_b = fa.read(chunk), fb.read(chunk)
             if block_a != block_b:
@@ -487,9 +520,12 @@ def _remove_verified(path: Path, reference: Path, mark: str, sink: Callable[[Pat
                      precheck: bool = True) -> Path | None:
     """把 path 移除（交給 sink：資源回收筒或隔離資料夾），但只有在移除的那一刻它跟 reference 內容相同時。
 
-    「比對完再移除」中間有空檔，其他程式可能剛好改寫檔案。所以先把檔案在同一個資料夾內改名
-    （原子操作；Windows 上檔案正被其他程式開著時會失敗 → 回報「使用中」，不動它），
-    改名後再比對一次才交給 sink。改名之後，照原路徑存檔的程式只會產生新檔，不會動到我們這一份。
+    「比對完再移除」中間有空檔，其他程式可能剛好改寫檔案，所以：
+    1. 先把檔案在同一個資料夾內改名：之後照原路徑存檔的程式只會產生新檔，不會動到我們這一份
+    2. 用「禁止其他人寫入」的方式開啟改名後的檔案（見 _open_deny_write）再比對一次：
+       已經握著可寫入控制代碼的程式會讓這一步失敗（檔案保留、改回原名）；
+       比對期間也沒有程式能新開寫入。之後要寫入它，得知道改名後的暫時檔名
+    3. 才交給 sink
     回傳 sink 的結果（隔離位置或 None）。
     """
     if precheck and not _same_content(path, reference):
@@ -500,7 +536,15 @@ def _remove_verified(path: Path, reference: Path, mark: str, sink: Callable[[Pat
     except OSError as exc:
         raise OSError(f"無法移除（檔案可能正被其他程式使用）：{path}（{exc}）") from exc
     try:
-        if not _same_content(staged, reference):
+        try:
+            guard = _open_deny_write(staged)
+        except OSError as exc:
+            raise OSError(f"檔案正被其他程式開啟寫入，為了安全保留：{path}（{exc}）") from exc
+        try:
+            same = _same_content(staged, reference, reader_a=guard)
+        finally:
+            guard.close()  # 關閉後，想寫入的程式得知道改名後的暫時檔名；照原路徑存檔只會產生新檔
+        if not same:
             raise OSError(f"移除前內容被其他程式修改，已保留：{path}")
         return sink(staged)
     except BaseException as exc:

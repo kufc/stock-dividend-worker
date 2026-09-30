@@ -46,8 +46,8 @@ def test_original_modified_after_compare_is_not_removed(tmp_path, trash, monkeyp
     ops, result = organize(tmp_path, [a])
     real = organizer._same_content
 
-    def compare_then_modify(x, y):
-        same = real(x, y)
+    def compare_then_modify(x, y, **kwargs):
+        same = real(x, y, **kwargs)
         if same and Path(x) == a:  # 比對「通過」的那一刻，另一個程式改寫了原檔
             a.write_text("NEWER")
         return same
@@ -66,8 +66,8 @@ def test_original_rewritten_at_last_moment_keeps_newer_content(tmp_path, trash, 
     ops, result = organize(tmp_path, [a])
     real = organizer._same_content
 
-    def compare_then_modify(x, y):
-        same = real(x, y)
+    def compare_then_modify(x, y, **kwargs):
+        same = real(x, y, **kwargs)
         if same and f"({organizer.STAGE_MARK_ORIGINAL})" in Path(x).name:  # 改名後那次比對通過的那一刻
             a.write_text("NEWER")
         return same
@@ -85,8 +85,8 @@ def test_copy_modified_after_compare_is_not_removed_on_undo(tmp_path, trash, mon
     ops, result = organize(tmp_path, [a])
     real = organizer._same_content
 
-    def compare_then_modify(x, y):
-        same = real(x, y)
+    def compare_then_modify(x, y, **kwargs):
+        same = real(x, y, **kwargs)
         if same and Path(y) == ops[0].dst:
             ops[0].dst.write_text("EDITED")
         return same
@@ -169,7 +169,7 @@ def test_oversized_field_gives_value_error_not_csv_error(tmp_path):
 
 
 def test_long_but_legitimate_paths_are_fine(tmp_path):
-    long_dir = tmp_path / ("d" * 200) / ("e" * 200)
+    long_dir = tmp_path / ("長路徑" * 10) / ("d" * 60)  # 夠長，但仍在 Windows 預設的 260 字元路徑限制內
     a = touch(long_dir / "a.jpg", "A")
     ops = plan_operations([(a, "貓", D)], tmp_path / "out")
     result = execute(ops, tmp_path / "logs", source_dir=long_dir, output_dir=tmp_path / "out")
