@@ -7,6 +7,8 @@ import pytest
 
 tk = pytest.importorskip("tkinter")
 
+from pathlib import Path  # noqa: E402
+
 from conftest import pump  # noqa: E402
 from helpers import make_image, make_video  # noqa: E402
 
@@ -64,7 +66,7 @@ def test_full_flow(app, tmp_path, monkeypatch):
     out = src / "已分類"
     assert sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()) == [
         "紅/紅_001.jpg", "紅/紅_002.jpg", "綠/綠_001.png", "藍/藍_001.mp4"]
-    assert not red.exists() and not video.exists()
+    assert red.exists() and video.exists()  # 整理只複製，原檔不動
 
     # 復原
     import media_sorter.app as app_module
@@ -74,7 +76,7 @@ def test_full_flow(app, tmp_path, monkeypatch):
     app.undo_last()
     pump(app.root, lambda: not app.organizing)
     assert red.exists() and video.exists()
-    assert not any(p.is_file() for p in out.rglob("*"))
+    assert not any(p.is_file() for p in out.rglob("*"))  # 復原 = 移除複本
     assert app_module.latest_log(tmp_path / "logs") is None
 
 
@@ -105,9 +107,36 @@ def test_manual_choice_skip_and_batch(app, tmp_path):
     assert app.items[app._index_of(iids[2])].status == SKIPPED
 
     # 只整理已確認的（沒有待確認項目，不會詢問）
-    app.action_var.set("copy")
     app.rename_var.set(False)
     app.organize()
     pump(app.root, lambda: len(app.items) == 1)
     assert sorted(p.name for p in (src / "已分類" / "綠").iterdir()) == ["0.png", "1.png"]
-    assert (src / "0.png").exists()  # 複製模式保留原檔
+    assert (src / "0.png").exists()  # 原檔不動
+
+
+def test_remove_originals_after_review(app, tmp_path, monkeypatch):
+    import shutil
+    from tkinter import messagebox
+
+    import media_sorter.app as app_module
+    from media_sorter import organizer
+
+    bin_dir = tmp_path / "RECYCLE"
+    bin_dir.mkdir()
+    monkeypatch.setattr(organizer, "_send2trash", lambda p: shutil.move(p, bin_dir / Path(p).name))
+    src = tmp_path / "photos"
+    red = make_image(src / "r.jpg", (250, 10, 10))
+    app.rename_var.set(True)  # 設定檔在測試間共用，明確指定
+    app.folder_var.set(str(src))
+    app.toggle_analysis()
+    pump(app.root, lambda: app.items and not app.analysis_running())
+    app.organize()
+    pump(app.root, lambda: not app.items)
+    copy = src / "已分類" / "紅" / "紅_001.jpg"
+    assert red.exists() and copy.exists()
+
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
+    app.remove_originals_last()
+    pump(app.root, lambda: not app.organizing)
+    assert not red.exists() and (bin_dir / "r.jpg").exists() and copy.exists()  # 原檔進回收筒，複本留著
+    assert app_module.latest_log(tmp_path / "logs") is None

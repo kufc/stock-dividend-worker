@@ -68,37 +68,28 @@ def test_plan_without_rename_keeps_names_and_resolves_collisions(tmp_path):
     assert sorted(op.dst.name for op in ops) == ["same (2).jpg", "same.jpg"]
 
 
-def test_move_and_undo_roundtrip(tmp_path):
+def test_copy_and_undo_roundtrip(tmp_path):
     a = touch(tmp_path / "src" / "a.jpg", "A")
     b = touch(tmp_path / "src" / "sub" / "b.mp4", "B")
     ops = plan_operations([(a, "貓", datetime(2024, 1, 1)), (b, "影片", datetime(2024, 1, 1))], tmp_path / "out")
     logs = tmp_path / "logs"
-    result = execute(ops, "move", logs)
+    result = execute(ops, logs)
     assert result.done == 2 and not result.errors
-    assert not a.exists() and not b.exists()
+    assert a.read_text() == "A" and b.read_text() == "B"  # 原檔完全不動
     assert (tmp_path / "out" / "貓" / "貓_001.jpg").read_text() == "A"
     assert latest_log(logs) == result.log_path
 
     undone = undo(result.log_path)
     assert undone.done == 2 and not undone.errors
     assert a.read_text() == "A" and b.read_text() == "B"
-    assert not (tmp_path / "out" / "貓").exists()  # 空資料夾會被清掉
+    assert not (tmp_path / "out" / "貓").exists()  # 複本移除後，空資料夾會被清掉
     assert latest_log(logs) is None  # 紀錄已標記為已復原
-
-
-def test_copy_and_undo_keeps_originals(tmp_path):
-    a = touch(tmp_path / "src" / "a.jpg", "A")
-    ops = plan_operations([(a, "貓", datetime(2024, 1, 1))], tmp_path / "out")
-    result = execute(ops, "copy", tmp_path / "logs")
-    assert a.exists() and ops[0].dst.exists()
-    undo(result.log_path)
-    assert a.exists() and not ops[0].dst.exists()
 
 
 def test_execute_reports_errors_and_continues(tmp_path):
     a = touch(tmp_path / "a.jpg")
     missing = tmp_path / "missing.jpg"
     ops = plan_operations([(missing, "貓", datetime(2024, 1, 1)), (a, "貓", datetime(2024, 1, 2))], tmp_path / "out")
-    result = execute(ops, "move", tmp_path / "logs")
+    result = execute(ops, tmp_path / "logs")
     assert result.done == 1
     assert [p.name for p, _ in result.errors] == ["missing.jpg"]

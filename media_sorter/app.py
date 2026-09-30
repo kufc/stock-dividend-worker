@@ -36,7 +36,16 @@ from .config import (
     save_settings,
 )
 from .media import file_date, load_preview, media_kind, scan_folder
-from .organizer import execute, folder_key, latest_log, plan_operations, read_log, undo
+from .organizer import (
+    execute,
+    folder_key,
+    free_space_problem,
+    latest_log,
+    plan_operations,
+    read_log,
+    remove_originals,
+    undo,
+)
 from .vocabulary import VOCABULARY
 
 STATUS_TEXT = {PENDING: "待確認", CONFIRMED: "已確認", SKIPPED: "略過", ERROR: "無法讀取"}
@@ -269,9 +278,7 @@ class App:
 
         row2 = ttk.Frame(out)
         row2.pack(fill="x", padx=6, pady=3)
-        self.action_var = tk.StringVar(value=self.settings.get("action", "move"))
-        ttk.Radiobutton(row2, text="搬移", variable=self.action_var, value="move").pack(side="left")
-        ttk.Radiobutton(row2, text="複製（保留原檔）", variable=self.action_var, value="copy").pack(side="left", padx=8)
+        ttk.Label(row2, text="複製到分類資料夾（原檔不動）").pack(side="left")
         ttk.Separator(row2, orient="vertical").pack(side="left", fill="y", padx=8)
         self.rename_var = tk.BooleanVar(value=self.settings.get("rename", True))
         ttk.Checkbutton(row2, text="重新命名，樣式：", variable=self.rename_var).pack(side="left")
@@ -280,8 +287,10 @@ class App:
         ttk.Label(row2, text="可用：{分類} {日期} {序號} {原檔名}", style="Hint.TLabel").pack(side="left")
         self.organize_btn = ttk.Button(row2, text="開始整理 ▶", style="Accent.TButton", command=self.organize)
         self.organize_btn.pack(side="right")
+        self.remove_btn = ttk.Button(row2, text="移除原檔…", command=self.remove_originals_last)
+        self.remove_btn.pack(side="right", padx=6)
         self.undo_btn = ttk.Button(row2, text="↩ 復原上次整理", command=self.undo_last)
-        self.undo_btn.pack(side="right", padx=6)
+        self.undo_btn.pack(side="right")
 
     def _bind_keys(self) -> None:
         def guarded(func):
@@ -725,7 +734,7 @@ class App:
     def _set_busy(self, busy: bool) -> None:
         """整理或復原進行中時，停用會動到檔案或清單的按鈕。"""
         state = ["disabled"] if busy else ["!disabled"]
-        for button in (self.organize_btn, self.run_btn, self.undo_btn, self.category_btn):
+        for button in (self.organize_btn, self.run_btn, self.undo_btn, self.remove_btn, self.category_btn):
             button.state(state)
 
     def toggle_analysis(self) -> None:
@@ -765,6 +774,7 @@ class App:
         self.run_btn.configure(text="■ 停止")
         self.organize_btn.state(["disabled"])
         self.undo_btn.state(["disabled"])
+        self.remove_btn.state(["disabled"])
         self.worker = threading.Thread(
             target=self._analysis_worker,
             args=(self._run_id, self.stop_event, folder, self.subfolders_var.get(), self.output_dir(),
@@ -809,17 +819,17 @@ class App:
         except Exception as exc:  # noqa: BLE001 - 背景錯誤要回報到介面
             post(("error", f"{type(exc).__name__}: {exc}", traceback.format_exc()))
 
-    def _organize_worker(self, run_id: int, ops, action: str) -> None:
+    def _organize_worker(self, run_id: int, ops) -> None:
         try:
-            result = execute(ops, action, LOG_DIR,
-                             on_progress=lambda i, n: self.queue.put(("progress", run_id, i, n)))
+            result = execute(ops, LOG_DIR, on_progress=lambda i, n: self.queue.put(("progress", run_id, i, n)))
             self.queue.put(("organized", run_id, ops, result))
         except Exception as exc:  # noqa: BLE001
             self.queue.put(("error", run_id, f"{type(exc).__name__}: {exc}", traceback.format_exc()))
 
-    def _undo_worker(self, run_id: int, log: Path) -> None:
+    def _log_worker(self, run_id: int, log: Path, func, kind: str) -> None:
+        """在背景執行「復原」或「移除原檔」。"""
         try:
-            self.queue.put(("undone", run_id, undo(log)))
+            self.queue.put((kind, run_id, func(log)))
         except Exception as exc:  # noqa: BLE001
             self.queue.put(("error", run_id, f"{type(exc).__name__}: {exc}", traceback.format_exc()))
 
@@ -882,6 +892,8 @@ class App:
             self._finish_organize(*args)
         elif kind == "undone":
             self._finish_undo(args[0])
+        elif kind == "removed":
+            self._finish_remove(args[0])
         elif kind == "preview":
             uid, img = args
             self._preview_loading.discard(uid)
@@ -959,32 +971,34 @@ class App:
         except (OSError, RuntimeError) as exc:
             messagebox.showerror(APP_NAME, f"無法規劃整理方式：{exc}")
             return
-        action = self.action_var.get()
+        space = free_space_problem(ops)
+        if space:
+            messagebox.showwarning(APP_NAME, space)
+            return
         counts = Counter(op.category for op in ops)
         lines = "\n".join(f"　{name}：{n} 個" for name, n in counts.most_common(12))
         if len(counts) > 12:
             lines += f"\n　⋯等 {len(counts)} 個分類"
         example = ops[0]
-        verb = "搬移" if action == "move" else "複製"
         if not messagebox.askokcancel(
             APP_NAME,
-            f"即將{verb} {len(ops)} 個檔案到：\n{output}\n\n{lines}\n\n"
+            f"即將把 {len(ops)} 個檔案複製到：\n{output}\n\n{lines}\n\n"
             f"範例：{example.src.name} → {example.dst.parent.name}\\{example.dst.name}\n\n"
-            "完成後可用「復原上次整理」還原。確定要開始嗎？",
+            "原檔不會被移動或修改。確認複本沒問題後，可以再按「移除原檔」。確定要開始嗎？",
         ):
             return
 
         self.settings.update(
-            output_dir=self.output_var.get().strip(), action=action,
+            output_dir=self.output_var.get().strip(),
             rename=self.rename_var.get(), rename_pattern=pattern,
         )
         save_settings(self.settings)
-        self.status_var.set(f"正在{verb}檔案⋯")
+        self.status_var.set("正在複製檔案⋯")
         self.progress.configure(maximum=len(ops), value=0)
         self.organizing = True
         self._set_busy(True)
         self._run_id += 1
-        threading.Thread(target=self._organize_worker, args=(self._run_id, ops, action), daemon=True).start()
+        threading.Thread(target=self._organize_worker, args=(self._run_id, ops), daemon=True).start()
 
     def _finish_organize(self, ops, result) -> None:
         self.organizing = False
@@ -993,9 +1007,10 @@ class App:
         self._set_items([it for it in self.items if str(it.path.absolute()) not in processed])
         self.refresh_tree()
         output = ops[0].dst.parent.parent if ops else self.output_dir()
-        message = f"完成！已整理 {result.done} 個檔案。"
+        message = (f"完成！已把 {result.done} 個檔案複製到分類資料夾，原檔都還在原位。\n\n"
+                   "確認複本沒問題後，可以按「移除原檔」把原檔移到資源回收筒。")
         if result.aborted:
-            message = f"整理中途停止：紀錄檔無法寫入。已完成 {result.done} 個檔案（都可以復原）。"
+            message = f"整理中途停止：紀錄檔無法寫入。已複製 {result.done} 個檔案，原檔都還在原位。"
         if result.warnings:
             message += "\n\n注意：\n" + "\n".join(result.warnings[:8])
         if result.errors:
@@ -1008,49 +1023,83 @@ class App:
             except OSError:
                 pass
 
-    def undo_last(self) -> None:
+    def _pick_log(self, action_text: str) -> tuple[Path, list[dict], str] | None:
         if self.organizing or self.analysis_running():
-            return
+            return None
         log = latest_log(LOG_DIR)
         if log is None:
-            messagebox.showinfo(APP_NAME, "目前沒有可以復原的整理紀錄。")
-            return
+            messagebox.showinfo(APP_NAME, f"目前沒有可以{action_text}的整理紀錄。")
+            return None
         try:
             rows = read_log(log)
         except (OSError, ValueError) as exc:
             messagebox.showerror(APP_NAME, f"無法讀取整理紀錄「{log.name}」：{exc}")
-            return
+            return None
         when = datetime.fromtimestamp(log.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-        folders = sorted({str(Path(r["新路徑"]).parent.parent) for r in rows})
-        moves = sum(1 for r in rows if r["動作"] in ("move", "pending-move"))
-        copies = len(rows) - moves
-        detail = []
-        if moves:
-            detail.append(f"・{moves} 個搬移的檔案會搬回原位置")
-        if copies:
-            detail.append(f"・{copies} 個複製出來的檔案會移到資源回收筒（原檔已不在的會改為搬回原位；整理後被修改過的不會刪除）")
-        if not messagebox.askyesno(
-            APP_NAME,
-            f"要復原 {when} 的整理嗎？\n輸出位置：{'、'.join(folders[:3])}\n\n" + "\n".join(detail),
-        ):
-            return
+        return log, rows, when
+
+    def _start_log_task(self, log: Path, func, kind: str, status: str) -> None:
         self.organizing = True
         self._set_busy(True)
-        self.status_var.set("正在復原⋯")
+        self.status_var.set(status)
         self._run_id += 1
-        threading.Thread(target=self._undo_worker, args=(self._run_id, log), daemon=True).start()
+        threading.Thread(target=self._log_worker, args=(self._run_id, log, func, kind), daemon=True).start()
+
+    def undo_last(self) -> None:
+        picked = self._pick_log("復原")
+        if picked is None:
+            return
+        log, rows, when = picked
+        folders = sorted({str(Path(r["新路徑"]).parent.parent) for r in rows})
+        if not messagebox.askyesno(
+            APP_NAME,
+            f"要復原 {when} 的整理嗎？\n輸出位置：{'、'.join(folders[:3])}\n\n"
+            f"會把這次建立的 {len(rows)} 個複本移到資源回收筒，原檔不受影響。\n"
+            "（原檔已經移除，或複本後來被修改過的，會保留複本不動）",
+        ):
+            return
+        self._start_log_task(log, undo, "undone", "正在復原⋯")
+
+    def remove_originals_last(self) -> None:
+        picked = self._pick_log("移除原檔")
+        if picked is None:
+            return
+        log, rows, when = picked
+        if not messagebox.askyesno(
+            APP_NAME,
+            f"要把 {when} 整理的 {len(rows)} 個原檔移到資源回收筒嗎？\n\n"
+            "・只有跟複本內容完全相同的原檔才會移除\n"
+            "・之後若要救回，請到 Windows 的「資源回收筒」還原\n"
+            "・移除原檔之後，這次整理就不能再用「復原上次整理」\n\n"
+            "建議先打開輸出資料夾確認分類結果。確定要移除嗎？",
+        ):
+            return
+        self._start_log_task(log, remove_originals, "removed", "正在把原檔移到資源回收筒⋯")
+
+    def _report(self, title: str, result, retry_hint: str) -> str:
+        message = title
+        if result.warnings:
+            message += "\n\n注意：\n" + "\n".join(result.warnings[:8])
+        if result.errors:
+            message += (f"\n\n{len(result.errors)} 個失敗（{retry_hint}）：\n"
+                        + "\n".join(f"{p.name}：{e}" for p, e in result.errors[:8]))
+        return message
 
     def _finish_undo(self, result) -> None:
         self.organizing = False
         self._set_busy(False)
-        message = f"已復原 {result.done} 個檔案。"
-        if result.warnings:
-            message += "\n\n注意：\n" + "\n".join(result.warnings[:8])
-        if result.errors:
-            message += (f"\n\n{len(result.errors)} 個失敗（再按一次「復原上次整理」會重試這些檔案）：\n"
-                        + "\n".join(f"{p.name}：{e}" for p, e in result.errors[:8]))
-        self.status_var.set(f"復原完成：{result.done} 個檔案")
-        messagebox.showinfo(APP_NAME, message + "\n\n如需重新分類，請再按一次「開始辨識」。")
+        self.status_var.set(f"復原完成：{result.done} 個複本已移除")
+        messagebox.showinfo(APP_NAME, self._report(
+            f"已移除 {result.done} 個複本，原檔都在原位。", result, "再按一次「復原上次整理」會重試這些檔案")
+            + "\n\n如需重新分類，請再按一次「開始辨識」。")
+
+    def _finish_remove(self, result) -> None:
+        self.organizing = False
+        self._set_busy(False)
+        self.status_var.set(f"已把 {result.done} 個原檔移到資源回收筒")
+        messagebox.showinfo(APP_NAME, self._report(
+            f"已把 {result.done} 個原檔移到資源回收筒（可從資源回收筒救回）。", result,
+            "這些原檔都沒有被移除；排除原因後再按一次「移除原檔」會重試"))
 
     # ------------------------------------------------------------------ 其他
     def log_error(self, text: str) -> None:
@@ -1078,12 +1127,12 @@ class App:
 
     def on_close(self) -> None:
         if self.organizing:
-            messagebox.showinfo(APP_NAME, "正在整理或復原檔案，請等待完成後再關閉程式。")
+            messagebox.showinfo(APP_NAME, "正在處理檔案，請等待完成後再關閉程式。")
             return
         self.stop_event.set()
         self.settings.update(
             last_folder=self.folder_var.get().strip(), include_subfolders=self.subfolders_var.get(),
-            output_dir=self.output_var.get().strip(), action=self.action_var.get(),
+            output_dir=self.output_var.get().strip(),
             rename=self.rename_var.get(), rename_pattern=self.pattern_var.get().strip() or RENAME_PATTERN_PRESETS[0],
         )
         try:
