@@ -6,6 +6,11 @@
 - 「復原」只做一件事：把這次建立的複本移到資源回收筒，而且只有在原檔仍在、
   且兩者內容逐位元組相同時才會移除；原檔不在或內容不同就保留複本
 - 「移除原檔」只移除跟複本內容逐位元組相同的原檔，而且只送到資源回收筒（可從 Windows 救回）
+- 每一次移除都是「比對 → 先在同一個資料夾內改名 → 再比對一次 → 才送資源回收筒」：
+  改名是原子操作，檔案正被其他程式使用時（Windows）改名會失敗而被回報；改名後其他程式若照原路徑存檔，
+  只會產生新檔，我們手上這份不受影響。所以送進資源回收筒的內容，一定跟留下來的那一份相同
+- 紀錄記著這次整理的來源資料夾與輸出資料夾，每一列都必須落在這兩個資料夾內；
+  確認視窗會列出資料夾與檔名，讓使用者按下去之前看得到要處理什麼
 - 因為每一次刪除都要求「另一份內容完全相同的檔案仍然存在」，紀錄檔就算寫到一半、
   被竄改或被重新放回，最壞情況也只是某個檔案沒被處理，不會造成資料遺失
 """
@@ -34,7 +39,11 @@ except ImportError:  # pragma: no cover - 選用功能
 
 INVALID_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
-LOG_FIELDS = ["動作", "原始路徑", "新路徑", "分類", "時間", "大小"]
+LOG_FIELDS = ["動作", "原始路徑", "新路徑", "分類", "時間", "大小", "來源資料夾", "輸出資料夾"]
+UNREADABLE_PREFIX = "無法讀取_"  # 壞掉的紀錄移到旁邊時用的前綴（不符合 LOG_NAME_RE，不會再被選中）
+STAGE_MARK_ORIGINAL = "整理前"  # 移除原檔前的暫時檔名標記：IMG_1234 (整理前).jpg（進了資源回收筒也看得懂）
+STAGE_MARK_COPY = "複本"
+csv.field_size_limit(16 * 1024 * 1024)  # 預設 128 KB；路徑很長的紀錄不該被當成格式錯誤
 LOG_PREFIX = "整理紀錄_"
 LOG_NAME_RE = re.compile(r"整理紀錄_\d{8}_\d{6}(?:_\d{1,3})?\.csv")
 UNDONE_PREFIX = "已復原_"
@@ -237,12 +246,36 @@ def _open_new_log(log_dir: Path):
     raise OSError("無法建立紀錄檔")
 
 
+def _canonical(path: Path) -> str:
+    """資料夾比對用的標準形式（解析連結、Windows 不分大小寫）。"""
+    return os.path.normcase(str(Path(path).resolve()))
+
+
+def _is_within(path: Path, root: str) -> bool:
+    canonical = _canonical(path)
+    return canonical == root or canonical.startswith(root.rstrip("\\/") + os.sep)
+
+
 def execute(
     ops: list[PlannedOp],
     log_dir: Path,
+    *,
+    source_dir: Path | None = None,
+    output_dir: Path | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> ExecuteResult:
-    """把每個檔案複製到分類資料夾，原檔完全不動。每完成一個檔案就寫一列紀錄（供之後復原或移除原檔）。"""
+    """把每個檔案複製到分類資料夾，原檔完全不動。每完成一個檔案就寫一列紀錄（供之後復原或移除原檔）。
+
+    source_dir／output_dir 是這次整理的來源與輸出資料夾，會寫進每一列紀錄；
+    之後復原或移除原檔時，只接受落在這兩個資料夾內的檔案。
+    """
+    if ops:
+        if source_dir is None:
+            source_dir = Path(os.path.commonpath([str(op.src.parent) for op in ops]))
+        if output_dir is None:
+            output_dir = ops[0].dst.parent.parent
+    source_root = _canonical(source_dir) if source_dir is not None else ""
+    output_root = _canonical(output_dir) if output_dir is not None else ""
     log_path, f = _open_new_log(Path(log_dir))
     errors: list[tuple[Path, str]] = []
     done = 0
@@ -263,7 +296,8 @@ def execute(
             else:
                 try:
                     writer.writerow(["copy", str(op.src), str(op.dst), op.category,
-                                     datetime.now().isoformat(timespec="seconds"), op.dst.stat().st_size])
+                                     datetime.now().isoformat(timespec="seconds"), op.dst.stat().st_size,
+                                     source_root, output_root])
                     f.flush()
                     os.fsync(f.fileno())
                 except OSError as exc:
@@ -313,17 +347,43 @@ def read_log_rows(log_path: Path) -> tuple[list[dict], int]:
     text = _decode_bytes(Path(log_path).read_bytes())
     # newline="" 讓 csv 模組自己處理換行：被引號包住的欄位（例如含換行的分類名稱）才不會被切斷
     reader = csv.DictReader(io.StringIO(text, newline=""))
-    if reader.fieldnames is None:
-        return [], 0
-    if not {"動作", "原始路徑", "新路徑"} <= set(reader.fieldnames):
-        raise ValueError("紀錄檔格式不正確（缺少必要欄位）")
-    rows, skipped = [], 0
-    for row in reader:
-        if all(isinstance(row.get(k), str) and row[k].strip() for k in ("動作", "原始路徑", "新路徑")):
-            rows.append(row)
-        elif any(isinstance(v, str) and v.strip() for k, v in row.items() if k is not None):
-            skipped += 1
+    try:
+        if reader.fieldnames is None:
+            return [], 0
+        if not {"動作", "原始路徑", "新路徑", "來源資料夾", "輸出資料夾"} <= set(reader.fieldnames):
+            raise ValueError("紀錄檔格式不正確（缺少必要欄位，可能是舊版本的紀錄）")
+        rows, skipped = [], 0
+        for row in reader:
+            if all(isinstance(row.get(k), str) and row[k].strip()
+                   for k in ("動作", "原始路徑", "新路徑", "來源資料夾", "輸出資料夾")):
+                rows.append(row)
+            elif any(isinstance(v, str) and v.strip() for k, v in row.items() if k is not None):
+                skipped += 1
+    except csv.Error as exc:
+        raise ValueError(f"紀錄檔格式不正確：{exc}") from exc
+    roots = {(row["來源資料夾"], row["輸出資料夾"]) for row in rows}
+    if len(roots) > 1:
+        raise ValueError("紀錄中的來源／輸出資料夾不一致（紀錄可能被修改過）")
     return rows, skipped
+
+
+def log_roots(rows: list[dict]) -> tuple[str, str]:
+    """這份紀錄的 (來源資料夾, 輸出資料夾)。"""
+    if not rows:
+        return "", ""
+    return rows[0]["來源資料夾"], rows[0]["輸出資料夾"]
+
+
+def set_aside_log(log_path: Path) -> Path:
+    """把無法讀取的紀錄改名移到旁邊（保留內容供查看），之後「最新紀錄」就不會再選到它。"""
+    log_path = Path(log_path)
+    target = log_path.with_name(UNREADABLE_PREFIX + log_path.name)
+    n = 2
+    while target.exists():
+        target = log_path.with_name(f"{UNREADABLE_PREFIX}{n}_{log_path.name}")
+        n += 1
+    os.replace(log_path, target)
+    return target
 
 
 def read_log(log_path: Path) -> list[dict]:
@@ -341,6 +401,13 @@ def _validate_row(row: dict) -> str | None:
         return "原始路徑與新路徑相同，已略過"
     if src.suffix.lower() != dst.suffix.lower() or dst.suffix.lower() not in (IMAGE_EXTS | VIDEO_EXTS):
         return "副檔名不正確，已略過"
+    try:
+        if not _is_within(src, row["來源資料夾"]):
+            return "原始路徑不在這次整理的來源資料夾內，已略過"
+        if _canonical(dst.parent.parent) != os.path.normcase(row["輸出資料夾"]):
+            return "新路徑不在這次整理的輸出資料夾內，已略過"
+    except (OSError, ValueError):
+        return "紀錄中的路徑無法解析，已略過"
     return None
 
 
@@ -396,11 +463,7 @@ def _finish_log(log_path: Path, remaining: list[dict], done_prefix: str, errors:
 
 
 # ---------------------------------------------------------------------------- 復原（移除複本）
-def _trash_copy(path: Path, quarantine_dir: Path) -> Path | None:
-    """把複本送到資源回收筒；沒有 send2trash 套件時搬到隔離資料夾。回傳隔離位置（進回收筒則回傳 None）。"""
-    if _send2trash is not None:
-        _send2trash(str(path))
-        return None
+def _to_quarantine(path: Path, quarantine_dir: Path) -> Path:
     quarantine_dir.mkdir(parents=True, exist_ok=True)
     dest, n = quarantine_dir / path.name, 2
     while True:
@@ -410,6 +473,42 @@ def _trash_copy(path: Path, quarantine_dir: Path) -> Path | None:
         except FileExistsError:
             dest = quarantine_dir / f"{path.stem} ({n}){path.suffix}"
             n += 1
+
+
+def _stage_name(path: Path, mark: str) -> Path:
+    staged, n = path.with_name(f"{path.stem} ({mark}){path.suffix}"), 2
+    while staged.exists():
+        staged = path.with_name(f"{path.stem} ({mark} {n}){path.suffix}")
+        n += 1
+    return staged
+
+
+def _remove_verified(path: Path, reference: Path, mark: str, sink: Callable[[Path], Path | None],
+                     precheck: bool = True) -> Path | None:
+    """把 path 移除（交給 sink：資源回收筒或隔離資料夾），但只有在移除的那一刻它跟 reference 內容相同時。
+
+    「比對完再移除」中間有空檔，其他程式可能剛好改寫檔案。所以先把檔案在同一個資料夾內改名
+    （原子操作；Windows 上檔案正被其他程式開著時會失敗 → 回報「使用中」，不動它），
+    改名後再比對一次才交給 sink。改名之後，照原路徑存檔的程式只會產生新檔，不會動到我們這一份。
+    回傳 sink 的結果（隔離位置或 None）。
+    """
+    if precheck and not _same_content(path, reference):
+        raise OSError(f"內容跟另一份不同，為了安全保留：{path}")
+    staged = _stage_name(path, mark)
+    try:
+        _rename_no_clobber(path, staged)
+    except OSError as exc:
+        raise OSError(f"無法移除（檔案可能正被其他程式使用）：{path}（{exc}）") from exc
+    try:
+        if not _same_content(staged, reference):
+            raise OSError(f"移除前內容被其他程式修改，已保留：{path}")
+        return sink(staged)
+    except BaseException as exc:
+        try:
+            _rename_no_clobber(staged, path)
+        except OSError:
+            raise OSError(f"{exc}（檔案目前在：{staged}，請自行改回原檔名）") from exc
+        raise
 
 
 def undo(log_path: Path) -> ExecuteResult:
@@ -444,7 +543,14 @@ def undo(log_path: Path) -> ExecuteResult:
             if not _same_content(src, dst):
                 warnings.append(f"{dst.name}：複本跟原檔內容不同（整理後被修改過），為了安全保留複本")
                 continue
-            location = _trash_copy(dst, quarantine_dir)
+            if _send2trash is not None:
+                def sink(staged: Path) -> Path | None:
+                    _send2trash(str(staged))
+                    return None
+            else:
+                def sink(staged: Path) -> Path | None:
+                    return _to_quarantine(staged, quarantine_dir)
+            location = _remove_verified(dst, src, STAGE_MARK_COPY, sink, precheck=False)
             if location is not None:
                 warnings.append(f"{dst.name}：沒有資源回收筒可用，已搬到隔離資料夾：{location}")
             done += 1
@@ -491,7 +597,7 @@ def remove_originals(log_path: Path) -> ExecuteResult:
                 errors.append((src, f"複本跟原檔內容不同，為了安全不移除原檔：{dst}"))
                 retry.append(row)
                 continue
-            _send2trash(str(src))
+            _remove_verified(src, dst, STAGE_MARK_ORIGINAL, lambda staged: _send2trash(str(staged)), precheck=False)
             done += 1
         except Exception as exc:  # noqa: BLE001 - 任何錯誤都只影響這一個檔案
             errors.append((src, str(exc) if isinstance(exc, OSError) else f"未預期的錯誤：{exc}"))

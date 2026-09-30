@@ -138,5 +138,5 @@ def test_remove_originals_after_review(app, tmp_path, monkeypatch):
     monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
     app.remove_originals_last()
     pump(app.root, lambda: not app.organizing)
-    assert not red.exists() and (bin_dir / "r.jpg").exists() and copy.exists()  # 原檔進回收筒，複本留著
+    assert not red.exists() and (bin_dir / "r (整理前).jpg").exists() and copy.exists()  # 原檔進回收筒，複本留著
     assert app_module.latest_log(tmp_path / "logs") is None

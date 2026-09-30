@@ -41,9 +41,11 @@ from .organizer import (
     folder_key,
     free_space_problem,
     latest_log,
+    log_roots,
     plan_operations,
     read_log,
     remove_originals,
+    set_aside_log,
     undo,
 )
 from .vocabulary import VOCABULARY
@@ -819,9 +821,10 @@ class App:
         except Exception as exc:  # noqa: BLE001 - 背景錯誤要回報到介面
             post(("error", f"{type(exc).__name__}: {exc}", traceback.format_exc()))
 
-    def _organize_worker(self, run_id: int, ops) -> None:
+    def _organize_worker(self, run_id: int, ops, source_dir: Path, output_dir: Path) -> None:
         try:
-            result = execute(ops, LOG_DIR, on_progress=lambda i, n: self.queue.put(("progress", run_id, i, n)))
+            result = execute(ops, LOG_DIR, source_dir=source_dir, output_dir=output_dir,
+                             on_progress=lambda i, n: self.queue.put(("progress", run_id, i, n)))
             self.queue.put(("organized", run_id, ops, result))
         except Exception as exc:  # noqa: BLE001
             self.queue.put(("error", run_id, f"{type(exc).__name__}: {exc}", traceback.format_exc()))
@@ -998,7 +1001,8 @@ class App:
         self.organizing = True
         self._set_busy(True)
         self._run_id += 1
-        threading.Thread(target=self._organize_worker, args=(self._run_id, ops), daemon=True).start()
+        threading.Thread(target=self._organize_worker, args=(self._run_id, ops, self.source_dir(), output),
+                         daemon=True).start()
 
     def _finish_organize(self, ops, result) -> None:
         self.organizing = False
@@ -1033,10 +1037,39 @@ class App:
         try:
             rows = read_log(log)
         except (OSError, ValueError) as exc:
-            messagebox.showerror(APP_NAME, f"無法讀取整理紀錄「{log.name}」：{exc}")
+            if messagebox.askyesno(
+                APP_NAME,
+                f"無法讀取整理紀錄「{log.name}」：\n{exc}\n\n"
+                "要把這份紀錄移到旁邊（改名為「無法讀取_…」，內容保留）嗎？\n"
+                "這樣才能處理更早的整理紀錄。檔案本身都不會被更動。",
+            ):
+                try:
+                    moved = set_aside_log(log)
+                    messagebox.showinfo(APP_NAME, f"已移到：{moved.name}")
+                except OSError as move_exc:
+                    messagebox.showerror(APP_NAME, f"無法移動紀錄檔：{move_exc}")
+            return None
+        if not rows:
+            messagebox.showinfo(APP_NAME, f"整理紀錄「{log.name}」裡沒有可以{action_text}的項目。")
             return None
         when = datetime.fromtimestamp(log.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
         return log, rows, when
+
+    @staticmethod
+    def _describe_rows(rows: list[dict], key: str, limit: int = 6) -> str:
+        """確認視窗用：來源／輸出資料夾與前幾個檔名，讓使用者看得到要處理什麼。"""
+        source, output = log_roots(rows)
+        names = []
+        for row in rows[:limit]:
+            path = Path(row[key])
+            try:
+                names.append(str(path.relative_to(source if key == "原始路徑" else output)))
+            except ValueError:
+                names.append(path.name)
+        listing = "\n".join(f"　・{n}" for n in names)
+        if len(rows) > limit:
+            listing += f"\n　　⋯還有 {len(rows) - limit} 個"
+        return f"來源資料夾：{source}\n輸出資料夾：{output}\n\n{listing}"
 
     def _start_log_task(self, log: Path, func, kind: str, status: str) -> None:
         self.organizing = True
@@ -1050,11 +1083,10 @@ class App:
         if picked is None:
             return
         log, rows, when = picked
-        folders = sorted({str(Path(r["新路徑"]).parent.parent) for r in rows})
         if not messagebox.askyesno(
             APP_NAME,
-            f"要復原 {when} 的整理嗎？\n輸出位置：{'、'.join(folders[:3])}\n\n"
-            f"會把這次建立的 {len(rows)} 個複本移到資源回收筒，原檔不受影響。\n"
+            f"要復原 {when} 的整理嗎？\n{self._describe_rows(rows, '新路徑')}\n\n"
+            f"會把這 {len(rows)} 個複本移到資源回收筒，原檔不受影響。\n"
             "（原檔已經移除，或複本後來被修改過的，會保留複本不動）",
         ):
             return
@@ -1067,9 +1099,9 @@ class App:
         log, rows, when = picked
         if not messagebox.askyesno(
             APP_NAME,
-            f"要把 {when} 整理的 {len(rows)} 個原檔移到資源回收筒嗎？\n\n"
+            f"要把 {when} 整理的 {len(rows)} 個原檔移到資源回收筒嗎？\n{self._describe_rows(rows, '原始路徑')}\n\n"
             "・只有跟複本內容完全相同的原檔才會移除\n"
-            "・之後若要救回，請到 Windows 的「資源回收筒」還原\n"
+            "・資源回收筒裡的檔名會多一個「(整理前)」標記，還原後改回即可\n"
             "・移除原檔之後，這次整理就不能再用「復原上次整理」\n\n"
             "建議先打開輸出資料夾確認分類結果。確定要移除嗎？",
         ):

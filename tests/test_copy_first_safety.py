@@ -46,7 +46,11 @@ def trash(tmp_path, monkeypatch):
 
 def organize(tmp_path, files, category="貓"):
     ops = plan_operations([(f, category, D) for f in files], tmp_path / "out")
-    return ops, execute(ops, tmp_path / "logs")
+    return ops, execute(ops, tmp_path / "logs", source_dir=tmp_path / "src", output_dir=tmp_path / "out")
+
+
+def roots(tmp_path, source="src", output="out") -> list[str]:
+    return [organizer._canonical(tmp_path / source), organizer._canonical(tmp_path / output)]
 
 
 def write_log(path: Path, rows: list[list]) -> Path:
@@ -57,6 +61,24 @@ def write_log(path: Path, rows: list[list]) -> Path:
     writer.writerows(rows)
     path.write_text(buf.getvalue(), encoding="utf-8-sig")
     return path
+
+
+def alias_of(path: Path) -> Path | None:
+    """同一個檔案的另一條路徑：不分大小寫的檔案系統（Windows、macOS）用大小寫不同的路徑，
+    否則用一個指向該資料夾的符號連結；兩者都做不到就回傳 None（測試會略過）。"""
+    upper = path.with_name(path.name.swapcase())
+    try:
+        if upper != path and upper.exists() and os.path.samefile(upper, path):
+            return upper
+    except OSError:
+        pass
+    link = path.parent.parent / f"alias-{path.parent.name}"
+    try:
+        if not link.exists():
+            link.symlink_to(path.parent, target_is_directory=True)
+        return link / path.name
+    except (OSError, NotImplementedError):
+        return None
 
 
 # ---------------------------------------------------------------------------- 整理：原檔完全不動
@@ -119,8 +141,9 @@ def test_undo_content_check_is_not_fooled_by_cache(tmp_path, monkeypatch):
     a = touch(tmp_path / "src" / "a.jpg", "AAAA")
     ops, result = organize(tmp_path, [a])
     calls = []
-    monkeypatch.setattr(organizer, "_trash_copy", lambda p, q: (calls.append(p), (_ for _ in ()).throw(OSError("鎖住"))))
+    monkeypatch.setattr(organizer, "_send2trash", lambda p: (calls.append(p), (_ for _ in ()).throw(OSError("鎖住"))))
     assert undo(result.log_path).errors  # 第一次：內容相同、嘗試移除但失敗，留在紀錄中重試
+    assert ops[0].dst.exists()  # 失敗後改回原檔名
     st = a.stat()
     a.write_text("BBBB")  # 內容不同，大小與修改時間都相同
     os.utime(a, ns=(st.st_atime_ns, st.st_mtime_ns))
@@ -133,12 +156,13 @@ def test_undo_failure_is_retried_and_other_rows_continue(tmp_path, trash, monkey
     a = touch(tmp_path / "src" / "a.jpg", "A")
     b = touch(tmp_path / "src" / "b.jpg", "B")
     ops, result = organize(tmp_path, [a, b])
-    real = organizer._trash_copy
-    monkeypatch.setattr(organizer, "_trash_copy",
-                        lambda p, q: (_ for _ in ()).throw(TypeError("意外")) if p == ops[0].dst else real(p, q))
+    real = organizer._send2trash
+    monkeypatch.setattr(organizer, "_send2trash",
+                        lambda p: (_ for _ in ()).throw(TypeError("意外")) if ops[0].dst.stem in Path(p).name else real(p))
     first = undo(result.log_path)
     assert first.done == 1 and len(first.errors) == 1 and not ops[1].dst.exists()
-    monkeypatch.setattr(organizer, "_trash_copy", real)
+    assert ops[0].dst.exists()  # 失敗後改回原檔名
+    monkeypatch.setattr(organizer, "_send2trash", real)
     assert latest_log(tmp_path / "logs") == result.log_path  # 只留下失敗的那一列
     assert undo(result.log_path).done == 1 and not ops[0].dst.exists()
 
@@ -192,16 +216,16 @@ def test_after_removing_originals_undo_keeps_copies(tmp_path, trash):
 def test_same_file_through_another_path_is_never_deleted(tmp_path, trash):
     """兩個不同的路徑其實指向同一個檔案（這裡用目錄連結；Windows 上也包含目錄連接點、大小寫不同的路徑）：
     那不是「另一份」，絕不能因為「內容相同」就刪掉——刪掉就等於刪掉唯一的一份。"""
-    src = touch(tmp_path / "src" / "a.jpg", "ONLY")
-    alias_dir = tmp_path / "out" / "貓"
-    alias_dir.parent.mkdir(parents=True)
-    alias_dir.symlink_to(tmp_path / "src", target_is_directory=True)
-    dst = alias_dir / "a.jpg"  # 字串不同，實際上就是 src
-    log = write_log(tmp_path / "logs" / "整理紀錄_20240101_000000.csv",
-                    [["copy", str(src), str(dst), "貓", "", "4"]])
+    src = touch(tmp_path / "src" / "貓" / "a.jpg", "ONLY")
+    dst = alias_of(src)  # 字串不同，實際上就是 src
+    if dst is None:
+        pytest.skip("此環境無法建立同一個檔案的別名路徑")
+    row = ["copy", str(src), str(dst), "貓", "", "4", organizer._canonical(tmp_path / "src"),
+           organizer._canonical(dst.parent.parent)]
+    log = write_log(tmp_path / "logs" / "整理紀錄_20240101_000000.csv", [row])
     undo(log)
     assert src.read_text() == "ONLY"
-    write_log(log, [["copy", str(src), str(dst), "貓", "", "4"]])
+    write_log(log, [row])
     remove_originals(log)
     assert src.read_text() == "ONLY"
 
@@ -255,23 +279,30 @@ def test_fuzzed_forged_logs_never_lose_any_content(tmp_path, trash):
         link = root / "d0" / "link.jpg"
         os.link(files[0], link)
         files.append(link)
-        alias = root / "alias"  # 目錄連結：透過它的路徑其實就是 d1 裡的同一個檔案
-        alias.symlink_to(root / "d1", target_is_directory=True)
-        files.extend(alias / f.name for f in list(files) if f.parent.name == "d1")
+        for f in list(files):  # 同一個檔案的其他路徑（大小寫不同或目錄連結）
+            alias = alias_of(f)
+            if alias is not None:
+                files.append(alias)
         contents = {f.read_text() for f in files}
         candidates = files + [root / "nope.jpg", Path("relative.jpg"), root / "d1" / "f1.png"]
         rows = []
+        # 每份紀錄的來源／輸出資料夾選一次：大多是正確的（讓大部分回合真的執行到刪除），少數故意指到別處
+        src_root = rng.choice([organizer._canonical(root)] * 4 + [str(tmp_path), str(root / "d0")])
+        out_root = rng.choice([organizer._canonical(root)] * 4 + [str(tmp_path), str(root / "d1")])
         for _ in range(12):
             src, dst = rng.choice(candidates), rng.choice(candidates)
             action = rng.choice(["copy", "copy", "copy", "move", "delete", ""])
-            rows.append([action, str(src), str(dst), "貓", "", rng.choice(["1", "", "x"])])
+            rows.append([action, str(src), str(dst), "貓", "", rng.choice(["1", "", "x"]), src_root, out_root])
         log = write_log(tmp_path / "logs" / "整理紀錄_20240101_000000.csv", rows)
         for func in (undo, remove_originals, undo):
             if not log.exists():
                 write_log(log, rows)
-            func(log)
+            try:
+                func(log)
+            except ValueError:  # 來源／輸出資料夾不一致的紀錄會整份拒絕
+                pass
         for content in contents:
-            outside = [p for p in root.rglob("*.jpg") if not p.is_symlink() and p.read_text() == content]
+            outside = [p for p in root.rglob("*.jpg") if not p.is_symlink() and p.is_file() and p.read_text() == content]
             assert outside, (round_no, content)
     assert len(list(trash.iterdir())) >= 10  # 確實有觸發刪除，不是每次都剛好什麼都沒做
 

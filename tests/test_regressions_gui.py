@@ -162,3 +162,37 @@ def test_multi_confirm_under_filter_selects_next_remaining(app, tmp_path):
 def _release_gate():
     yield
     GATE.set()
+
+
+def test_unreadable_log_can_be_set_aside(app, tmp_path, monkeypatch):
+    from tkinter import messagebox
+
+    import media_sorter.app as app_module
+    from media_sorter import organizer
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    bad = logs / "整理紀錄_20240101_000000.csv"
+    bad.write_bytes(b"\xff\xfe garbage")
+    asked = []
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: asked.append(a[1]) or True)
+    monkeypatch.setattr(messagebox, "showerror", lambda *a, **k: pytest.fail(f"error: {a}"))
+    app.undo_last()
+    assert asked and "無法讀取整理紀錄" in asked[0]
+    assert not bad.exists() and (logs / (organizer.UNREADABLE_PREFIX + bad.name)).exists()
+    assert app_module.latest_log(logs) is None  # 之後按鈕不會再卡在同一份壞紀錄
+
+
+def test_confirmation_lists_folders_and_files(app, tmp_path, monkeypatch):
+    from tkinter import messagebox
+
+    from media_sorter.organizer import execute, plan_operations
+
+    src = tmp_path / "photos"
+    a = make_image(src / "sub" / "IMG_1.png", (250, 10, 10))
+    ops = plan_operations([(a, "紅", __import__("datetime").datetime(2024, 1, 1))], src / "已分類")
+    execute(ops, tmp_path / "logs", source_dir=src, output_dir=src / "已分類")
+    texts = []
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: texts.append(a[1]) or False)
+    app.remove_originals_last()
+    assert "來源資料夾" in texts[0] and str(src) in texts[0] and "IMG_1.png" in texts[0]
