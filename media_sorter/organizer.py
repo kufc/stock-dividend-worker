@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import codecs
 import csv
 import errno
 import hashlib
@@ -47,8 +48,9 @@ SIGNED_FIELDS = LOG_FIELDS[:-1]
 SIGNATURE_RE = re.compile(r"[0-9a-f]{64}")
 BATCH_RE = re.compile(r"[0-9a-f]{16}")
 PARTIAL_SIGNATURE_RE = re.compile(r"[0-9a-f]{0,63}")
-UNDONE_REGISTRY = "undone-rows.txt"  # 已復原項目的清單（放在金鑰旁邊，防止舊紀錄被重放）
-REJECTED_SUFFIX = ".無法驗證的列.csv"
+UNDONE_REGISTRY = "undone-rows.txt"  # 已處理項目（已復原或確定沒發生）的清單，放在金鑰旁邊，防止舊紀錄被重放
+REJECTED_PREFIX = "無法驗證的列_"  # 另存檔刻意不以「整理紀錄_」開頭，永遠不會被當成可復原的紀錄
+LOG_NAME_RE = re.compile(r"整理紀錄_\d{8}_\d{6}(?:_\d{1,3})?\.csv")
 MOVE_ACTIONS = {"move", "pending-move"}
 COPY_ACTIONS = {"copy", "pending-copy"}
 VALID_ACTIONS = MOVE_ACTIONS | COPY_ACTIONS
@@ -366,7 +368,9 @@ def execute(
 
 # ---------------------------------------------------------------------------- 復原
 def latest_log(log_dir: Path) -> Path | None:
-    logs = [p for p in Path(log_dir).glob(f"{LOG_PREFIX}*.csv")]
+    """最新一份還能復原的整理紀錄。只接受程式自己產生的檔名格式（整理紀錄_日期_時間[_序號].csv），
+    其他任何檔案（另存的無法驗證列、使用者自己複製的檔案⋯）都不會被選到。"""
+    logs = [p for p in Path(log_dir).glob(f"{LOG_PREFIX}*.csv") if LOG_NAME_RE.fullmatch(p.name) and p.is_file()]
     return max(logs, key=lambda p: (p.stat().st_mtime_ns, p.name)) if logs else None
 
 
@@ -378,16 +382,32 @@ class LogEntry:
     raw: list[dict]
 
 
-def _decode_log(log_path: Path) -> list[dict]:
-    raw = Path(log_path).read_bytes()
-    for encoding in ("utf-8-sig", "cp950", "mbcs"):
+def _decode_bytes(raw: bytes) -> str:
+    """把紀錄檔的位元組轉成文字。
+
+    寫入中斷可能切在一個中文字（UTF-8 多位元組）的中間：這時只丟掉檔尾那個不完整的字，
+    前面完整的內容照常使用（殘缺的最後一列之後會被判定為「寫到一半」而忽略）。
+    """
+    body = raw[len(codecs.BOM_UTF8):] if raw.startswith(codecs.BOM_UTF8) else raw
+    try:
+        return body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        # 只有「檔尾一個字不完整」才截掉（中間壞掉的位元組不算，交給下面的其他編碼處理）
+        if exc.reason == "unexpected end of data" and exc.end == len(body):
+            try:
+                return body[:exc.start].decode("utf-8")
+            except UnicodeDecodeError:
+                pass
+    for encoding in ("cp950", "mbcs"):  # 被 Excel 另存成 Big5 等編碼
         try:
-            text = raw.decode(encoding)
-            break
+            return raw.decode(encoding)
         except (UnicodeDecodeError, LookupError):
             continue
-    else:
-        raise ValueError("紀錄檔的編碼無法辨識")
+    raise ValueError("紀錄檔的編碼無法辨識")
+
+
+def _decode_log(log_path: Path) -> list[dict]:
+    text = _decode_bytes(Path(log_path).read_bytes())
     # newline="" 讓 csv 模組自己處理換行：被引號包住的欄位（例如含換行的分類名稱）才不會被切斷
     rows = list(csv.DictReader(io.StringIO(text, newline="")))
     required = {"動作", "原始路徑", "新路徑"}
@@ -626,7 +646,7 @@ def undo(log_path: Path) -> ExecuteResult:
     - 複本跟目前的原檔內容不完全相同（原檔後來被改過或換過）：不刪除，列為失敗
     - 只有 pending、沒有確認列的檔案：依檔案實際位置判斷有沒有真的發生；確定沒發生才略過，
       無法確定（原位置與新位置都有檔案）就列為失敗、保留紀錄，絕不當作已復原
-    - 已經復原過的項目（舊紀錄被放回來）一律略過，不會再搬一次
+    - 已經處理過的項目（已復原或確定沒發生；舊紀錄被放回來時）一律略過，不會再動檔案
     - 任何一列出錯（包括意料之外的錯誤）都只影響那一列，其他列照常復原
     - 沒有失敗的項目就把紀錄改名為「已復原」；有失敗時紀錄只留下失敗項目的所有有效列，下次按復原會重試
     - 無法驗證的列另存到「<紀錄>.無法驗證的列.csv」並回報，不會卡住之後的復原
@@ -659,14 +679,22 @@ def undo(log_path: Path) -> ExecuteResult:
                 continue
             entry_id = _registry_id(row)
             if entry_id in registry:
-                warnings.append(f"{dst.name}：這個項目已經復原過（可能是舊紀錄被放回），已略過")
+                warnings.append(f"{dst.name}：這個項目已經處理過（可能是舊紀錄被放回），已略過")
                 continue
+            # 每個離開這份紀錄的項目（已復原，或確定沒發生過）都要登記為「已處理」，
+            # 否則舊紀錄被放回來時，會在檔案位置改變後被重新判斷而誤動到別的檔案
             if _undo_one(row, quarantine_dir, warnings):
                 done += 1
                 try:
                     _remember_undone(entry_id)
                 except OSError as exc:
-                    warnings.append(f"{dst.name}：已復原，但無法記錄到已復原清單（{exc}）")
+                    warnings.append(f"{dst.name}：已復原，但無法記錄到已處理清單（{exc}）")
+            else:
+                try:
+                    _remember_undone(entry_id)
+                except OSError as exc:  # 無法登記就不能封存：留在紀錄裡，下次再判斷
+                    errors.append((dst, f"確定沒有搬移過，但無法記錄到已處理清單，暫不封存（{exc}）"))
+                    failed.append(entry)
         except OSError as exc:
             errors.append((dst, str(exc)))
             failed.append(entry)
@@ -676,7 +704,7 @@ def undo(log_path: Path) -> ExecuteResult:
 
     try:
         if rejected:
-            side = log_path.with_name(log_path.name + REJECTED_SUFFIX)
+            side = log_path.with_name(REJECTED_PREFIX + log_path.name)
             with open(side, "a", newline="", encoding="utf-8-sig") as f:
                 writer = csv.DictWriter(f, fieldnames=LOG_FIELDS, extrasaction="ignore", restval="")
                 if f.tell() == 0:
