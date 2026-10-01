@@ -407,6 +407,25 @@ counterpart.
    and the AI model (Hugging Face). Those sites may see your IP address
    and download requests, and their own privacy policies apply.
 
+・AI 模型下載完成後，程式載入模型時不會再連網（不檢查更新，也不回報
+　使用統計）。只有換用另一個還沒下載過的模型，或模型檔案不完整時，
+　才會再連網下載。
+   Once the AI model has been downloaded, loading it no longer uses the
+   internet (no update checks and no usage statistics). The program only
+   goes online again to download a model you have not used before, or
+   to repair incomplete model files.
+
+・防毒軟體（例如卡巴斯基）若跳出「無法檢查 huggingface.co 等網站的
+　加密連線」，這是防毒軟體的加密連線檢查與下載元件不相容，不是病毒。
+　請選擇「新增至排除項目」後再試一次；可能出現的網站有 huggingface.co、
+　pypi.org、files.pythonhosted.org 與 download.pytorch.org。
+   If antivirus software (for example Kaspersky) says it cannot check
+   the encrypted connection to huggingface.co or similar sites, its
+   HTTPS scanning is incompatible with the downloader; it is not a virus
+   warning. Choose to add the site to the exclusions and try again. The
+   sites involved may be huggingface.co, pypi.org,
+   files.pythonhosted.org and download.pytorch.org.
+
 ・程式會在你的電腦上保存：settings.json（設定）、categories.json
 　（分類）、logs 資料夾（整理紀錄、錯誤紀錄與主控台輸出）。整理紀錄
 　含有檔案的完整路徑；回報問題時若要貼出紀錄，請先檢查其中是否有個人

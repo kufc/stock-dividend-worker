@@ -46,11 +46,16 @@ MODEL_PRESETS = {
         "label": "標準（速度快，首次下載約 1.5 GB）",
         "arch": "xlm-roberta-base-ViT-B-32",
         "pretrained": "laion5b_s13b_b90k",
+        # 在 Hugging Face 上的位置（判斷「已下載」與解除安裝時使用；要跟 open_clip 的設定一致，見 tests）
+        "hf_repo": "laion/CLIP-ViT-B-32-xlm-roberta-base-laion5B-s13B-b90k",
+        "tokenizer_repo": "xlm-roberta-base",
     },
     "accurate": {
         "label": "高精準（首次下載約 5 GB，建議顯示卡記憶體 6 GB 以上）",
         "arch": "xlm-roberta-large-ViT-H-14",
         "pretrained": "frozen_laion5b_s13b_b90k",
+        "hf_repo": "laion/CLIP-ViT-H-14-frozen-xlm-roberta-large-laion5B-s13B-b90k",
+        "tokenizer_repo": "xlm-roberta-large",
     },
 }
 MODEL_CHOICES = {

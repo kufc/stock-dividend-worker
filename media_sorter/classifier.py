@@ -4,10 +4,9 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
-
 import numpy as np
 
+from . import netpolicy
 from .config import MODEL_PRESETS, Category
 from .vocabulary import VOCABULARY
 
@@ -95,7 +94,6 @@ def score(media_embeddings: np.ndarray, class_embeddings: np.ndarray, logit_scal
 class Classifier:
     def __init__(self, preset: str = "auto", *, arch: str | None = None, pretrained: str | None = None,
                  device: str | None = None):
-        import open_clip
         import torch
 
         self._torch = torch
@@ -112,15 +110,32 @@ class Classifier:
             self.preset = arch
         self.model_name = arch
 
+        # 模型已經在這台電腦上 → 離線載入，完全不連網；還沒下載才連網（見 netpolicy）
+        self.loaded_offline = netpolicy.prepare_for(self.preset) if self.preset in MODEL_PRESETS else False
+        import open_clip
+
         # 顯示卡上用半精度（fp16）：記憶體減半、速度更快，辨識結果幾乎相同。
         precision = "pure_fp16" if device == "cuda" else "fp32"
-        model, _, preprocess = open_clip.create_model_and_transforms(
-            arch, pretrained=pretrained, device=device, precision=precision
-        )
+
+        def load():
+            model, _, preprocess = open_clip.create_model_and_transforms(
+                arch, pretrained=pretrained, device=device, precision=precision
+            )
+            return model, preprocess, open_clip.get_tokenizer(arch)
+
+        try:
+            model, preprocess, tokenizer = load()
+        except Exception:
+            if not self.loaded_offline:
+                raise
+            # 快取不完整（例如上次下載中斷）：改為連網下載補齊
+            self.loaded_offline = False
+            netpolicy.set_offline(False)
+            model, preprocess, tokenizer = load()
         model.eval()
         self.model = model
         self.preprocess = preprocess
-        self.tokenizer = open_clip.get_tokenizer(arch)
+        self.tokenizer = tokenizer
         self.dtype = next(model.parameters()).dtype
         self.logit_scale = min(float(model.logit_scale.exp().item()), 100.0)
         self.similarity_floor = SIMILARITY_FLOOR if pretrained else 0.0
@@ -203,22 +218,14 @@ class Classifier:
 
 
 def model_status(choice: str = "auto") -> tuple[str, bool | None] | None:
-    """給介面顯示用：(模型名稱, 是否已下載)。已下載＝這台電腦的 Hugging Face 快取裡已有模型檔案。
+    """給介面顯示用：(模型名稱, 是否已下載)。已下載＝這台電腦的 Hugging Face 快取裡已有模型與斷詞器。
 
-    判斷不出來（沒安裝套件、找不到設定）就回傳 None，介面就不顯示這一行，而不是猜一個答案。
+    不載入 huggingface_hub（也就不會連網）；判斷不出來就回傳 None，介面就不顯示這一行。
     """
     try:
-        import open_clip
-        from huggingface_hub import constants
-
         device, _, vram_gb = detect_device()
         preset = resolve_preset(choice, device, vram_gb, total_ram_gb())
-        info = MODEL_PRESETS[preset]
-        repo = open_clip.get_pretrained_cfg(info["arch"], info["pretrained"]).get("hf_hub", "").strip("/")
-        if not repo:
-            return None
-        folder = Path(constants.HF_HUB_CACHE) / ("models--" + repo.replace("/", "--")) / "snapshots"
-        return info["label"], any(folder.glob("*/*")) if folder.is_dir() else False
+        return MODEL_PRESETS[preset]["label"], netpolicy.preset_cached(preset)
     except Exception:  # noqa: BLE001 - 只是提示資訊，任何原因失敗都不影響使用
         return None
 

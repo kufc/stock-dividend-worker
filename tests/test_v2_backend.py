@@ -192,15 +192,16 @@ def test_new_settings_are_validated(tmp_path):
 
 # ---------------------------------------------------------------------------- 模型狀態
 def test_model_status_detects_cache(tmp_path, monkeypatch):
-    pytest.importorskip("open_clip")
-    constants = pytest.importorskip("huggingface_hub").constants
+    pytest.importorskip("torch")
     from media_sorter.classifier import model_status
 
-    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
     label, cached = model_status("standard")
     assert "標準" in label and cached is False
     folder = tmp_path / "models--laion--CLIP-ViT-B-32-xlm-roberta-base-laion5B-s13B-b90k" / "snapshots" / "abc"
     touch(folder / "open_clip_model.safetensors", "x")
+    assert model_status("standard")[1] is False  # 斷詞器還沒下載，仍然算「需要下載」
+    touch(tmp_path / "models--xlm-roberta-base" / "snapshots" / "def" / "tokenizer.json", "x")
     assert model_status("standard")[1] is True
 
 
