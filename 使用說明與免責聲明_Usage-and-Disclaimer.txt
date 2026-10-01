@@ -239,34 +239,46 @@ counterpart.
    "include subfolders"), check the number of images and videos, and
    click "開始辨識" (Start recognition).
 
-・第 2 步「確認分類」：左邊是檔案清單（縮圖、建議分類、處理狀態，可搜尋
-　與篩選），右邊是大預覽與候選分類。點候選分類只是選取；按 Enter
-　（「確認並看下一個」）才會確認。1／2／3 選擇候選、S 略過、Ctrl+Z
-　撤回上一次確認。
-   Step 2, confirm categories: the left side lists the files (thumbnail,
-   suggested category, status; searchable and filterable) and the right
-   side shows a large preview with candidate categories. Clicking a
-   candidate only selects it; nothing is confirmed until you press Enter
-   ("確認並看下一個", confirm and go to the next). 1/2/3 pick a candidate,
-   S skips, Ctrl+Z undoes the last confirmation.
+・第 2 步「檢查分類」：AI 已經把每個檔案分好，不用逐一確認。左邊是分類
+　清單（含數量），中間是該分類的縮圖格，右邊是目前檔案的大預覽。點一個
+　分類，看 AI 放進去的檔案；看到分錯的，點它（Ctrl 加選、Shift 連選、
+　Ctrl+A 全選），再按下面正確的分類按鈕，立刻生效。數字鍵選分類、Enter
+　採用 AI 建議、S 略過、Ctrl+Z 撤回上一步、空白鍵放大檢視。
+   Step 2, check the categories: the AI has already sorted every file, so
+   there is nothing to confirm one by one. The left column lists the
+   categories with counts, the middle shows the thumbnails of the selected
+   category and the right side shows a large preview of the current file.
+   Click a category to see what the AI put there; when something is
+   wrong, click it (Ctrl to add, Shift for a range, Ctrl+A for all) and
+   press the correct category button below. It takes effect immediately.
+   Number keys pick a category, Enter accepts the AI suggestion
+   ("採用 AI 建議"), S skips, Ctrl+Z undoes the last step ("撤回上一步"),
+   Space opens the large view.
 
-・標示「需檢查」的檔案，表示模型沒有把握，請自己看過再選；模型給的分數
-　只是參考，不代表判斷正確的機率。
-   Files marked "需檢查" (needs checking) are ones the model is unsure
-   about; please look at them yourself. The model's score is only a hint
-   and is not the probability that it is right.
+・「需檢查」裡是模型沒有把握的檔案（縮圖右上角有「？」），請自己看一下；
+　分對的不用動，不改的話會依建議整理。模型給的分數只是參考，不代表判斷
+　正確的機率。
+   "需檢查" (needs checking) collects the files the model is unsure about
+   (a "?" badge on the thumbnail); please look at them yourself. Correct
+   ones need no action and are organized by the suggestion. The model's
+   score is only a hint and is not the probability that it is right.
 
-・批次操作（套用分類、採用建議、略過）只會處理你明確選取的列。
-   Batch actions (apply a category, accept suggestions, skip) only affect
-   the rows you have explicitly selected.
+・分類按鈕、採用建議、略過只會處理你選取的縮圖。
+   The category buttons, accept and skip only affect the thumbnails you
+   have selected.
 
 ・第 3 步「預覽整理結果」：確認輸出位置（預設是來源資料夾裡的「已分類」）
-　與檔名規則（預設保留原檔名），檢查整理前後對照與所需空間。預設只整理
-　你已確認的檔案。按「開始複製」之前，不會建立或改動任何檔案。
+　與檔名規則（預設保留原檔名），檢查整理前後對照與所需空間。AI 分好的
+　加上你指定的檔案都會整理；AI 沒把握、你也沒改的檔案可以選擇依建議整理
+　（預設）、放到「未分類」資料夾，或這次不整理。按「開始複製」之前，不會
+　建立或改動任何檔案。
    Step 3, preview the result: check the output location (by default
    "已分類" inside the source folder) and the naming rule (original names
    are kept by default), and review the before/after table and the space
-   needed. By default only files you confirmed are organized. Nothing is
+   needed. Files sorted by the AI plus the ones you assigned are all
+   organized; for files the model is unsure about that you did not
+   change, you can follow the suggestion (default), put them in an
+   "未分類" (unsorted) folder, or leave them out this time. Nothing is
    created or changed until you click "開始複製".
 
 ・複製過程中可以按「完成目前檔案後停止」；已複製好的檔案會保留。

@@ -524,14 +524,14 @@ class SettingsDialog(tk.Toplevel):
         rows = [
             ("AI 模型：", ttk.Combobox(body, textvariable=self.model_var, values=labels, state="readonly", width=46)),
             ("影片取樣畫面數：", ttk.Spinbox(body, from_=1, to=32, textvariable=self.frames_var, width=8)),
-            ("需要確認的門檻（%）：", ttk.Spinbox(body, from_=5, to=95, increment=5, textvariable=self.threshold_var,
+            ("需檢查的門檻（%）：", ttk.Spinbox(body, from_=5, to=95, increment=5, textvariable=self.threshold_var,
                                        width=8)),
             ("每批處理張數：", ttk.Spinbox(body, from_=1, to=256, textvariable=self.batch_var, width=8)),
         ]
         hints = [
             "有 NVIDIA 顯示卡時會自動使用 CUDA 加速",
             "每支影片平均擷取幾張畫面來判斷，越多越準但越慢",
-            "模型分數低於此值的項目會標成「需要確認」（這個分數不等於判斷正確的機率）",
+            "第一名的模型分數低於此值、而且沒有明顯領先第二名的檔案，會放進「需檢查」（分數不等於判斷正確的機率）",
             "顯示卡記憶體不足時請調低（例如 8）",
         ]
         for r, ((label, widget), hint) in enumerate(zip(rows, hints, strict=True)):

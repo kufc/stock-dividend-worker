@@ -181,13 +181,13 @@ def test_list_logs_shows_every_kind(tmp_path, trash):
 # ---------------------------------------------------------------------------- 設定
 def test_new_settings_are_validated(tmp_path):
     path = tmp_path / "settings.json"
-    save_settings({"rename_mode": "不存在", "split_ratio": 5, "rename": True}, path)
+    save_settings({"rename_mode": "不存在", "thumb_size": "huge", "rename": True}, path)
     settings = load_settings(path)
-    assert settings["rename_mode"] == "keep" and 0.25 <= settings["split_ratio"] <= 0.75
+    assert settings["rename_mode"] == "keep" and settings["thumb_size"] == "medium"
     assert "rename" not in settings  # 舊版的設定欄位會被丟掉
     assert set(RENAME_MODES) == {"keep", "category_seq", "date_category_seq", "custom"}
-    save_settings({"rename_mode": "custom", "split_ratio": 0.5}, path)
-    assert load_settings(path)["rename_mode"] == "custom" and load_settings(path)["split_ratio"] == 0.5
+    save_settings({"rename_mode": "custom", "thumb_size": "large"}, path)
+    assert load_settings(path)["rename_mode"] == "custom" and load_settings(path)["thumb_size"] == "large"
 
 
 # ---------------------------------------------------------------------------- 模型狀態

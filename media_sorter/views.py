@@ -11,10 +11,10 @@ import tkinter as tk
 from tkinter import ttk
 
 from .config import RENAME_MODES
+from .grid import ThumbGrid
 
-STEP_NAMES = ["選擇資料夾", "確認分類", "預覽整理結果", "完成"]
-FILTERS = ["全部", "待確認", "需檢查", "建議較明確", "已確認", "已略過", "讀取失敗"]
-SUGGEST_FILTER_PREFIX = "建議分類："
+STEP_NAMES = ["選擇資料夾", "檢查分類", "預覽整理結果", "完成"]
+LOW_MODES = [("suggest", "依 AI 的建議整理"), ("unsorted", "放到「未分類」資料夾，之後自己看"), ("leave", "這次不整理")]
 SKIP = "__skip__"
 _SCROLL_IGNORE = {"Treeview", "Text", "Listbox", "TCombobox", "TSpinbox"}
 
@@ -189,7 +189,7 @@ class FolderPage(ttk.Frame):
         body.configure(padding=(px(24), px(18)))
         ttk.Label(body, text="選擇要整理的資料夾", style="Heading.TLabel").pack(anchor="w")
         autowrap(ttk.Label(body, style="Hint.TLabel", justify="left",
-                           text="AI 會看每張照片與影片，建議它「看起來像什麼」；你確認之後，才會把檔案複製到分類資料夾。"),
+                           text="AI 會看每張照片與影片，先把它們分好類；你檢查過之後，才會把檔案複製到分類資料夾。"),
                  ).pack(anchor="w", fill="x", pady=(px(4), px(14)))
 
         folder = card(body, app, "資料夾")
@@ -229,8 +229,8 @@ class FolderPage(ttk.Frame):
 
         nxt = card(body, app, "接下來會發生什麼")
         autowrap(ttk.Label(nxt, style="Card.TLabel", justify="left", text=(
-            "1. AI 逐一判斷每個檔案「看起來像什麼」（只是建議，不一定正確）\n"
-            "2. 你逐一確認或修改分類\n"
+            "1. AI 判斷每個檔案「看起來像什麼」，先幫你分好（只是建議，不一定正確）\n"
+            "2. 你一個分類一個分類看縮圖，把分錯的選起來改掉；AI 沒把握的會集中在「需檢查」\n"
             "3. 預覽整理結果之後，才會把檔案「複製」到分類資料夾——原檔不會被移動或修改"))
         ).pack(anchor="w", fill="x", pady=(px(6), 0))
         self.model_var = tk.StringVar()
@@ -259,9 +259,57 @@ class FolderPage(ttk.Frame):
         self.found_note_var.set("")
 
 
-# ---------------------------------------------------------------------------- 步驟 2：確認分類
+class WrapFrame(ttk.Frame):
+    """把按鈕由左到右排，放不下就自動換到下一列（分類很多時也不會被切掉）。
+
+    用 place 擺絕對位置：每個按鈕只佔自己的寬度（用 grid 會讓同一欄的按鈕一樣寬，中間出現怪縫），
+    可用寬度一律以外層容器為準，所以不會因為自己被撐寬而以為放得下。
+    """
+
+    def __init__(self, master, gap: int, **kwargs):
+        super().__init__(master, **kwargs)
+        self.gap = gap
+        self.widgets: list = []
+        self._width = 0
+        master.bind("<Configure>", self._on_configure, add="+")
+        self.bind("<Configure>", self._on_configure, add="+")
+
+    def add(self, widget) -> None:
+        self.widgets.append(widget)
+        self.reflow()
+
+    def clear(self) -> None:
+        for widget in self.widgets:
+            widget.destroy()
+        self.widgets = []
+        self.reflow()
+
+    def _on_configure(self, _event=None) -> None:
+        width = self.master.winfo_width()
+        if width != self._width:
+            self._width = width
+            self.reflow()
+
+    def reflow(self) -> None:
+        width = max(self._width, 1)
+        x = y = row_h = 0
+        for widget in self.widgets:
+            w, h = widget.winfo_reqwidth(), widget.winfo_reqheight()
+            if x and x + w > width:
+                x, y = 0, y + row_h + self.gap
+                row_h = 0
+            widget.place(x=x, y=y)
+            x += w + self.gap
+            row_h = max(row_h, h)
+        self.configure(height=(y + row_h) if self.widgets else 1)
+
+
+# ---------------------------------------------------------------------------- 步驟 2：檢查分類
 class ReviewPage(ttk.Frame):
-    """左邊檔案清單、右邊大預覽與候選分類；視窗太窄時改成兩個分頁。"""
+    """左邊是分類清單（含數量），中間是該分類的縮圖格，右邊是目前檔案的大預覽。
+
+    AI 已經把每個檔案分好；使用者只要看縮圖、把分錯的選起來、按下面的分類按鈕改掉。
+    """
 
     def __init__(self, master, app):
         super().__init__(master)
@@ -287,181 +335,168 @@ class ReviewPage(ttk.Frame):
 
         self.body = ttk.Frame(self, padding=(px(12), px(8), px(12), px(8)))
         self.body.pack(fill="both", expand=True)
-        self.paned = ttk.PanedWindow(self.body, orient="horizontal")
-        self.notebook = ttk.Notebook(self.body)
-        self.list_frame = ttk.Frame(self.body, style="Card.TFrame", padding=px(10))
-        self.detail_frame = ttk.Frame(self.body, style="Card.TFrame", padding=px(10))
-        self._build_list(self.list_frame)
+        self.body.grid_rowconfigure(0, weight=1)
+        self.body.grid_columnconfigure(1, weight=1)
+        self.bucket_frame = ttk.Frame(self.body, style="Card.TFrame", padding=px(8))
+        self.grid_frame = ttk.Frame(self.body, style="Card.TFrame", padding=px(10))
+        self.detail_frame = ttk.Frame(self.body, style="Card.TFrame", padding=px(10), width=px(380))
+        self.detail_frame.grid_propagate(False)
+        self.detail_frame.pack_propagate(False)
+        self.bucket_frame.grid(row=0, column=0, sticky="nsw", padx=(0, px(8)))
+        self.grid_frame.grid(row=0, column=1, sticky="nsew")
+        self.detail_frame.grid(row=0, column=2, sticky="nsew", padx=(px(8), 0))
+        self._build_buckets(self.bucket_frame)
+        self._build_grid(self.grid_frame)
         self._build_detail(self.detail_frame)
-        self.set_narrow(False, force=True)
 
-    # -- 左邊清單
-    def _build_list(self, parent) -> None:
+    # -- 左邊：分類清單
+    def _build_buckets(self, parent) -> None:
         app, px = self.app, self.app.theme.px
-        row = ttk.Frame(parent, style="Card.TFrame")
-        row.pack(fill="x")
-        ttk.Label(row, text="搜尋", style="Card.TLabel").pack(side="left")
-        self.search_entry = ttk.Entry(row, textvariable=app.search_var)
-        self.search_entry.pack(side="left", fill="x", expand=True, padx=(px(6), 0))
-        filter_row = ttk.Frame(parent, style="Card.TFrame")
-        filter_row.pack(fill="x", pady=(px(6), px(6)))
-        ttk.Label(filter_row, text="顯示", style="Card.TLabel").pack(side="left")
-        self.filter_box = ttk.Combobox(filter_row, textvariable=app.filter_var, state="readonly", values=FILTERS,
-                                       width=14)
-        self.filter_box.pack(side="left", fill="x", expand=True, padx=(px(6), 0))
-        self.filter_box.bind("<<ComboboxSelected>>", lambda e: app.refresh_tree())
-
-        # 底部的批次操作列先排（視窗矮時才不會被清單擠掉）
-        batch = self.batch_frame = ttk.Frame(parent, style="Card.TFrame")
-        batch.pack(side="bottom", fill="x", pady=(px(8), 0))
-        self.detail_btn = ttk.Button(parent, text="查看／確認選取的檔案 →", command=self.show_detail_tab)
-        self.batch_label_var = tk.StringVar()
-        ttk.Label(batch, textvariable=self.batch_label_var, style="CardHint.TLabel").pack(anchor="w")
-        row1 = ttk.Frame(batch, style="Card.TFrame")
-        row1.pack(fill="x", pady=(px(4), 0))
-        self.batch_box = ttk.Combobox(row1, textvariable=app.batch_var, state="readonly", width=12)
-        self.batch_box.pack(side="left", fill="x", expand=True)
-        self.batch_apply_btn = ttk.Button(row1, text="套用此分類", command=app.apply_batch)
-        self.batch_apply_btn.pack(side="left", padx=(px(6), 0))
-        row2 = ttk.Frame(batch, style="Card.TFrame")
-        row2.pack(fill="x", pady=(px(4), 0))
-        self.batch_accept_btn = ttk.Button(row2, text="採用建議分類", command=app.accept_selected)
-        self.batch_accept_btn.pack(side="left")
-        self.batch_skip_btn = ttk.Button(row2, text="略過選取的", command=app.skip_selected)
-        self.batch_skip_btn.pack(side="left", padx=(px(6), 0))
-        self.batch_buttons = (self.batch_apply_btn, self.batch_accept_btn, self.batch_skip_btn)
-
-        table = ttk.Frame(parent, style="Card.TFrame")
-        table.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(table, columns=("suggest", "status"), show="tree headings", selectmode="extended",
-                                 style="Thumb.Treeview")
-        self.tree.heading("#0", text="檔案", command=lambda: app.sort_by("name"))
-        self.tree.heading("suggest", text="建議分類", command=lambda: app.sort_by("suggest"))
-        self.tree.heading("status", text="處理狀態", command=lambda: app.sort_by("status"))
-        self.tree.column("#0", width=px(210), minwidth=px(120), stretch=True)
-        self.tree.column("suggest", width=px(84), minwidth=px(60), stretch=False)
-        self.tree.column("status", width=px(96), minwidth=px(70), stretch=False)
-        scroll = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
+        ttk.Label(parent, text="分類", style="CardHeading.TLabel").pack(anchor="w", padx=px(4))
+        self.bucket_hint = autowrap(ttk.Label(parent, text="點一個分類，看 AI 放進去的檔案", style="CardHint.TLabel",
+                                              justify="left"))
+        self.bucket_hint.pack(anchor="w", fill="x", padx=px(4), pady=(0, px(6)))
+        ttk.Button(parent, text="分類設定…", command=app.open_category_dialog).pack(side="bottom", fill="x",
+                                                                                 pady=(px(8), 0))
+        frame = ttk.Frame(parent, style="Card.TFrame")
+        frame.pack(fill="both", expand=True)
+        self.buckets = ttk.Treeview(frame, columns=("count",), show="tree", selectmode="browse",
+                                    style="Buckets.Treeview", takefocus=1)
+        self.buckets.column("#0", width=px(150), minwidth=px(100), stretch=True)
+        self.buckets.column("count", width=px(56), minwidth=px(40), anchor="e", stretch=False)
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=self.buckets.yview)
+        self.buckets.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
-        self.tree.pack(side="left", fill="both", expand=True)
+        self.buckets.pack(side="left", fill="both", expand=True)
         theme = app.theme
-        self.tree.tag_configure("confirmed", background=theme.ok_bg)
-        self.tree.tag_configure("skipped", foreground="#8a919c")
-        self.tree.tag_configure("error", foreground=theme.danger)
-        self.tree.tag_configure("check", background=theme.warn_bg)
-        self.tree.bind("<<TreeviewSelect>>", app.on_select)
-        self.tree.bind("<Double-1>", lambda e: self.show_detail_tab())
+        self.buckets.tag_configure("low", foreground=theme.warn, font=theme.fonts["bold"])
+        self.buckets.tag_configure("dim", foreground="#8a919c")
+        self.buckets.tag_configure("error", foreground=theme.danger)
+        self.buckets.bind("<<TreeviewSelect>>", app.on_bucket_select)
 
-    # -- 右邊預覽與候選分類
-    def _build_detail(self, parent) -> None:
+    # -- 中間：縮圖格與分類按鈕
+    def _build_grid(self, parent) -> None:
         app, px = self.app, self.app.theme.px
-        # 底部的操作列固定不捲動
+        head = ttk.Frame(parent, style="Card.TFrame")
+        head.pack(fill="x")
+        self.grid_title_var = tk.StringVar()
+        ttk.Label(head, textvariable=self.grid_title_var, style="CardHeading.TLabel").pack(side="left")
+        size = ttk.Frame(head, style="Card.TFrame")
+        size.pack(side="right")
+        ttk.Label(size, text="縮圖", style="CardHint.TLabel").pack(side="left", padx=(0, px(4)))
+        self.size_buttons = {}
+        for key, label in (("small", "小"), ("medium", "中"), ("large", "大")):
+            button = ttk.Button(size, text=label, style="Link.TButton", command=lambda k=key: app.set_thumb_size(k))
+            button.pack(side="left")
+            self.size_buttons[key] = button
+        self.select_all_btn = ttk.Button(head, text="全選", style="Link.TButton", command=lambda: app.tree.select_all())
+        self.select_all_btn.pack(side="right", padx=(0, px(12)))
+        self.grid_hint_var = tk.StringVar()
+        self.grid_hint = autowrap(ttk.Label(parent, textvariable=self.grid_hint_var, style="CardHint.TLabel",
+                                            justify="left"))
+        self.grid_hint.pack(anchor="w", fill="x", pady=(0, px(6)))
+
+        # 底部的操作列先排（視窗矮時才不會被縮圖格擠掉）
         actions = ttk.Frame(parent, style="Card.TFrame")
         actions.pack(side="bottom", fill="x", pady=(px(8), 0))
-        self.shortcut_var = tk.StringVar(value="快速鍵：Enter 確認並看下一個　1／2／3 選擇建議　S 略過")
-        autowrap(ttk.Label(actions, textvariable=self.shortcut_var, style="CardHint.TLabel", justify="left")).pack(
-            anchor="w", fill="x", pady=(0, px(6)))
-        buttons = ttk.Frame(actions, style="Card.TFrame")
-        buttons.pack(fill="x")
-        self.confirm_btn = ttk.Button(buttons, text="確認並看下一個", style="Accent.TButton", command=app.confirm_current)
-        self.confirm_btn.pack(side="right")
-        self.skip_btn = ttk.Button(buttons, text="略過此檔", command=app.skip_current)
-        self.skip_btn.pack(side="right", padx=(0, px(8)))
-        self.undo_btn = ttk.Button(buttons, text="撤回上一次確認", command=app.undo_last_confirm)
-        self.undo_btn.pack(side="left")
+        self.sel_var = tk.StringVar()
+        autowrap(ttk.Label(actions, textvariable=self.sel_var, style="Card.TLabel", font=app.theme.fonts["bold"],
+                           justify="left")).pack(anchor="w", fill="x", pady=(0, px(4)))
+        self.category_bar = WrapFrame(actions, px(6), style="Card.TFrame")
+        self.category_bar.pack(fill="x")
+        self.category_buttons: list[ttk.Button] = []
+        row = ttk.Frame(actions, style="Card.TFrame")
+        row.pack(fill="x", pady=(px(4), 0))
+        self.accept_btn = ttk.Button(row, text="採用 AI 建議", style="Accent.TButton", command=app.accept_selected)
+        self.accept_btn.pack(side="left")
+        self.skip_btn = ttk.Button(row, text="略過，不整理", command=app.skip_selected)
+        self.skip_btn.pack(side="left", padx=(px(8), 0))
+        self.new_btn = ttk.Button(row, text="新增分類…", command=app.add_category_prompt)
+        self.new_btn.pack(side="left", padx=(px(8), 0))
+        self.undo_btn = ttk.Button(row, text="撤回上一步", command=app.undo_last_confirm)
+        self.undo_btn.pack(side="right")
+        self.shortcut_var = tk.StringVar(value="快速鍵：數字鍵選分類　Enter 採用 AI 建議　S 略過　Ctrl+Z 撤回　空白鍵放大檢視")
+        self.shortcut_label = autowrap(ttk.Label(actions, textvariable=self.shortcut_var, style="CardHint.TLabel",
+                                                 justify="left"))
+        self.shortcut_label.pack(anchor="w", fill="x", pady=(px(4), 0))
+        self.short = False
+        self.action_buttons = (self.accept_btn, self.skip_btn)
 
+        self.thumb_grid = ThumbGrid(parent, app.theme, app.thumb_px(), cell_for=app.cell_for, image_for=app.image_for,
+                              on_select=app.on_select, on_activate=lambda iid: app.open_viewer())
+        self.thumb_grid.pack(fill="both", expand=True)
+
+    def rebuild_category_buttons(self, names: list[str]) -> None:
+        app = self.app
+        self.category_bar.clear()
+        self.category_buttons = []
+        for i, name in enumerate(names):
+            key = f"{i + 1} " if i < 9 else ("0 " if i == 9 else "")
+            button = ttk.Button(self.category_bar, text=f"{key}{name}", style="Choice.TButton",
+                                command=lambda n=name: app.assign(n))
+            self.category_bar.add(button)
+            self.category_buttons.append(button)
+
+    # -- 右邊：目前檔案
+    def _build_detail(self, parent) -> None:
+        app, px = self.app, self.app.theme.px
         self.stack = ttk.Frame(parent, style="Card.TFrame")
         self.stack.pack(fill="both", expand=True)
         self.stack.grid_rowconfigure(0, weight=1)
         self.stack.grid_columnconfigure(0, weight=1)
 
-        # 狀態一：還沒有選檔案
         self.placeholder = ttk.Frame(self.stack, style="Card.TFrame")
         self.placeholder.grid(row=0, column=0, sticky="nsew")
-        self.placeholder_var = tk.StringVar(value="請從左邊的清單選一個檔案。")
+        self.placeholder_var = tk.StringVar(value="點一個縮圖，這裡會顯示大圖與 AI 的判斷。")
         autowrap(ttk.Label(self.placeholder, textvariable=self.placeholder_var, style="CardHint.TLabel",
-                           justify="center", anchor="center")).pack(expand=True, fill="x", padx=px(20))
+                           justify="center", anchor="center")).pack(expand=True, fill="x", padx=px(16))
 
-        # 狀態二：全部確認完
-        self.finished = ttk.Frame(self.stack, style="Card.TFrame")
-        self.finished.grid(row=0, column=0, sticky="nsew")
-        inner = ttk.Frame(self.finished, style="Card.TFrame")
-        inner.pack(expand=True)
-        ttk.Label(inner, text="✓　分類確認完成", style="CardTitle.TLabel").pack()
-        self.finished_var = tk.StringVar()
-        autowrap(ttk.Label(inner, textvariable=self.finished_var, style="Card.TLabel", justify="center",
-                           anchor="center"), px(20)).pack(fill="x", pady=(px(8), 0))
-
-        # 狀態三：目前檔案
-        self.scroll = ScrollFrame(self.stack, app.theme.card)
-        self.scroll.grid(row=0, column=0, sticky="nsew")
-        self.scroll.inner.configure(style="Card.TFrame")
-        d = self.scroll.inner
-        d.grid_columnconfigure(0, weight=1)
-        self.preview_frame = ttk.Frame(d, height=px(260), style="Preview.TFrame")
-        self.preview_frame.grid(row=0, column=0, sticky="ew")
+        d = self.detail = ttk.Frame(self.stack, style="Card.TFrame")
+        d.grid(row=0, column=0, sticky="nsew")
+        # 預覽佔面板高度的四成（至少 150），下面的文字放不下時從最底下（AI 還看到）開始被切掉
+        self.preview_frame = ttk.Frame(d, style="Preview.TFrame", height=px(240))
+        self.preview_frame.pack(side="top", fill="x")
         self.preview_frame.pack_propagate(False)
+        lower = self.lower = ttk.Frame(d, style="Card.TFrame")
+        lower.pack(side="top", fill="both", expand=True)
+        d.bind("<Configure>", self._resize_preview)
         self.preview_label = ttk.Label(self.preview_frame, style="Preview.TLabel", anchor="center", cursor="hand2")
         self.preview_label.pack(fill="both", expand=True)
         self.preview_label.bind("<Double-Button-1>", lambda e: app.open_viewer())
 
-        info = ttk.Frame(d, style="Card.TFrame")
-        info.grid(row=1, column=0, sticky="ew", pady=(px(8), 0))
-        info.grid_columnconfigure(0, weight=1)
         self.file_var = tk.StringVar()
-        autowrap(ttk.Label(info, textvariable=self.file_var, style="Card.TLabel", justify="left",
-                           font=app.theme.fonts["bold"]), px(100)).grid(row=0, column=0, sticky="ew")
-        self.zoom_btn = ttk.Button(info, text="放大檢視", style="Link.TButton", command=app.open_viewer)
-        self.zoom_btn.grid(row=0, column=1, sticky="e")
+        autowrap(ttk.Label(lower, textvariable=self.file_var, style="Card.TLabel", justify="left",
+                           font=app.theme.fonts["bold"])).pack(anchor="w", fill="x", pady=(px(6), 0))
         self.info_var = tk.StringVar()
-        autowrap(ttk.Label(info, textvariable=self.info_var, style="CardHint.TLabel", justify="left")).grid(
-            row=1, column=0, columnspan=2, sticky="ew")
-
-        self.notice_frame = ttk.Frame(d, style="Warn.TFrame", padding=px(8))
-        self.notice_frame.grid(row=2, column=0, sticky="ew", pady=(px(8), 0))
+        autowrap(ttk.Label(lower, textvariable=self.info_var, style="CardHint.TLabel", justify="left")).pack(
+            anchor="w", fill="x")
+        self.zoom_btn = ttk.Button(lower, text="放大檢視（或按兩下縮圖）", style="Link.TButton", command=app.open_viewer)
+        self.zoom_btn.pack(anchor="w", pady=(px(2), 0))
+        self.notice_frame = ttk.Frame(lower, style="Warn.TFrame", padding=px(8))
         self.notice_var = tk.StringVar()
         autowrap(ttk.Label(self.notice_frame, textvariable=self.notice_var, style="Warn.TLabel", justify="left"),
                  px(20)).pack(fill="x")
-
-        head = ttk.Frame(d, style="Card.TFrame")
-        head.grid(row=3, column=0, sticky="ew", pady=(px(10), px(4)))
-        ttk.Label(head, text="這看起來像：", style="CardHeading.TLabel").pack(side="left")
-        self.clarity_var = tk.StringVar()
-        ttk.Label(head, textvariable=self.clarity_var, style="CardHint.TLabel").pack(side="left", padx=px(8))
-        self.candidates = ttk.Frame(d, style="Card.TFrame")
-        self.candidates.grid(row=4, column=0, sticky="ew")
-        self.candidates.grid_columnconfigure(0, weight=1)
+        self.suggest_head = ttk.Label(lower, text="AI 覺得像：", style="CardHeading.TLabel")
+        self.suggest_head.pack(anchor="w", pady=(px(8), px(2)))
+        self.candidates = ttk.Frame(lower, style="Card.TFrame")
+        self.candidates.pack(fill="x")
         self.candidate_buttons: list[ttk.Button] = []
         for i in range(3):
             button = ttk.Button(self.candidates, style="Choice.TButton", command=lambda i=i: app.pick_suggestion(i))
-            button.grid(row=i, column=0, sticky="ew", pady=(0, px(4)))
+            button.pack(fill="x", pady=(0, px(4)))
             self.candidate_buttons.append(button)
-
-        other = ttk.Frame(d, style="Card.TFrame")
-        other.grid(row=5, column=0, sticky="ew", pady=(px(4), 0))
-        other.grid_columnconfigure(1, weight=1)
-        ttk.Label(other, text="都不是？選其他分類", style="Card.TLabel").grid(row=0, column=0, sticky="w")
-        self.other_box = ttk.Combobox(other, textvariable=app.other_var, width=16)
-        self.other_box.grid(row=0, column=1, sticky="ew", padx=(px(8), px(8)))
-        self.other_box.bind("<<ComboboxSelected>>", app.on_other_selected)
-        self.other_box.bind("<Return>", app.on_other_selected)
-        self.other_box.bind("<KeyRelease>", app.filter_other_list)
-        ttk.Button(other, text="新增分類…", command=app.add_category_prompt).grid(row=0, column=2)
-        self.other_hint_var = tk.StringVar()
-        ttk.Label(other, textvariable=self.other_hint_var, style="CardHint.TLabel").grid(
-            row=1, column=0, columnspan=3, sticky="w")
-
-        self.tags_frame = ttk.Frame(d, style="Card.TFrame")
-        self.tags_frame.grid(row=6, column=0, sticky="ew", pady=(px(8), 0))
+        self.score_var = tk.StringVar()
+        autowrap(ttk.Label(lower, textvariable=self.score_var, style="CardHint.TLabel", justify="left")).pack(
+            anchor="w", fill="x")
+        self.tags_head = ttk.Label(lower, text="AI 還看到（點一下可以當作新分類）：", style="CardHint.TLabel")
+        self.tags_head.pack(anchor="w", pady=(px(8), 0))
+        self.tags_frame = WrapFrame(lower, px(4), style="Card.TFrame")
+        self.tags_frame.pack(fill="x")
         self.view_state = "placeholder"
         self.show_state("placeholder")
-        self.detail_frame.bind("<Configure>", self._resize_preview)
 
-    def _resize_preview(self, event=None) -> None:
-        px = self.app.theme.px
-        height = event.height if event is not None else self.detail_frame.winfo_height()
-        self.preview_frame.configure(height=max(px(130), min(px(520), int(height * 0.34))))
+    def _resize_preview(self, event) -> None:
+        self.preview_frame.configure(height=max(self.app.theme.px(150), int(event.height * 0.4)))
         self.app.schedule_preview_render()
 
     def show_toolbar(self, shown: bool) -> None:
@@ -471,60 +506,44 @@ class ReviewPage(ttk.Frame):
             self.toolbar.pack_forget()
 
     def show_state(self, state: str) -> None:
-        """state：detail（目前檔案）／placeholder／finished"""
-        {"detail": self.scroll, "placeholder": self.placeholder, "finished": self.finished}[state].tkraise()
+        """state：detail（目前檔案）／placeholder（沒有選取）"""
+        {"detail": self.detail, "placeholder": self.placeholder}[state].tkraise()
         self.view_state = state
 
-    # -- 寬窄版面
+    def show_notice(self, text: str) -> None:
+        self.notice_var.set(text)
+        if text:
+            self.notice_frame.pack(fill="x", pady=(self.app.theme.px(6), 0), before=self.suggest_head)
+        else:
+            self.notice_frame.pack_forget()
+
+    # -- 寬窄版面：窄的時候收起右邊的預覽（按兩下縮圖仍可放大檢視）；矮的時候收起提示文字，把高度留給縮圖
     def set_narrow(self, narrow: bool, force: bool = False) -> None:
         if narrow == self.narrow and not force:
             return
         self.narrow = narrow
-        for widget, children in ((self.paned, self.paned.panes), (self.notebook, self.notebook.tabs)):
-            for pane in list(children()):
-                try:
-                    widget.forget(pane)
-                except tk.TclError:
-                    pass
-            widget.pack_forget()
         if narrow:
-            self.notebook.pack(fill="both", expand=True)
-            self.notebook.add(self.list_frame, text="檔案清單")
-            self.notebook.add(self.detail_frame, text="目前檔案")
-            self.list_frame.lift(self.notebook)
-            self.detail_frame.lift(self.notebook)
-            self.detail_btn.pack(side="bottom", fill="x", pady=(self.app.theme.px(8), 0), after=self.batch_frame)
+            self.detail_frame.grid_remove()
         else:
-            self.detail_btn.pack_forget()
-            self.paned.pack(fill="both", expand=True)
-            self.paned.add(self.list_frame, weight=1)
-            self.paned.add(self.detail_frame, weight=1)
-            self.list_frame.lift(self.paned)
-            self.detail_frame.lift(self.paned)
+            self.detail_frame.grid()
 
-    def show_detail_tab(self) -> None:
-        if self.narrow:
-            self.notebook.select(self.detail_frame)
-
-    def sash_ratio(self) -> float | None:
-        if self.narrow:
-            return None
-        width = self.paned.winfo_width()
-        try:
-            position = self.paned.sashpos(0)
-        except tk.TclError:
-            return None
-        return position / width if width > 50 else None
-
-    def set_sash_ratio(self, ratio: float) -> None:
-        if self.narrow:
+    def set_short(self, short: bool) -> None:
+        if short == self.short:
             return
-        width = self.paned.winfo_width()
-        if width > 50:
-            try:
-                self.paned.sashpos(0, int(width * ratio))
-            except tk.TclError:
-                pass
+        self.short = short
+        px = self.app.theme.px
+        if short:
+            self.shortcut_label.pack_forget()
+            self.grid_hint.pack_forget()
+            self.bucket_hint.pack_forget()
+            self.tags_head.pack_forget()
+            self.tags_frame.pack_forget()
+        else:
+            self.tags_frame.pack(fill="x")
+            self.app.show_detail(self.app.current, len(self.app.tree.selection()) or 1)
+            self.shortcut_label.pack(anchor="w", fill="x", pady=(px(4), 0))
+            self.grid_hint.pack(anchor="w", fill="x", pady=(0, px(6)), before=self.thumb_grid)
+            self.bucket_hint.pack(anchor="w", fill="x", padx=px(4), pady=(0, px(6)), after=self.bucket_hint.master.winfo_children()[0])
 
 
 # ---------------------------------------------------------------------------- 步驟 3：預覽整理結果
@@ -534,7 +553,7 @@ class PlanPage(ttk.Frame):
         px = app.theme.px
         self.app = app
         bar = bottom_bar(self, app)
-        self.back_btn = ttk.Button(bar, text="← 回到確認分類", command=lambda: app.show_step(2))
+        self.back_btn = ttk.Button(bar, text="← 回到檢查分類", command=lambda: app.show_step(2))
         self.back_btn.pack(side="left")
         self.copy_btn = ttk.Button(bar, text="開始複製", style="Accent.TButton", command=app.toggle_copy)
         self.copy_btn.pack(side="right")
@@ -572,9 +591,16 @@ class PlanPage(ttk.Frame):
         self.excluded_var = tk.StringVar()
         autowrap(ttk.Label(files, textvariable=self.excluded_var, style="CardHint.TLabel", justify="left"),
                  ).pack(anchor="w", fill="x", pady=(px(2), 0))
-        self.include_check = ttk.Checkbutton(files, variable=app.include_pending_var, style="Card.TCheckbutton",
-                                             command=app.refresh_plan)
-        self.include_check.pack(anchor="w", pady=(px(6), 0))
+        self.low_frame = ttk.Frame(files, style="Card.TFrame")
+        self.low_var = tk.StringVar()
+        autowrap(ttk.Label(self.low_frame, textvariable=self.low_var, style="Card.TLabel", justify="left")).pack(
+            anchor="w", fill="x", pady=(px(8), px(2)))
+        self.low_radios: list[ttk.Radiobutton] = []
+        for key, label in LOW_MODES:
+            radio = ttk.Radiobutton(self.low_frame, text=label, value=key, variable=app.low_mode_var,
+                                    style="Card.TRadiobutton", command=app.refresh_plan)
+            radio.pack(anchor="w", padx=(px(12), 0), pady=(px(2), 0))
+            self.low_radios.append(radio)
 
         out = card(self.left, app, "輸出位置")
         row = ttk.Frame(out, style="Card.TFrame")
@@ -655,7 +681,7 @@ class DonePage(ttk.Frame):
         self.open_btn.pack(side="right")
         self.again_btn = ttk.Button(bar, text="整理其他資料夾", command=app.start_over)
         self.again_btn.pack(side="left")
-        self.back_btn = ttk.Button(bar, text="回到確認分類", command=lambda: app.show_step(2))
+        self.back_btn = ttk.Button(bar, text="回到檢查分類", command=lambda: app.show_step(2))
 
         self.scroll = ScrollFrame(self, app.theme.bg)
         self.scroll.pack(fill="both", expand=True)

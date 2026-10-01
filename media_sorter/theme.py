@@ -62,6 +62,10 @@ def setup_theme(root: tk.Misc) -> Theme:
     small.configure(size=BASE_PT - 1)
     theme.fonts = {"base": base, "bold": bold, "heading": heading, "title": title, "small": small}  # type: ignore[attr-defined]
 
+    # 下拉選單展開的清單是 Tk 內建的 Listbox，不吃 ttk 樣式，字體要另外指定（否則是很小的預設字）
+    root.option_add("*TCombobox*Listbox.font", base)
+    root.option_add("*TCombobox*Listbox.selectBackground", theme.accent)
+    root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
     style = ttk.Style(root)
     style.theme_use("clam")
     px = theme.px
@@ -112,12 +116,15 @@ def setup_theme(root: tk.Misc) -> Theme:
                     bordercolor=theme.danger)
     style.map("Danger.TButton", background=[("active", "#f9d7d3"), ("disabled", "#eef0f3")],
               foreground=[("disabled", "#9aa1ab")])
-    style.configure("Choice.TButton", padding=(px(12), px(7)), background=theme.card, bordercolor=theme.border,
-                    anchor="w")
-    style.map("Choice.TButton", background=[("active", theme.accent_soft)])
-    style.configure("ChoiceOn.TButton", padding=(px(12), px(7)), background=theme.accent_soft,
-                    bordercolor=theme.accent, font=bold, anchor="w")
-    style.map("ChoiceOn.TButton", background=[("active", theme.accent_soft)])
+    # 分類按鈕：要一眼看出是按鈕、好按（高度約 44 個邏輯像素）；ChoiceOn 是 AI 建議的那一個
+    choice_pad = (px(16), px(10))
+    style.configure("Choice.TButton", padding=choice_pad, background="#f6f7f9", bordercolor="#b9c0cb", anchor="w")
+    style.map("Choice.TButton", background=[("active", theme.accent_soft), ("disabled", "#f6f7f9")],
+              foreground=[("disabled", "#9aa1ab")])
+    style.configure("ChoiceOn.TButton", padding=choice_pad, background=theme.accent_soft, bordercolor=theme.accent,
+                    font=bold, anchor="w")
+    style.map("ChoiceOn.TButton", background=[("active", theme.accent_soft), ("disabled", theme.accent_soft)],
+              foreground=[("disabled", "#9aa1ab")])
     style.configure("Link.TButton", padding=(px(8), px(4)), background=theme.card, foreground=theme.accent,
                     bordercolor=theme.card)
     style.map("Link.TButton", background=[("active", theme.accent_soft)])
@@ -139,7 +146,7 @@ def setup_theme(root: tk.Misc) -> Theme:
 
     style.configure("Treeview", background=theme.card, fieldbackground=theme.card, foreground=theme.text,
                     rowheight=max(int(linespace * 1.7), px(28)), bordercolor=theme.border)
-    style.configure("Thumb.Treeview", rowheight=max(int(linespace * 2.4), px(46)))
+    style.configure("Buckets.Treeview", rowheight=max(int(linespace * 2.0), px(36)))
     style.map("Treeview", background=[("selected", theme.accent)], foreground=[("selected", "#ffffff")])
     style.configure("Treeview.Heading", background="#e8eaee", foreground=theme.text, padding=(px(6), px(6)),
                     font=bold, relief="flat")

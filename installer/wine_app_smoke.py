@@ -1,4 +1,4 @@
-"""在「安裝好的」內建 Python 裡實際開啟視窗程式，跑一遍：辨識（假模型）→ 確認 → 預覽 → 複製。
+"""在「安裝好的」內建 Python 裡實際開啟視窗程式，跑一遍：辨識（假模型）→ 檢查分類 → 預覽 → 複製。
 由 test_in_wine.sh 在 Wine 裡執行（需要先把 pillow、numpy、av、send2trash 的 Windows wheel 解到 site-packages）。
 """
 
@@ -45,15 +45,18 @@ print("images found:", app.stats.images)
 app.start_analysis()
 pump(lambda: app.items and all(i.analyzed for i in app.items) and not app.analysis_running())
 print("step:", app.step, "analyzed:", len(app.items))
-for _ in range(6):
-    app.confirm_current()
+app.select_bucket("cat:紅")
+app.tree.select_all()
+app.assign("綠")  # 把 AI 放在「紅」的全部改成「綠」
+assert app.page2.buckets.item("cat:綠", "values")[0] == "6" and not app.tree.get_children()
 assert app.show_step(3)
 app.start_copy()
 pump(lambda: not app.organizing and app.step == 4)
 out = src / "已分類"
 copies = sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file())
 print("copies:", len(copies))
-assert len(copies) == 6 and all((src / f"IMG_{i}.jpg").exists() for i in range(6)), "原檔要還在"
+assert len(copies) == 6 and all(c.startswith("綠/") for c in copies), copies
+assert all((src / f"IMG_{i}.jpg").exists() for i in range(6)), "原檔要還在"
 print("logs:", len(list(config.LOG_DIR.glob("*.csv"))))
 print("SMOKE-OK")
 app.shutdown()

@@ -1,4 +1,4 @@
-"""四步驟介面的行為測試：步驟限制、搜尋、撤回、版面、紀錄頁、重試與停止（需要圖形環境）。"""
+"""四步驟介面的行為測試：步驟限制、分類清單與縮圖格、撤回、版面、紀錄頁、重試與停止（需要圖形環境）。"""
 
 import pytest
 
@@ -21,9 +21,7 @@ def test_steps_are_gated(app, tmp_path):
     src = photos(tmp_path)
     run_analysis(app, src)
     assert app.step == 2 and app.step_available(2)
-    assert not app.step_available(3)  # 還沒有任何已確認的檔案
-    app.confirm_current()
-    assert app.step_available(3) and not app.step_available(4)
+    assert app.step_available(3) and not app.step_available(4)  # AI 分好就可以預覽，不必逐一確認
     copy_all(app)
     assert app.step == 4 and app.step_available(4)
 
@@ -72,34 +70,42 @@ def test_empty_folder_stays_on_step1_with_notice(app, tmp_path):
     assert "沒有找到支援的圖片或影片" in app.page1.notice_var.get()
 
 
-# ------------------------------------------------------------------ 確認分類
-def test_low_confidence_needs_an_explicit_choice(app, tmp_path):
-    from media_sorter.analysis import CONFIRMED, PENDING
+# ------------------------------------------------------------------ 檢查分類
+def test_low_confidence_goes_to_the_check_bucket(app, tmp_path):
+    from media_sorter.analysis import PENDING
 
     src = tmp_path / "photos"
-    make_image(src / "gray.png", (128, 128, 128))  # 跟三個分類都一樣不像 → 需要確認
+    make_image(src / "gray.png", (128, 128, 128))  # 跟三個分類都一樣不像 → AI 沒把握
+    make_image(src / "red.png", (250, 10, 10))
     run_analysis(app, src)
-    item = app.items[0]
-    assert app._is_low(item) and app.choice_var.get() == ""  # 沒把握的檔案不會預先選好
-    assert app.page2.confirm_btn.instate(["disabled"])
-    app.confirm_current()  # 沒選就不會確認
-    assert item.status == PENDING
-    assert app.page2.clarity_var.get() == "需要確認"
-    app.pick_suggestion(1)  # 點候選只是選取
-    assert item.status == PENDING and not app.page2.confirm_btn.instate(["disabled"])
-    chosen = app.choice_var.get()
-    app.confirm_current()
-    assert item.status == CONFIRMED and item.chosen == chosen
+    gray = next(it for it in app.items if it.path.name == "gray.png")
+    assert app._is_low(gray) and gray.status == PENDING
+    assert app.page2.buckets.item("low", "values")[0] == "1"
+    app.select_bucket("low")
+    assert len(app.tree.get_children()) == 1 and app.current == app.items.index(gray)
+    assert "沒有把握" in app.page2.notice_var.get()
+    # 沒把握的檔案預設仍依 AI 建議整理；步驟 3 可以改成放到「未分類」或不整理
+    assert app.show_step(3)
+    app.root.update()
+    assert len(app.plan.ops) == 2 and app.page3.low_frame.winfo_ismapped()
+    app.low_mode_var.set("unsorted")
+    app.refresh_plan()
+    assert {op.dst.parent.name for op in app.plan.ops if op.src.name == "gray.png"} == {"未分類"}
+    app.low_mode_var.set("leave")
+    app.refresh_plan()
+    assert [op.src.name for op in app.plan.ops] == ["red.png"] and "沒把握而這次不整理 1 個" in app.page3.excluded_var.get()
 
 
-def test_clear_suggestion_is_preselected_but_not_confirmed(app, tmp_path):
+def test_ai_suggestion_is_highlighted_but_nothing_is_confirmed(app, tmp_path):
     from media_sorter.analysis import PENDING
 
     run_analysis(app, photos(tmp_path, 2))
     item = app.items[app.current]
-    assert app.choice_var.get() == "紅" and item.status == PENDING
-    assert app.page2.clarity_var.get() == "建議較明確"
-    assert "不代表正確率" in app.page2.other_hint_var.get()  # 不把模型分數說成「準確率」
+    assert item.best(app.categories)[0] == "紅" and item.status == PENDING
+    styles = [str(b.cget("style")) for b in app.page2.category_buttons]
+    assert styles == ["ChoiceOn.TButton", "Choice.TButton", "Choice.TButton"]  # AI 建議的那個按鈕亮起來
+    assert app.page2.accept_btn.cget("text") == "採用 AI 建議：紅"
+    assert "不代表正確率" in app.page2.score_var.get()  # 不把模型分數說成「準確率」
 
 
 def test_undo_last_confirmation(app, tmp_path):
@@ -118,91 +124,97 @@ def test_undo_last_confirmation(app, tmp_path):
     assert app.page2.undo_btn.instate(["disabled"])
 
 
-def test_batch_actions_only_touch_selected_rows(app, tmp_path):
+def test_batch_actions_only_touch_selected_thumbnails(app, tmp_path):
     from media_sorter.analysis import CONFIRMED, PENDING
 
     run_analysis(app, photos(tmp_path, 5))
     iids = app.tree.get_children()
     app.tree.selection_set(iids[1:3])
-    app.root.update()
-    assert "已選取 2 個檔案" in app.page2.batch_label_var.get()
+    assert "已選取 2 個檔案" in app.page2.sel_var.get()
     app.accept_selected()
     statuses = [app.items[app._index_of(i)].status for i in iids]
     assert statuses == [PENDING, CONFIRMED, CONFIRMED, PENDING, PENDING]
-    app.tree.selection_remove(app.tree.selection())
-    app.root.update()
-    assert all(b.instate(["disabled"]) for b in app.page2.batch_buttons)  # 沒選取就不能批次操作
+    assert app.tree.selection() == (iids[3],)  # 處理完跳到下一個
+    app.tree.selection_set(())
+    assert all(b.instate(["disabled"]) for b in (*app.page2.category_buttons, *app.page2.action_buttons))
 
 
-def test_search_filters_the_list(app, tmp_path):
+def test_category_list_filters_the_grid(app, tmp_path):
     src = tmp_path / "photos"
     make_image(src / "beach_01.png", (250, 10, 10))
     make_image(src / "beach_02.png", (10, 250, 10))
     make_image(src / "city_01.png", (10, 10, 250))
     run_analysis(app, src)
-    app.search_var.set("beach")
-    pump(app.root, lambda: len(app.tree.get_children()) == 2)
-    app.search_var.set("綠")  # 也能搜尋建議分類
-    pump(app.root, lambda: len(app.tree.get_children()) == 1)
-    app.search_var.set("")
-    pump(app.root, lambda: len(app.tree.get_children()) == 3)
+    buckets = app.page2.buckets
+    assert [buckets.item(k, "values")[0] for k in ("all", "cat:紅", "cat:綠", "cat:藍", "skipped")] == ["3", "1", "1", "1", "0"]
+    buckets.selection_set("cat:綠")  # 點左邊的分類
+    app.root.update()
+    assert app.bucket_var.get() == "cat:綠" and len(app.tree.get_children()) == 1
+    assert app.items[app._index_of(app.tree.get_children()[0])].path.name == "beach_02.png"
+    assert app.page2.grid_title_var.get().startswith("綠")
+    app.select_bucket("all")
+    assert len(app.tree.get_children()) == 3 and buckets.selection() == ("all",)
 
 
-def test_other_category_box_searches_and_selects(app, tmp_path):
-    run_analysis(app, photos(tmp_path, 2))
-    app.other_var.set("藍")
-    app.filter_other_list()
-    assert list(app.page2.other_box["values"]) == ["藍"]
-    app.on_other_selected()
-    assert app.choice_var.get() == "藍" and app.page2.confirm_btn.instate(["!disabled"])
-    app.other_var.set("不存在的分類")
-    app.on_other_selected()
-    assert "找不到這個分類" in app.page2.other_hint_var.get() and app.choice_var.get() == "藍"
+def test_new_category_takes_the_selected_files(app, tmp_path, monkeypatch):
+    from tkinter import simpledialog
 
+    from media_sorter.analysis import CONFIRMED
 
-def test_finished_message_when_everything_is_decided(app, tmp_path):
-    run_analysis(app, photos(tmp_path, 2))
-    app.confirm_current()
-    assert app.page2.view_state == "detail"
-    app.confirm_current()
-    assert app.page2.view_state == "finished" and app.current is None
-    assert "分類確認完成" not in app.page2.finished_var.get()  # 標題是固定文字，這裡放統計
-    assert "已確認 2 個" in app.page2.finished_var.get()
-
-
-def test_thumbnails_are_shown_in_the_list(app, tmp_path):
     run_analysis(app, photos(tmp_path, 3))
-    assert len(app.thumbs) == 3
-    assert all(app.tree.item(iid, "image") for iid in app.tree.get_children())
+    iids = app.tree.get_children()
+    app.tree.selection_set(iids[:2])
+    monkeypatch.setattr(simpledialog, "askstring", lambda *a, **k: "寶寶")
+    app.add_category_prompt()
+    assert [c.name for c in app.categories][-1] == "寶寶"
+    assert [app.items[app._index_of(i)].chosen for i in iids[:2]] == ["寶寶", "寶寶"]
+    assert all(app.items[app._index_of(i)].status == CONFIRMED for i in iids[:2])
+    assert app.page2.buckets.item("cat:寶寶", "values")[0] == "2"
+    assert len(app.page2.category_buttons) == 4  # 下面多了一個分類按鈕
+
+
+def test_check_bucket_empties_as_you_fix(app, tmp_path):
+    src = tmp_path / "photos"
+    make_image(src / "gray.png", (128, 128, 128))
+    make_image(src / "red.png", (250, 10, 10))
+    run_analysis(app, src)
+    app.select_bucket("low")
+    assert len(app.tree.get_children()) == 1
+    app.assign("藍")
+    assert not app.tree.get_children() and "沒有需要檢查的檔案了" in app.tree.empty_text
+    assert app.page2.buckets.item("low", "values")[0] == "0" and app.page2.view_state == "placeholder"
+
+
+def test_thumbnails_are_drawn_in_the_grid(app, tmp_path):
+    run_analysis(app, photos(tmp_path, 3))
+    app.root.update()
+    assert all(app.image_for(iid) is not None for iid in app.tree.get_children())
+    assert len(app.thumbs) == 3 and app.tree.canvas.find_all()  # 畫在縮圖格上
 
 
 # ------------------------------------------------------------------ 版面
-def test_sash_ratio_is_remembered(app, tmp_path):
+def test_thumbnail_size_is_remembered(app, tmp_path):
     from media_sorter.config import load_settings
 
     run_analysis(app, photos(tmp_path, 2))
-    pump(app.root, lambda: app.page2.paned.winfo_width() > 400)
-    app.page2.set_sash_ratio(0.6)
-    app.root.update()
-    app._save_sash()
-    assert app.settings["split_ratio"] == pytest.approx(0.6, abs=0.02)
-    app.on_close()  # 關閉時存檔；下次開啟會用同樣的比例
-    assert load_settings()["split_ratio"] == pytest.approx(0.6, abs=0.02)
+    app.set_thumb_size("large")
+    assert app.tree.thumb == app.px(208) and app.page2.size_buttons["large"].instate(["pressed"])
+    app.on_close()  # 關閉時存檔；下次開啟會用同樣的大小
+    assert load_settings()["thumb_size"] == "large"
 
 
-def test_narrow_window_uses_tabs_and_keeps_buttons(app, tmp_path):
+def test_narrow_window_hides_the_preview_and_keeps_buttons(app, tmp_path):
     run_analysis(app, photos(tmp_path, 2))
     page = app.page2
-    app.root.geometry("920x700")  # 比 1100（100% 縮放）窄 → 清單與預覽改成分頁
+    app.root.geometry("920x700")  # 比 1100（100% 縮放）窄 → 收起右邊的預覽
     pump(app.root, lambda: page.narrow)
-    assert len(page.notebook.tabs()) == 2 and page.detail_btn.winfo_ismapped()
-    app._select(app.tree.get_children()[0])  # 程式自動選檔案時切到「目前檔案」
-    assert page.notebook.select() == str(page.detail_frame)
     app.root.update()
-    assert page.confirm_btn.winfo_ismapped() and page.next_btn.winfo_ismapped()
+    assert not page.detail_frame.winfo_ismapped()
+    assert page.accept_btn.winfo_ismapped() and page.next_btn.winfo_ismapped() and page.buckets.winfo_ismapped()
     app.root.geometry("1300x700")
     pump(app.root, lambda: not page.narrow)
-    assert not page.notebook.tabs() and len(page.paned.panes()) == 2
+    app.root.update()
+    assert page.detail_frame.winfo_ismapped()
 
 
 SCREENS = [(1366, 768), (1920, 1080)]
@@ -235,8 +247,11 @@ def test_primary_buttons_stay_inside_the_window(app_factory, tmp_path, screen, s
     inside(app.page1.start_btn)
     run_analysis(app, src)
     inside(app.page2.next_btn)
-    inside(app.page2.confirm_btn)
+    inside(app.page2.accept_btn)
     inside(app.page2.skip_btn)
+    inside(app.page2.category_buttons[-1])
+    if root.winfo_height() / app.theme.scale >= 420:  # 200% 縮放配 768 高的螢幕，邏輯高度只剩 344，本來就放不下
+        assert app.tree.canvas.winfo_height() >= min(app.px(120), root.winfo_height() // 6)  # 縮圖格不能被擠到看不見
     app.confirm_current()
     assert app.show_step(3)
     inside(app.page3.copy_btn)
@@ -273,17 +288,19 @@ def test_plan_shows_real_output_and_matches_what_runs(app, tmp_path):
     assert made == planned
 
 
-def test_plan_defaults_to_confirmed_only_and_keep_names(app, tmp_path):
+def test_plan_includes_ai_results_and_keeps_names(app, tmp_path):
     run_analysis(app, photos(tmp_path, 4))
-    app.confirm_current()
     assert app.show_step(3)
-    assert len(app.plan.ops) == 1 and app.rename_mode_var.get() == "keep"
+    assert len(app.plan.ops) == 4 and app.rename_mode_var.get() == "keep"
     assert app.plan.ops[0].dst.name == app.plan.ops[0].src.name  # 預設保留原檔名
-    assert "不會整理：尚未確認 3 個" in app.page3.excluded_var.get()
-    assert app.page3.copy_btn.cget("text") == "開始複製 1 個檔案"
-    app.include_pending_var.set(True)
-    app.refresh_plan()
-    assert len(app.plan.ops) == 4 and app.page3.copy_btn.cget("text") == "開始複製 4 個檔案"
+    assert not app.page3.excluded_var.get() and not app.page3.low_frame.winfo_ismapped()
+    assert app.page3.copy_btn.cget("text") == "開始複製 4 個檔案"
+    assert "AI 分好的 4 個、你指定的 0 個" in app.page3.summary_var.get()
+    app.show_step(2)
+    app.tree.selection_set(app.tree.get_children()[0])
+    app.skip_selected()
+    assert app.show_step(3)
+    assert len(app.plan.ops) == 3 and "不會整理：已略過 1 個" in app.page3.excluded_var.get()
 
 
 def test_custom_pattern_is_validated_and_previewed(app, tmp_path):
@@ -407,9 +424,10 @@ def test_actions_are_disabled_while_copying(app, tmp_path):
 
 def test_start_over_clears_the_session(app, tmp_path):
     run_analysis(app, photos(tmp_path, 3))
-    app.confirm_current()
+    app.tree.selection_set(app.tree.get_children()[1:])
+    app.skip_selected()
     copy_all(app)
-    assert app.items  # 還有兩個沒整理
+    assert app.items  # 略過的兩個還在
     app.start_over()  # askyesno 預設回答「否」→ 不離開
     assert app.step == 4 and app.items
     from tkinter import messagebox
@@ -516,36 +534,67 @@ def test_mouse_wheel_scrolls_only_the_area_under_the_pointer(app, tmp_path):
     assert scroll.canvas.yview()[0] == 0
 
 
-def test_step2_gives_keyboard_focus_to_the_list(app, tmp_path, monkeypatch):
-    """按下「開始辨識」之後焦點在按鈕上；進到確認分類時要把焦點交給清單，之後按 Enter／1／S 才會作用在檔案上。"""
+def test_step2_gives_keyboard_focus_to_the_grid(app, tmp_path, monkeypatch):
+    """按下「開始辨識」之後焦點在按鈕上；進到檢查分類時要把焦點交給縮圖格，之後按數字鍵／Enter／S 才會作用在檔案上。"""
     focused = []
     monkeypatch.setattr(app.tree, "focus_set", lambda: focused.append(True))
     run_analysis(app, photos(tmp_path, 3))
-    assert focused  # 進到步驟 2 時，程式主動把焦點交給清單
+    assert focused  # 進到步驟 2 時，程式主動把焦點交給縮圖格
 
 
-def test_shortcut_keys_confirm_skip_and_select(app, tmp_path):
+def test_shortcut_keys_accept_skip_and_assign(app, tmp_path):
     from media_sorter.analysis import CONFIRMED, PENDING, SKIPPED
 
     run_analysis(app, photos(tmp_path, 4))
-    for sequence in ("<Return>", "1", "2", "3", "s", "S", "<Control-z>"):  # 快速鍵確實綁定在視窗上
+    for sequence in ("<Return>", "1", "2", "9", "0", "s", "S", "<Control-z>", "<Control-a>", "<space>"):  # 快速鍵確實綁定在視窗上
         assert app.root.bind(sequence), sequence
     first = app.current
-    assert app.handle_key("Return", "Treeview")
-    assert app.items[first].status == CONFIRMED and app.current != first
+    assert app.handle_key("Return", "Canvas")  # Enter：採用 AI 建議
+    assert app.items[first].status == CONFIRMED and app.items[first].chosen == "紅" and app.current != first
     second = app.current
-    assert app.handle_key("s", "Treeview")
+    assert app.handle_key("s", "Canvas")
     assert app.items[second].status == SKIPPED
     third = app.current
-    assert app.handle_key("2", "Treeview")  # 只是選取第二個候選，不會確認
-    assert app.choice_var.get() == app._candidate_names[1] and app.current == third
-    assert app.items[third].status == PENDING
-    # 在輸入欄位、下拉選單或按鈕上，按鍵屬於那個元件，不會誤觸確認
+    assert app.handle_key("2", "Canvas")  # 數字鍵＝下面的第 2 個分類按鈕
+    assert app.items[third].status == CONFIRMED and app.items[third].chosen == "綠"
+    fourth = app.current
+    assert fourth not in (first, second, third)
+    # 在輸入欄位、下拉選單或按鈕上，按鍵屬於那個元件，不會誤觸
     for widget_class in ("TEntry", "TCombobox", "Text"):
         assert not app.handle_key("Return", widget_class) and not app.handle_key("s", widget_class)
-    assert not app.handle_key("Return", "TButton")  # 按鈕上按 Enter 是「按下那個按鈕」
-    assert app.current == third and app.items[third].status == PENDING
-    assert app.handle_key("ctrl-z", "Treeview")  # 撤回略過
-    assert app.items[second].status == PENDING
+    assert not app.handle_key("Return", "TButton") and not app.handle_key("space", "TButton")  # 按鈕上是「按下那個按鈕」
+    assert app.items[fourth].status == PENDING
+    assert app.handle_key("ctrl-z", "Canvas")  # 撤回剛才的「綠」
+    assert app.items[third].status == PENDING and app.current == third
+    assert app.handle_key("ctrl-a", "Canvas") and len(app.tree.selection()) == 4
     app.show_step(1)
-    assert not app.handle_key("Return", "Treeview")  # 其他步驟不作用
+    assert not app.handle_key("Return", "Canvas")  # 其他步驟不作用
+
+
+
+
+def test_grid_selection_works_like_a_file_manager(app, tmp_path):
+    """縮圖格：點一下選取、Ctrl 加選、Shift 連選、方向鍵移動、按空白處取消選取。"""
+    from types import SimpleNamespace
+
+    run_analysis(app, photos(tmp_path, 6))
+    grid = app.tree
+    app.root.update()
+    iids = grid.get_children()
+
+    def click(pos, **mods):
+        x0, y0, x1, y1 = grid._cell_box(pos)
+        grid._on_click(SimpleNamespace(x=(x0 + x1) // 2, y=(y0 + y1) // 2), **mods)
+
+    click(1)
+    assert grid.selection() == (iids[1],) and app.current == app._index_of(iids[1])
+    click(3, toggle=True)
+    assert grid.selection() == (iids[1], iids[3])
+    click(4, extend=True)  # 從最後點的那個（3）連選到 4
+    assert grid.selection() == (iids[3], iids[4])
+    grid._move(0, 1)  # 方向鍵：右
+    assert grid.selection() == (iids[5],) and grid.focus() == iids[5]
+    grid._on_click(SimpleNamespace(x=10_000, y=10_000))  # 點在縮圖以外的地方
+    assert grid.selection() == () and app.current is None and app.page2.view_state == "placeholder"
+    grid.select_all()
+    assert len(grid.selection()) == 6 and "已選取 6 個檔案" in app.page2.sel_var.get()

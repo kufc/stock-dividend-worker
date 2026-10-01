@@ -83,10 +83,18 @@ class Item:
         return top[0] if top else (None, 0.0)
 
     def is_low(self, categories: list[Category], threshold: float, similarity_floor: float) -> bool:
-        """AI 沒把握：第一名機率低於門檻，或跟所有分類都不太像。"""
+        """AI 沒把握：跟所有分類都不太像；或第一名機率低於門檻、而且領先第二名不多（分類一多，機率本來就會分散，
+        只看第一名的絕對值會把大半檔案都標成沒把握；第一名明顯領先時其實是清楚的判斷）。"""
         if self.status != PENDING or not self.analyzed:
             return False
-        return self.best(categories)[1] < threshold or self.top_similarity < similarity_floor
+        if self.top_similarity < similarity_floor:
+            return True
+        top = self.suggestions(categories, 2)
+        if not top:
+            return True
+        best = top[0][1]
+        second = top[1][1] if len(top) > 1 else 0.0
+        return best < threshold and (best - second) < threshold / 2
 
     def final_category(self, categories: list[Category]) -> str | None:
         """確認過就用使用者的選擇，否則用 AI 的第一名。"""

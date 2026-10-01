@@ -32,46 +32,39 @@ def test_full_flow(app, tmp_path, monkeypatch):
     video = make_video(src / "b.mp4", (10, 10, 250))
 
     run_analysis(app, src)
-    assert app.step == 2  # 第一批結果出來就自動進到「確認分類」
-    assert len(app.tree.get_children()) == 4
+    assert app.step == 2  # 第一批結果出來就自動進到「檢查分類」
+    assert len(app.tree.get_children()) == 4  # 「全部」
     assert {item.path.name: item.best(app.categories)[0] for item in app.items} == {
         "r1.jpg": "紅", "r2.jpg": "紅", "g.png": "綠", "b.mp4": "藍"}
-    assert app.current is not None  # 第一個待確認項目自動選取並預覽
+    assert app.current is not None  # 第一個檔案自動選取並預覽
 
-    # 按「1」只是選取候選分類；按 Enter（確認並看下一個）才會確認並跳到下一個
-    first = app.current
-    app.pick_suggestion(0)
-    assert app.items[first].status == PENDING
-    app.confirm_current()
-    assert app.items[first].status == CONFIRMED
-    assert app.current is not None and app.current != first
-
-    # 依「建議分類」篩選
-    app.filter_var.set("建議分類：紅")
-    app.refresh_tree()
+    # 左邊的分類清單：數量就是 AI 的結果；點一個分類只看那個分類的檔案
+    assert app.page2.buckets.item("cat:紅", "values")[0] == "2"
+    app.select_bucket("cat:紅")
     assert len(app.tree.get_children()) == 2
-    app.filter_var.set("全部")
-    app.refresh_tree()
+    # 分錯的：選起來、按正確的分類 → 立刻生效、從這個分類消失，選取跳到下一個
+    r1 = app._iid(next(i for i, it in enumerate(app.items) if it.path.name == "r1.jpg"))
+    app.tree.selection_set(r1)
+    app.assign("綠")
+    assert app.items[app._index_of(r1)].status == CONFIRMED and app.items[app._index_of(r1)].chosen == "綠"
+    assert len(app.tree.get_children()) == 1 and app.tree.selection() == app.tree.get_children()
+    assert app.items[app._index_of(app.tree.selection()[0])].status == PENDING
+    app.select_bucket("all")
 
-    # 新增分類 → 重新計算，不影響已確認的項目
+    # 新增分類 → 重新計算，不影響你指定過的
     app.add_category("黃", ["yellow"])
-    assert app.items[first].status == CONFIRMED
+    assert app.items[app._index_of(r1)].chosen == "綠"
     assert app.items[0].probs.shape == (4,)
 
-    # 步驟 3：預設只整理已確認的；勾選後才連「建議較明確」但未確認的一起整理
+    # 步驟 3：不用逐一確認，AI 分好的加上你指定的全部都會整理
     assert app.show_step(3)
-    assert len(app.plan.ops) == 1
-    app.include_pending_var.set(True)
-    app.refresh_plan()
     assert len(app.plan.ops) == 4
-    app.rename_mode_var.set("category_seq")
-    app.refresh_plan()
     planned = sorted(f"{op.dst.parent.name}/{op.dst.name}" for op in app.plan.ops)
     app.start_copy()
     pump(app.root, lambda: not app.organizing and app.step == 4)
     out = src / "已分類"
     assert sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()) == [
-        "紅/紅_001.jpg", "紅/紅_002.jpg", "綠/綠_001.png", "藍/藍_001.mp4"]
+        "紅/r2.jpg", "綠/g.png", "綠/r1.jpg", "藍/b.mp4"]
     assert planned == sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file())  # 預覽＝實際結果
     assert red.exists() and video.exists()  # 整理只複製，原檔不動
     assert not app.items and app.run_info.done == 4
@@ -96,25 +89,20 @@ def test_manual_choice_skip_and_batch(app, tmp_path):
         make_image(src / f"{i}.png", (250, 10, 10))
     run_analysis(app, src)
 
-    # 多選後批次套用分類
+    # 多選後一次改分類
     iids = app.tree.get_children()
     app.tree.selection_set(iids[:2])
-    app.root.update()
-    app.batch_var.set("綠")
-    app.apply_batch()
+    app.assign("綠")
     assert [app.items[app._index_of(i)].chosen for i in iids[:2]] == ["綠", "綠"]
     assert all(app.items[app._index_of(i)].status == CONFIRMED for i in iids[:2])
 
     # 單一項目略過
     app.tree.selection_set(iids[2])
-    app.root.update()
     app.skip_current()
     assert app.items[app._index_of(iids[2])].status == SKIPPED
+    assert app.page2.buckets.item("skipped", "values")[0] == "1"
 
-    # 全部決定完了：右邊顯示「分類確認完成」
-    assert app.page2.view_state == "finished" and app.current is None
-
-    # 只整理已確認的，保留原檔名（預設）
+    # 略過的不整理；保留原檔名（預設）
     copy_all(app)
     assert sorted(p.name for p in (src / "已分類" / "綠").iterdir()) == ["0.png", "1.png"]
     assert (src / "0.png").exists()  # 原檔不動

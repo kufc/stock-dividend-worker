@@ -77,7 +77,7 @@ RENAME_MODES = {
     "date_category_seq": ("日期＋分類＋序號　例：20240503_貓_001.jpg", "{日期}_{分類}_{序號}"),
     "custom": ("自訂格式", None),
 }
-DEFAULT_SPLIT_RATIO = 0.42  # 「確認分類」畫面左邊清單佔的寬度比例
+THUMB_SIZE_CHOICES = ("small", "medium", "large")  # 「檢查分類」縮圖格的縮圖大小
 
 DEFAULT_SETTINGS = {
     "model": "auto",
@@ -87,7 +87,7 @@ DEFAULT_SETTINGS = {
     "include_subfolders": True,
     "rename_mode": "keep",
     "rename_pattern": RENAME_PATTERN_PRESETS[0],
-    "split_ratio": DEFAULT_SPLIT_RATIO,
+    "thumb_size": "medium",
     "output_dir": "",
     "last_folder": "",
 }
@@ -204,7 +204,8 @@ def load_settings(path: Path = SETTINGS_FILE) -> dict:
         settings["rename_mode"] = DEFAULT_SETTINGS["rename_mode"]
     if not isinstance(settings.get("rename_pattern"), str) or not settings["rename_pattern"].strip():
         settings["rename_pattern"] = DEFAULT_SETTINGS["rename_pattern"]
-    settings["split_ratio"] = _clamped_float(settings.get("split_ratio"), 0.25, 0.75, DEFAULT_SPLIT_RATIO)
+    if settings.get("thumb_size") not in THUMB_SIZE_CHOICES:
+        settings["thumb_size"] = DEFAULT_SETTINGS["thumb_size"]
     for key in ("include_subfolders",):
         if not isinstance(settings.get(key), bool):
             settings[key] = DEFAULT_SETTINGS[key]

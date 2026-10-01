@@ -71,8 +71,7 @@ def test_decisions_made_during_analysis_are_kept(app, tmp_path):
     first = app.tree.get_children()[0]
     app.tree.selection_set(first)
     app.root.update()
-    app.batch_var.set("綠")
-    app.apply_batch()
+    app.assign("綠")
     finish(app)
     assert app.items[app._index_of(last)].status == SKIPPED
     assert app.items[app._index_of(first)].status == CONFIRMED
@@ -146,19 +145,18 @@ def test_category_folder_clash_is_rejected(app, monkeypatch):
     assert app.add_category("紅", []) is True  # 已存在的名稱直接視為成功
 
 
-def test_confirming_under_filter_selects_next_remaining(app, tmp_path):
+def test_fixing_inside_a_category_selects_next_remaining(app, tmp_path):
     from media_sorter.analysis import CONFIRMED
 
     for i in range(8):
         make_image(tmp_path / "photos" / f"{i:02d}.png", (250, 10, 10))
     run_analysis(app, tmp_path / "photos")
-    app.filter_var.set("待確認")
-    app.refresh_tree()
+    app.select_bucket("cat:紅")
     iids = app.tree.get_children()
     app._select(iids[0])
-    app.confirm_current()
+    app.assign("綠")
     assert app.items[app._index_of(iids[0])].status == CONFIRMED
-    assert app.tree.selection() == (iids[1],)  # 確認後那一列從清單消失，直接跳到下一個
+    assert app.tree.selection() == (iids[1],)  # 改完那一格從這個分類消失，直接跳到下一個
     assert len(app.tree.get_children()) == 7
 
 
