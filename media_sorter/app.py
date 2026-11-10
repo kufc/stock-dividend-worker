@@ -1,6 +1,6 @@
 """桌面視窗介面（Tkinter，Python 內建，不需額外安裝）。
 
-四個步驟：選擇資料夾 → 確認分類 → 預覽整理結果 → 完成。
+四個步驟：選擇資料夾 → 檢查分類 → 預覽整理結果 → 完成。
 整理只會「複製」檔案，原檔完全不動；處理原檔（移到資源回收筒）是完成之後另外的、可選的動作。
 """
 
@@ -536,7 +536,7 @@ class App:
         elif supported:
             hint = f"將辨識 {supported:,} 個檔案（圖片 {self.stats.images:,}、影片 {self.stats.videos:,}）。"
             if self.items:
-                hint += "　要繼續上次的結果，請按上方的「2　確認分類」。"
+                hint += "　要繼續上次的結果，請按上方的「2　檢查分類」。"
             p.hint_var.set(hint)
         else:
             p.hint_var.set("沒有可以辨識的檔案。")
@@ -1385,9 +1385,9 @@ class App:
                 stop_event=stop_event,
             )
             if stop_event.is_set():
-                post(("done", "已停止。已辨識的項目可以先確認與整理。"))
+                post(("done", "已停止。已辨識的檔案可以先檢查與整理。"))
             else:
-                post(("done", f"辨識完成！共 {len(paths)} 個檔案，使用：{device}。請確認分類。"))
+                post(("done", f"辨識完成！共 {len(paths)} 個檔案，使用：{device}。請檢查分類。"))
         except ImportError as exc:
             from .config import INSTALLED
 
