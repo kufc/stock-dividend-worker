@@ -50,3 +50,28 @@ VOCABULARY: list[tuple[str, str]] = [
     ("黑白照片", "a black and white photo"), ("模糊照片", "a blurry photo"), ("夜間照片", "a dark photo taken at night"),
     ("特寫", "a close-up photo"), ("空拍", "an aerial drone photo"), ("全景", "a panorama photo"),
 ]
+
+# 常見的分類名稱 → 英文說明（VOCABULARY 沒有的補在這裡）。使用者新增分類卻沒寫補充說明時，
+# 名稱對得上就自動用這裡的英文，AI 才知道那個名稱指的是什麼畫面。
+EXTRA_HINTS: dict[str, str] = {
+    "人像": "a person", "寵物": "a pet animal", "動物": "an animal", "風景": "a landscape of nature",
+    "建築": "buildings and architecture", "城市建築": "city streets and buildings", "食物": "food",
+    "植物": "plants", "花草植物": "flowers or plants", "交通工具": "a vehicle such as a car, motorcycle, train or airplane",
+    "車": "a car", "車子": "a car", "旅行": "a travel photo of a tourist attraction", "旅遊": "a travel photo of a tourist attraction",
+    "寶寶": "a baby", "婚禮": "a wedding", "運動": "people playing sports", "截圖": "a screenshot of a phone or computer screen",
+    "文件收據": "a document, receipt or paper with text", "動漫插畫": "an anime or cartoon illustration",
+    "廣告": "an advertisement, a promotional poster or flyer", "梗圖": "a meme with text", "貼圖": "a cartoon sticker",
+    "商品": "a product photo", "書籍": "books", "簡報": "a presentation slide",
+}
+# 「分類設定」裡一按就能加入的常用分類（每一個都要查得到英文說明）
+COMMON_CATEGORIES = [
+    "人像", "自拍", "合照", "寶寶", "小孩", "貓", "狗", "寵物", "風景", "夕陽", "海灘", "山", "城市夜景", "建築",
+    "美食", "甜點", "飲料", "旅行", "汽車", "機車", "花", "植物", "螢幕截圖", "聊天截圖", "文件", "收據", "發票",
+    "證件", "迷因梗圖", "貼圖", "海報", "廣告", "動漫", "插畫", "電玩遊戲", "演唱會", "婚禮", "運動", "商品",
+]
+
+
+def category_hint(name: str) -> str | None:
+    """分類名稱對應的英文說明；不認得就回傳 None。"""
+    name = name.strip()
+    return EXTRA_HINTS.get(name) or dict(VOCABULARY).get(name)

@@ -210,3 +210,40 @@ def test_model_status_returns_none_when_unknown(monkeypatch):
 
     monkeypatch.setattr(classifier, "detect_device", lambda: (_ for _ in ()).throw(RuntimeError("壞了")))
     assert classifier.model_status("auto") is None
+
+
+def test_common_category_names_get_an_english_hint():
+    """沒寫補充說明的分類：常見名稱自動補上英文，AI 才知道指的是什麼；寫了說明就以使用者的為準。"""
+    from media_sorter.config import Category
+    from media_sorter.vocabulary import COMMON_CATEGORIES, category_hint
+
+    assert all(category_hint(name) for name in COMMON_CATEGORIES)
+    texts = Category("廣告").texts()
+    assert any("advertisement" in t for t in texts) and "廣告" in texts
+    assert Category("廣告", ["促銷傳單"]).texts() == ["促銷傳單", "廣告", "一張廣告的照片"]
+    assert Category("我家阿福").texts() == ["我家阿福", "一張我家阿福的照片"]  # 不認得的名稱不亂補
+    assert category_hint("其他") is None
+
+
+def test_cjk_wrap_keeps_latin_words_attached_to_chinese_text():
+    """中文夾英數時，Tk 會在空白處提早斷行（第一行只剩「AI」）；改用不換行空白，讀回來的文字不變。"""
+    import pytest
+
+    from media_sorter.theme import NBSP, cjk_wrap
+
+    assert cjk_wrap("AI 會把每個檔案分到 3 個分類") == f"AI{NBSP}會把每個檔案分到{NBSP}3{NBSP}個分類"
+    assert cjk_wrap("a photo of a cat") == "a photo of a cat"  # 純英文照常在空白處換行
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("需要圖形環境")
+    try:
+        from media_sorter.theme import TextVar
+
+        var = TextVar(value="AI 分好 5 個")
+        assert var.get() == "AI 分好 5 個" and NBSP in root.tk.globalgetvar(str(var))
+        var.set("共 3 個：AI 分好 3 個")
+        assert var.get() == "共 3 個：AI 分好 3 個"
+    finally:
+        root.destroy()

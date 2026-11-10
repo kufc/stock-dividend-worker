@@ -1,7 +1,8 @@
 """縮圖格：步驟 2 用來一眼看完一個分類裡的所有檔案，點選之後用下面的分類按鈕改分類。
 
 畫在一個 Canvas 上，只畫看得到的那幾列（上萬個檔案也不會卡）。選取的操作方式跟檔案總管一樣：
-點一下選取、Ctrl 點加選、Shift 點連選、Ctrl+A 全選、方向鍵移動、按兩下放大檢視。
+點一下選取、Ctrl 點加選、Shift 點連選、在空白處拖曳框選、Ctrl+A 全選、方向鍵移動、按兩下開啟；
+按右鍵會叫出選單；按住選取的縮圖拖曳，可以拖到別的地方（例如左邊的分類）放下。
 提供跟 Treeview 相近的 selection()／selection_set()／focus()／see() 介面，程式其他部分不用管它怎麼畫。
 """
 
@@ -29,11 +30,16 @@ class Cell:
 class ThumbGrid(ttk.Frame):
     def __init__(self, master, theme, thumb_px: int, *, cell_for: Callable[[str], Cell],
                  image_for: Callable[[str], object], on_select: Callable[[], None],
-                 on_activate: Callable[[str], None]):
+                 on_activate: Callable[[str], None], on_context: Callable[[int, int], None] | None = None,
+                 on_drag: Callable[[int, int], None] | None = None,
+                 on_drop: Callable[[int, int], None] | None = None):
         super().__init__(master, style="Card.TFrame")
         self.theme = theme
         self.px = theme.px
         self.cell_for, self.image_for, self.on_select, self.on_activate = cell_for, image_for, on_select, on_activate
+        self.on_context, self.on_drag, self.on_drop = on_context, on_drag, on_drop
+        self._press: dict | None = None  # 滑鼠左鍵按住期間的狀態（框選或拖曳縮圖）
+        self._band: tuple[float, float, float, float] | None = None
         self._iids: list[str] = []
         self._index: dict[str, int] = {}
         self._selected: set[str] = set()
@@ -56,10 +62,14 @@ class ThumbGrid(ttk.Frame):
         self._small = theme.fonts["small"]
         c = self.canvas
         c.bind("<Configure>", lambda e: self._layout())
-        c.bind("<Button-1>", self._on_click)
-        c.bind("<Control-Button-1>", lambda e: self._on_click(e, toggle=True))
-        c.bind("<Shift-Button-1>", lambda e: self._on_click(e, extend=True))
+        c.bind("<ButtonPress-1>", self._on_press)
+        c.bind("<Control-ButtonPress-1>", lambda e: self._on_press(e, toggle=True))
+        c.bind("<Shift-ButtonPress-1>", lambda e: self._on_press(e, extend=True))
+        c.bind("<B1-Motion>", self._on_motion)
+        c.bind("<ButtonRelease-1>", self._on_release)
         c.bind("<Double-Button-1>", self._on_double)
+        for sequence in ("<Button-3>", "<Button-2>"):  # 右鍵（Mac 的右鍵是 Button-2）
+            c.bind(sequence, self._on_context)
         c.bind("<MouseWheel>", self._on_wheel)
         c.bind("<Button-4>", lambda e: self._scroll_units(-3))
         c.bind("<Button-5>", lambda e: self._scroll_units(3))
@@ -135,6 +145,8 @@ class ThumbGrid(ttk.Frame):
         focused = self.canvas.focus_get() is self.canvas
         for pos in range(start, end):
             self._draw_cell(pos, focused)
+        if self._band is not None:
+            c.create_rectangle(*self._band, outline=self.theme.accent, fill=self.theme.accent_soft, stipple="gray50")
 
     def _draw_cell(self, pos: int, focused: bool) -> None:
         c, t = self.canvas, self.theme
@@ -283,11 +295,16 @@ class ThumbGrid(ttk.Frame):
         pos = row * self._cols + col
         return pos if pos < len(self._iids) else None
 
-    def _on_click(self, event, toggle: bool = False, extend: bool = False) -> str:
+    def _on_press(self, event, toggle: bool = False, extend: bool = False) -> str:
         self.canvas.focus_set()
         pos = self._pos_at(event.x, event.y)
-        if pos is None:
-            if not toggle and not extend:
+        press = {"x": event.x, "y": event.y, "cx": self.canvas.canvasx(event.x), "cy": self.canvas.canvasy(event.y),
+                 "pos": pos, "dragging": False, "collapse": None, "base": set()}
+        self._press = press
+        if pos is None:  # 空白處：開始框選（按住 Ctrl 是加選）
+            if toggle or extend:
+                press["base"] = set(self._selected)
+            elif self._selected:
                 self._selected.clear()
                 self._changed()
             return "break"
@@ -301,11 +318,91 @@ class ThumbGrid(ttk.Frame):
         elif extend and self._anchor is not None:
             lo, hi = sorted((self._anchor, pos))
             self._selected = set(self._iids[lo:hi + 1])
+        elif iid in self._selected and len(self._selected) > 1:
+            press["collapse"] = iid  # 按在多選的其中一個上：可能是要拖曳，放開時沒拖才改成只選這一個
         else:
             self._selected = {iid}
             self._anchor = pos
         self._focus = iid
         self._changed()
+        return "break"
+
+    def _on_motion(self, event) -> str:
+        press = self._press
+        if press is None:
+            return "break"
+        if not press["dragging"]:
+            if max(abs(event.x - press["x"]), abs(event.y - press["y"])) < self.px(6):
+                return "break"
+            press["dragging"] = True
+        if press["pos"] is None:
+            self._band_select(event, press)
+        elif self._selected:
+            self.canvas.configure(cursor="hand2")
+            if self.on_drag:
+                self.on_drag(event.x_root, event.y_root)
+        return "break"
+
+    def _band_select(self, event, press: dict) -> None:
+        c = self.canvas
+        if event.y < 0:  # 拖到縮圖格外面：跟著捲動
+            self._scroll_units(-1)
+        elif event.y > c.winfo_height():
+            self._scroll_units(1)
+        x0, x1 = sorted((press["cx"], c.canvasx(event.x)))
+        y0, y1 = sorted((press["cy"], c.canvasy(event.y)))
+        self._band = (x0, y0, x1, y1)
+        hit = set()
+        if self._iids and x1 >= self.pad and y1 >= self.pad:
+            col0 = max(0, int((x0 - self.pad) // self.cell_w))
+            col1 = min(self._cols - 1, int((x1 - self.pad) // self.cell_w))
+            row0 = max(0, int((y0 - self.pad) // self.cell_h))
+            row1 = int((y1 - self.pad) // self.cell_h)
+            for row in range(row0, row1 + 1):
+                for col in range(col0, col1 + 1):
+                    pos = row * self._cols + col
+                    if pos < len(self._iids):
+                        hit.add(self._iids[pos])
+        self._selected = press["base"] | hit
+        self._schedule_redraw()
+
+    def _on_release(self, event) -> str:
+        press, self._press = self._press, None
+        if press is None:
+            return "break"
+        if press["pos"] is None:
+            if press["dragging"]:
+                self._band = None
+                self._focus = next(iter(reversed(self.selection())), None)
+                self._changed()
+        elif press["dragging"]:
+            self.canvas.configure(cursor="")
+            if self.on_drop and self._selected:
+                self.on_drop(event.x_root, event.y_root)
+        elif press["collapse"] is not None:
+            self._selected = {press["collapse"]}
+            self._anchor = press["pos"]
+            self._changed()
+        return "break"
+
+    def _on_click(self, event, toggle: bool = False, extend: bool = False) -> str:
+        """按下後馬上放開（沒有拖曳）。"""
+        self._on_press(event, toggle=toggle, extend=extend)
+        return self._on_release(event)
+
+    def _on_context(self, event) -> str:
+        self.canvas.focus_set()
+        pos = self._pos_at(event.x, event.y)
+        if pos is None:
+            return "break"
+        iid = self._iids[pos]
+        if iid not in self._selected:  # 在沒選取的縮圖上按右鍵：先改成選它
+            self._selected = {iid}
+            self._anchor = pos
+        self._focus = iid
+        self._changed()
+        if self.on_context:
+            self.on_context(event.x_root, event.y_root)
         return "break"
 
     def _on_double(self, event) -> str:

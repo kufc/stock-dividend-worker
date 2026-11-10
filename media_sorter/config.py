@@ -16,6 +16,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .vocabulary import category_hint
+
 ROOT = Path(__file__).resolve().parent.parent
 INSTALLED = (ROOT / "installed.flag").is_file()  # 由安裝程式（setup.exe）安裝的版本
 DATA_DIR_NAME = "AI Media Sorter"
@@ -102,6 +104,10 @@ class Category:
 
     def texts(self) -> list[str]:
         texts = [p.strip() for p in self.prompts if p.strip()]
+        if not texts:  # 沒寫補充說明：常見的名稱自動補上英文，AI 判斷得比較準
+            hint = category_hint(self.name)
+            if hint:
+                texts += [hint, f"a photo of {hint}"]
         texts.append(self.name)
         texts.append(f"一張{self.name}的照片")
         return list(dict.fromkeys(texts))

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 import tkinter as tk
 from dataclasses import dataclass
 from tkinter import font as tkfont
@@ -15,6 +16,29 @@ FONT_FAMILIES = ("Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", "
                  "Noto Sans TC", "WenQuanYi Zen Hei")
 BASE_PT = 11  # 一般文字：11 點
 POINTS_PER_PIXEL_AT_100 = 96 / 72  # Windows 100% 縮放時，Tk 的 scaling 值
+
+
+# Tk 換行時只要一行裡有空白，就一定在空白處斷行：「AI 會把每個檔案⋯」會在「AI」後面就斷掉，第一行只剩兩個字。
+# 把中文與英數之間的空白換成「不換行空白」，Tk 就會像一般中文排版那樣，排滿一行才換行。
+_CJK_SPACE = re.compile(r"(?<=[\u2e80-\uffef]) (?=[!-~])|(?<=[!-~]) (?=[\u2e80-\uffef])")
+NBSP = "\u00a0"
+
+
+def cjk_wrap(text: str) -> str:
+    return _CJK_SPACE.sub(NBSP, text)
+
+
+class TextVar(tk.StringVar):
+    """給標籤用的文字變數：顯示時套用 cjk_wrap，讀回來的仍是原本的文字。"""
+
+    def __init__(self, master=None, value=None, name=None):
+        super().__init__(master, cjk_wrap(value) if value else value, name)
+
+    def set(self, value: str) -> None:
+        super().set(cjk_wrap(value))
+
+    def get(self) -> str:
+        return super().get().replace(NBSP, " ")
 
 
 @dataclass
@@ -102,6 +126,7 @@ def setup_theme(root: tk.Misc) -> Theme:
     style.configure("StepTodo.TLabel", background=theme.card, foreground=theme.hint)
     style.configure("StepNow.TLabel", background=theme.card, foreground=theme.accent, font=bold)
     style.configure("Preview.TLabel", background=theme.preview_bg, foreground="#d7dae0")
+    style.configure("Chip.TLabel", background="#eef0f3", foreground=theme.text, padding=(px(10), px(5)))
 
     pad = (px(14), px(8))  # 按鈕高度約 36～40 個邏輯像素
     style.configure("TButton", padding=pad, background="#e8eaee", foreground=theme.text, bordercolor=theme.border,

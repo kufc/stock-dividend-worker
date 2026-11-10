@@ -598,3 +598,154 @@ def test_grid_selection_works_like_a_file_manager(app, tmp_path):
     assert grid.selection() == () and app.current is None and app.page2.view_state == "placeholder"
     grid.select_all()
     assert len(grid.selection()) == 6 and "已選取 6 個檔案" in app.page2.sel_var.get()
+
+
+def _center(grid, pos):
+    from types import SimpleNamespace
+
+    x0, y0, x1, y1 = grid._cell_box(pos)
+    return SimpleNamespace(x=(x0 + x1) // 2, y=(y0 + y1) // 2, x_root=0, y_root=0)
+
+
+def test_grid_rubber_band_selects_the_cells_it_covers(app, tmp_path):
+    """在空白處按住拖曳：框到的縮圖都選起來（跟檔案總管一樣）；按住 Ctrl 框選是加選。"""
+    from types import SimpleNamespace
+
+    run_analysis(app, photos(tmp_path, 3))  # 只有一列，下面是空白
+    grid = app.tree
+    app.root.update()
+    iids = grid.get_children()
+    assert grid._cols >= 3
+    a, b = _center(grid, 0), _center(grid, 2)
+    start = SimpleNamespace(x=a.x, y=grid.canvas.winfo_height() - 5, x_root=0, y_root=0)  # 第一列下面的空白處
+    assert grid._pos_at(start.x, start.y) is None
+    grid._on_press(start)
+    grid._on_motion(SimpleNamespace(x=b.x, y=a.y, x_root=0, y_root=0))
+    grid._on_release(SimpleNamespace(x=b.x, y=a.y, x_root=0, y_root=0))
+    assert grid.selection() == iids[:3] and "已選取 3 個檔案" in app.page2.sel_var.get()
+    assert grid._band is None  # 放開後框線消失
+
+
+def test_dragging_selected_thumbnails_onto_a_category_moves_them(app, tmp_path):
+    from types import SimpleNamespace
+
+    from media_sorter.analysis import CONFIRMED, SKIPPED
+
+    run_analysis(app, photos(tmp_path, 5))
+    grid, tree = app.tree, app.page2.buckets
+    app.root.update()
+    iids = grid.get_children()
+    grid.selection_set(iids[:3])
+    # 按在已選取的其中一個上：選取不變（才能拖曳多個）
+    grid._on_press(_center(grid, 1))
+    assert len(grid.selection()) == 3
+
+    def over(key):
+        x, y, w, h = tree.bbox(key)
+        return SimpleNamespace(x=_center(grid, 1).x + 200, y=_center(grid, 1).y, x_root=tree.winfo_rootx() + x + 10,
+                               y_root=tree.winfo_rooty() + y + h // 2)
+
+    grid._on_motion(over("cat:綠"))
+    assert "drop" in tree.item("cat:綠", "tags")  # 經過的分類會標出來
+    grid._on_motion(over("all"))
+    assert "drop" not in tree.item("cat:綠", "tags") and app._drop_target(over("all").x_root, over("all").y_root) is None
+    grid._on_release(over("cat:綠"))
+    assert [app.items[app._index_of(i)].chosen for i in iids[:3]] == ["綠"] * 3
+    assert all(app.items[app._index_of(i)].status == CONFIRMED for i in iids[:3])
+    # 拖到「已略過」＝略過
+    grid.selection_set(iids[3])
+    grid._on_press(_center(grid, 3))
+    grid._on_motion(over("skipped"))
+    grid._on_release(over("skipped"))
+    assert app.items[app._index_of(iids[3])].status == SKIPPED
+    # 按在多選的其中一個上、沒有拖曳就放開：改成只選那一個
+    grid.selection_set(iids[:2])
+    grid._on_click(_center(grid, 0))
+    assert grid.selection() == (iids[0],)
+
+
+def test_right_click_menu_offers_categories_and_file_actions(app, tmp_path, monkeypatch):
+    import media_sorter.app as app_module
+    from media_sorter.analysis import CONFIRMED
+
+    run_analysis(app, photos(tmp_path, 3))
+    grid = app.tree
+    app.root.update()
+    iids = grid.get_children()
+    grid.selection_set(iids[0])
+    shown = []
+    monkeypatch.setattr(app, "show_context_menu", lambda x, y: shown.append(grid.selection()))
+    grid.on_context = app.show_context_menu
+    grid._on_context(_center(grid, 2))  # 在沒選取的縮圖上按右鍵：先改成選它
+    assert shown == [(iids[2],)]
+    menu = app.build_context_menu()
+    labels = [menu.entrycget(i, "label").strip() for i in range(menu.index("end") + 1) if menu.type(i) == "command"]
+    assert labels[:4] == ["把這 1 個檔案分到：", "紅", "綠", "藍"]
+    assert labels[4:] == ["採用 AI 建議", "略過，不整理", "放大檢視", "開啟檔案", "開啟所在資料夾"]
+    menu.invoke(labels.index("藍") + 0)  # 第 0 項是標題
+    assert app.items[app._index_of(iids[2])].status == CONFIRMED and app.items[app._index_of(iids[2])].chosen == "藍"
+    opened, revealed = [], []
+    monkeypatch.setattr(app_module, "open_in_file_manager", opened.append)
+    monkeypatch.setattr(app_module, "reveal_in_file_manager", revealed.append)
+    grid.selection_set(iids[1])
+    app.open_current_file()
+    app.reveal_current_file()
+    assert opened == revealed == [app.items[app._index_of(iids[1])].path]
+
+
+def test_double_click_plays_videos_and_zooms_images(app, tmp_path, monkeypatch):
+    import media_sorter.app as app_module
+    from helpers import make_video
+
+    src = tmp_path / "photos"
+    make_image(src / "a.png", (250, 10, 10))
+    make_video(src / "b.mp4", (10, 10, 250))
+    run_analysis(app, src)
+    opened, zoomed = [], []
+    monkeypatch.setattr(app_module, "open_in_file_manager", opened.append)
+    monkeypatch.setattr(app, "open_viewer", lambda: zoomed.append(app.current))
+    for item in app.items:
+        app.tree.selection_set(app._iid(app.items.index(item)))
+        app.activate_current()
+    assert [p.name for p in opened] == ["b.mp4"] and len(zoomed) == 1
+    assert app.page2.open_btn.cget("text") in ("播放影片", "開啟檔案")
+
+
+def test_category_view_puts_least_confident_first(app, tmp_path):
+    src = tmp_path / "photos"
+    make_image(src / "a_pure.png", (250, 0, 0))
+    make_image(src / "b_pinkish.png", (130, 126, 122))  # 也是「紅」，但沒那麼像
+    make_image(src / "c_pure.png", (240, 5, 5))
+    run_analysis(app, src)
+    app.select_bucket("cat:紅")
+    names = [app.items[app._index_of(i)].path.name for i in app.tree.get_children()]
+    assert names[0] == "b_pinkish.png" and "最沒把握的排在最前面" in app.page2.grid_hint_var.get()
+    app.toggle_sort()
+    names = [app.items[app._index_of(i)].path.name for i in app.tree.get_children()]
+    assert names == ["a_pure.png", "b_pinkish.png", "c_pure.png"]
+    assert app.page2.sort_btn.cget("text") == "排序：原本的順序"
+    app.select_bucket("all")
+    assert app.page2.sort_btn.instate(["disabled"])  # 「全部」一律照原本的順序
+
+
+def test_step1_shows_the_categories_before_recognition(app):
+    from media_sorter.config import Category
+
+    labels = [w.cget("text") for w in app.page1.category_wrap.widgets]
+    assert labels == ["紅", "綠", "藍"] and app.page1.category_btn.winfo_exists()
+    app.set_categories([Category("貓"), Category("狗"), Category("其他")])
+    assert [w.cget("text") for w in app.page1.category_wrap.widgets] == ["貓", "狗", "其他"]
+
+
+def test_category_dialog_adds_common_categories_in_one_click(app):
+    from media_sorter.dialogs import CategoryDialog
+
+    saved = []
+    dialog = CategoryDialog(app.root, app.categories, lambda cats, renames: saved.append((cats, renames)))
+    assert "寶寶" in dialog.common_box["values"]
+    dialog.common_var.set("寶寶")
+    dialog.add_common()
+    assert dialog.work[-1].name == "寶寶" and "寶寶" not in dialog.common_box["values"]
+    assert dialog.listbox.get("end") == "寶寶" and dialog.name_var.get() == "寶寶"
+    dialog.save()
+    assert [c.name for c in saved[0][0]] == ["紅", "綠", "藍", "寶寶"] and saved[0][1] == {}

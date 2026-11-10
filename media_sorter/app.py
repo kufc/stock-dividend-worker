@@ -42,6 +42,7 @@ from .dialogs import (
     SettingsDialog,
     confirm_with_list,
     open_in_file_manager,
+    reveal_in_file_manager,
     show_problem,
 )
 from .media import FolderStats, file_date, folder_stats, load_preview, media_kind, scan_folder
@@ -222,6 +223,7 @@ class App:
         self.pattern_var = tk.StringVar(value=self.settings["rename_pattern"])
         self.low_mode_var = tk.StringVar(value="suggest")
         self.bucket_var = tk.StringVar(value=BUCKET_ALL)
+        self.sort_by_confidence = True  # 分類裡的縮圖：AI 最沒把握的排最前面（分錯的通常在這裡）
 
         self._build_ui()
         self._bind_keys()
@@ -392,7 +394,8 @@ class App:
         """複製或處理紀錄進行中：停用會動到檔案或清單的操作。"""
         state = ["disabled"] if busy else ["!disabled"]
         self.header.set_busy(busy)
-        for widget in (self.page1.start_btn, self.page3.back_btn, *self.page3.low_radios, self.page3.output_entry,
+        for widget in (self.page1.start_btn, self.page1.category_btn, self.page3.back_btn, *self.page3.low_radios,
+                       self.page3.output_entry,
                        self.page3.pattern_entry, *self.page3.radios, self.page4.again_btn, self.page4.back_btn,
                        self.page4.records_btn, self.page4.remove_btn, self.page4.open_btn):
             widget.state(state)
@@ -649,9 +652,29 @@ class App:
         self.tree.canvas.yview_moveto(0)
         self._auto_select()
 
+    def _sorts_by_confidence(self) -> bool:
+        """辨識進行中先照原本的順序（不然新結果一直插隊，縮圖會跳來跳去）；「全部」也維持原本的順序。"""
+        key = self.bucket_var.get()
+        return self.sort_by_confidence and not self.analysis_running() and (
+            key == BUCKET_LOW or key.startswith(BUCKET_CATEGORY))
+
+    def _confidence_key(self, index: int) -> tuple[int, float]:
+        item = self.items[index]
+        if item.status == CONFIRMED:
+            return (2, 0.0)  # 你指定過的排最後
+        return (0 if self._is_low(item) else 1, item.best(self.categories)[1])
+
     def _visible_iids(self) -> list[str]:
         key = self.bucket_var.get()
-        return [self._iid(i) for i, item in enumerate(self.items) if self._in_bucket(item, key)]
+        indices = [i for i, item in enumerate(self.items) if self._in_bucket(item, key)]
+        if self._sorts_by_confidence():
+            indices.sort(key=self._confidence_key)  # 穩定排序：分數相同的維持原本順序
+        return [self._iid(i) for i in indices]
+
+    def toggle_sort(self) -> None:
+        self.sort_by_confidence = not self.sort_by_confidence
+        self.refresh_tree()
+        self.tree.canvas.yview_moveto(0)
 
     def _grid_empty_text(self) -> str:
         key = self.bucket_var.get()
@@ -677,6 +700,12 @@ class App:
         p = self.page2
         p.grid_title_var.set(self._grid_title())
         key = self.bucket_var.get()
+        if key == BUCKET_LOW or key.startswith(BUCKET_CATEGORY):
+            p.sort_btn.configure(text="排序：沒把握的在前" if self.sort_by_confidence else "排序：原本的順序")
+            p.sort_btn.state(["!disabled"])
+        else:
+            p.sort_btn.configure(text="排序：原本的順序")
+            p.sort_btn.state(["disabled"])
         if key == BUCKET_LOW:
             p.grid_hint_var.set("這些檔案 AI 沒有把握。看一下縮圖：分對的可以不管（會依 AI 建議整理），分錯的選起來改分類。")
         elif key == BUCKET_SKIPPED:
@@ -686,7 +715,9 @@ class App:
         elif key == BUCKET_ALL:
             p.grid_hint_var.set("所有檔案。右上角 ✓ 是你指定的分類，？是 AI 沒把握的。")
         else:
-            p.grid_hint_var.set("AI 放在這個分類的檔案。看到分錯的，點它（或 Ctrl 多選），再按下面正確的分類。")
+            p.grid_hint_var.set("AI 放在這個分類的檔案，最沒把握的排在最前面。看到分錯的，點它（可以多選或拖曳框選），再按下面正確的分類。"
+                                if self._sorts_by_confidence() else
+                                "AI 放在這個分類的檔案。看到分錯的，點它（可以多選或拖曳框選），再按下面正確的分類。")
         self.update_counts(force=True)
         self.on_select()
 
@@ -902,6 +933,7 @@ class App:
         p.show_state("detail")
         self.schedule_preview_render()
         p.file_var.set(item.path.name if selected_count <= 1 else f"已選取 {selected_count:,} 個檔案（預覽最後點的）")
+        p.open_btn.configure(text="播放影片" if item.kind == "video" else "開啟檔案")
         date = item.date.strftime("%Y-%m-%d %H:%M") if item.date else ""
         p.info_var.set(f"{KIND_TEXT.get(item.kind, '')}　{date}　{item.path.parent}")
         floor = self.similarity_floor()
@@ -1076,7 +1108,9 @@ class App:
             messagebox.showinfo(APP_NAME, f"有 {reverted} 個你指定過分類的檔案，因為那個分類被刪除而改回 AI 的建議。")
 
     def refresh_category_buttons(self) -> None:
-        self.page2.rebuild_category_buttons([c.name for c in self.categories])
+        names = [c.name for c in self.categories]
+        self.page2.rebuild_category_buttons(names)
+        self.page1.show_categories(names)
 
     def _rescore(self) -> int:
         self.root.configure(cursor="watch")
@@ -1150,6 +1184,89 @@ class App:
             open_in_file_manager(HELP_FILE)
         except OSError as exc:
             show_problem(self.root, "無法開啟說明文件。", f"請直接用記事本開啟：{HELP_FILE}", str(exc))
+
+    # ------------------------------------------------------------------ 右鍵選單、拖曳到分類、開啟檔案
+    def build_context_menu(self) -> tk.Menu | None:
+        indices = self._selected_indices()
+        if not indices or self.organizing:
+            return None
+        font = self.theme.fonts["base"]
+        menu = tk.Menu(self.root, tearoff=0, font=font)
+        actionable = any(self.items[i].analyzed and self.items[i].status != ERROR for i in indices)
+        state = "normal" if actionable else "disabled"
+        target = menu
+        if len(self.categories) > 16:  # 分類很多時收進子選單
+            target = tk.Menu(menu, tearoff=0, font=font)
+            menu.add_cascade(label=f"把這 {len(indices):,} 個檔案分到", menu=target, state=state)
+        else:
+            menu.add_command(label=f"把這 {len(indices):,} 個檔案分到：", state="disabled")
+        for c in self.categories:
+            target.add_command(label=f"　{c.name}", state=state, command=lambda n=c.name: self.assign(n))
+        menu.add_separator()
+        menu.add_command(label="採用 AI 建議", state=state, command=self.accept_selected)
+        menu.add_command(label="略過，不整理", command=self.skip_selected)
+        menu.add_separator()
+        video = self.current is not None and self.items[self.current].kind == "video"
+        menu.add_command(label="放大檢視", command=self.open_viewer)
+        menu.add_command(label="播放影片" if video else "開啟檔案", command=self.open_current_file)
+        menu.add_command(label="開啟所在資料夾", command=self.reveal_current_file)
+        return menu
+
+    def show_context_menu(self, x_root: int, y_root: int) -> None:
+        menu = self.build_context_menu()
+        if menu is not None:
+            self._context_menu = menu  # 保留參照，選單關掉之前不能被回收
+            try:
+                menu.tk_popup(x_root, y_root)
+            finally:
+                menu.grab_release()
+
+    def _drop_target(self, x_root: int, y_root: int) -> str | None:
+        """滑鼠底下是左邊清單的哪一列（只有分類與「已略過」可以放）。"""
+        tree = self.page2.buckets
+        try:
+            if self.root.winfo_containing(x_root, y_root) is not tree:
+                return None
+        except (KeyError, tk.TclError):
+            return None
+        row = tree.identify_row(y_root - tree.winfo_rooty())
+        return row if row.startswith(BUCKET_CATEGORY) or row == BUCKET_SKIPPED else None
+
+    def on_grid_drag(self, x_root: int, y_root: int) -> None:
+        self.page2.highlight_drop(self._drop_target(x_root, y_root))
+
+    def on_grid_drop(self, x_root: int, y_root: int) -> None:
+        key = self._drop_target(x_root, y_root)
+        self.page2.highlight_drop(None)
+        if key == BUCKET_SKIPPED:
+            self.skip_selected()
+        elif key:
+            self.assign(key[len(BUCKET_CATEGORY):])
+
+    def activate_current(self) -> None:
+        """按兩下縮圖：影片用電腦的播放程式開啟，圖片放大檢視。"""
+        if self.current is not None and self.items[self.current].kind == "video":
+            self.open_current_file()
+        else:
+            self.open_viewer()
+
+    def open_current_file(self) -> None:
+        if self.current is None:
+            return
+        path = self.items[self.current].path
+        try:
+            open_in_file_manager(path)
+        except OSError as exc:
+            show_problem(self.root, "無法開啟這個檔案。", f"請確認檔案還在：{path}", str(exc))
+
+    def reveal_current_file(self) -> None:
+        if self.current is None:
+            return
+        path = self.items[self.current].path
+        try:
+            reveal_in_file_manager(path)
+        except OSError as exc:
+            show_problem(self.root, "無法開啟資料夾。", f"檔案位置：{path}", str(exc))
 
     # ------------------------------------------------------------------ 放大檢視
     def open_viewer(self) -> None:

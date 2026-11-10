@@ -8,6 +8,7 @@ import sys
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
+from tkinter import font as tkfont
 from tkinter import messagebox, simpledialog, ttk
 from typing import Callable
 
@@ -16,6 +17,8 @@ from PIL import Image, ImageTk
 from . import APP_NAME
 from .config import DEFAULT_CATEGORIES, MODEL_CHOICES, Category
 from .organizer import LogInfo, folder_key, list_logs
+from .theme import cjk_wrap
+from .vocabulary import COMMON_CATEGORIES
 
 LOG_KIND_TEXT = {
     "active": "可處理",
@@ -32,6 +35,16 @@ def open_in_file_manager(path: Path) -> None:
         subprocess.Popen(["open", str(path)])
     else:
         subprocess.Popen(["xdg-open", str(path)])
+
+
+def reveal_in_file_manager(path: Path) -> None:
+    """開啟檔案所在的資料夾（Windows 會順便選取那個檔案）。"""
+    if sys.platform == "win32":
+        subprocess.Popen(["explorer", f"/select,{path}"])
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(Path(path).parent)])
 
 
 def ui_scale(widget: tk.Misc) -> float:
@@ -76,12 +89,12 @@ def confirm_with_list(master, title: str, message: str, lines: list[str], ok_tex
                     command=lambda: choose(True))
     ok.pack(side="right", padx=8)
 
-    label = ttk.Label(body, text=message, justify="left", wraplength=640)
+    label = ttk.Label(body, text=cjk_wrap(message), justify="left", wraplength=640)
     label.pack(anchor="w", fill="x")
     if warning:
         box = ttk.Frame(body, style="Warn.TFrame", padding=8)
         box.pack(fill="x", pady=(8, 0))
-        warn_label = ttk.Label(box, text=warning, style="Warn.TLabel", justify="left", wraplength=620)
+        warn_label = ttk.Label(box, text=cjk_wrap(warning), style="Warn.TLabel", justify="left", wraplength=620)
         warn_label.pack(anchor="w", fill="x")
         box.bind("<Configure>", lambda e: warn_label.configure(wraplength=max(200, e.width - 30)))
 
@@ -161,10 +174,10 @@ def show_problem(master, what: str, todo: str = "", details: str = "", title: st
     toggle_btn = ttk.Button(buttons, text="顯示技術細節", command=toggle)
     if details:
         toggle_btn.pack(side="left")
-    label = ttk.Label(body, text=what, justify="left", wraplength=560, font=("TkDefaultFont", 11, "bold"))
+    label = ttk.Label(body, text=cjk_wrap(what), justify="left", wraplength=560, font=("TkDefaultFont", 11, "bold"))
     label.pack(anchor="w", fill="x")
     if todo:
-        ttk.Label(body, text=todo, justify="left", wraplength=560).pack(anchor="w", fill="x", pady=(8, 0))
+        ttk.Label(body, text=cjk_wrap(todo), justify="left", wraplength=560).pack(anchor="w", fill="x", pady=(8, 0))
     body.bind("<Configure>", lambda e: [w.configure(wraplength=max(240, e.width - 40))
                                         for w in body.winfo_children() if isinstance(w, ttk.Label)])
     dialog.bind("<Escape>", lambda e: dialog.destroy())
@@ -369,49 +382,75 @@ class CategoryDialog(tk.Toplevel):
         self.origins: list[str | None] = [c.name for c in categories]  # 每一列原本的名稱（用來辨認「改名」）
         self.index: int | None = None
 
-        bottom = ttk.Frame(self, padding=8)
+        scale = ui_scale(self)
+
+        def px(n: float) -> int:
+            return round(n * scale)
+
+        font = tkfont.nametofont("TkDefaultFont")
+        bottom = ttk.Frame(self, padding=px(12))
         bottom.pack(side="bottom", fill="x")
         ttk.Button(bottom, text="還原預設分類", command=self.reset).pack(side="left")
         ttk.Button(bottom, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(bottom, text="儲存", style="Accent.TButton", command=self.save).pack(side="right", padx=6)
+        ttk.Button(bottom, text="儲存", style="Accent.TButton", command=self.save).pack(side="right", padx=px(8))
 
-        body = ttk.Frame(self, padding=8)
+        body = ttk.Frame(self, padding=(px(12), px(12), px(12), 0))
         body.pack(fill="both", expand=True)
         left = ttk.Frame(body)
         left.pack(side="left", fill="y")
+        ttk.Label(left, text="分類（由上到下就是按鈕的順序）", style="Hint.TLabel").pack(anchor="w")
+        # 下面的操作列先排，清單佔剩下的高度
+        common = ttk.Frame(left)
+        common.pack(side="bottom", fill="x", pady=(px(6), 0))
+        ttk.Label(common, text="加入常用分類：").pack(side="left")
+        self.common_var = tk.StringVar()
+        self.common_box = ttk.Combobox(common, textvariable=self.common_var, state="readonly", width=12)
+        self.common_box.pack(side="left", fill="x", expand=True)
+        self.common_box.bind("<<ComboboxSelected>>", self.add_common)
         buttons = ttk.Frame(left)
-        buttons.pack(side="bottom", fill="x", pady=4)
-        ttk.Button(buttons, text="新增", width=6, command=self.add).pack(side="left")
-        ttk.Button(buttons, text="刪除", width=6, command=self.remove).pack(side="left", padx=2)
-        ttk.Button(buttons, text="↑", width=3, command=lambda: self.move(-1)).pack(side="left")
-        ttk.Button(buttons, text="↓", width=3, command=lambda: self.move(1)).pack(side="left")
-        self.listbox = tk.Listbox(left, width=18, height=12, exportselection=False)
-        self.listbox.pack(side="top", fill="both", expand=True)
+        buttons.pack(side="bottom", fill="x", pady=(px(6), 0))
+        ttk.Button(buttons, text="新增…", command=self.add).pack(side="left")
+        ttk.Button(buttons, text="刪除", command=self.remove).pack(side="left", padx=px(4))
+        ttk.Button(buttons, text="上移", command=lambda: self.move(-1)).pack(side="left")
+        ttk.Button(buttons, text="下移", command=lambda: self.move(1)).pack(side="left", padx=(px(4), 0))
+        frame = ttk.Frame(left)
+        frame.pack(side="top", fill="both", expand=True, pady=(px(4), 0))
+        self.listbox = tk.Listbox(frame, width=20, height=12, exportselection=False, font=font, activestyle="none",
+                                  relief="flat", highlightthickness=1, highlightbackground="#d0d5dd",
+                                  selectbackground="#0f6cbd", selectforeground="#ffffff")
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=self.listbox.yview)
+        self.listbox.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self.listbox.pack(side="left", fill="both", expand=True)
         self.listbox.bind("<<ListboxSelect>>", self.on_pick)
 
-        right = ttk.Frame(body, padding=(12, 0, 0, 0))
+        right = ttk.Frame(body, padding=(px(16), 0, 0, 0))
         right.pack(side="left", fill="both", expand=True)
-        ttk.Label(right, text="分類名稱（也會是資料夾名稱）：").pack(anchor="w")
+        ttk.Label(right, text="分類名稱（也會是資料夾名稱）").pack(anchor="w")
         self.name_var = tk.StringVar()
-        ttk.Entry(right, textvariable=self.name_var).pack(fill="x", pady=(0, 8))
-        ttk.Label(right, text="給 AI 的描述（每行一個，中文或英文皆可；越具體越準，可留白）：").pack(anchor="w")
-        hint = ttk.Label(
-            right, style="Hint.TLabel", wraplength=440, justify="left",
-            text="小技巧：英文描述通常最準，例如「a photo of a cat」。想區分的東西越相近（如貓 vs 老虎），描述要寫得越具體。",
-        )
-        hint.pack(side="bottom", anchor="w", pady=4)
-        right.bind("<Configure>", lambda e: hint.configure(wraplength=max(200, e.width - 20)))
-        self.prompts = tk.Text(right, height=8, wrap="word")
-        self.prompts.pack(fill="both", expand=True)
+        ttk.Entry(right, textvariable=self.name_var).pack(fill="x", pady=(px(2), px(10)))
+        ttk.Label(right, text="補充說明（可以留白）").pack(anchor="w")
+        for text in ("告訴 AI 這一類長什麼樣子，一行寫一種；中文、英文都可以，英文通常比較準。",
+                     "例：a photo of a cat",
+                     "留白時會直接用分類名稱判斷（常見的名稱會自動補上英文說明）。"):
+            hint = ttk.Label(right, style="Hint.TLabel", justify="left", text=cjk_wrap(text))
+            hint.pack(anchor="w", fill="x")
+            hint.bind("<Configure>", lambda e, w=hint: w.configure(wraplength=max(200, e.width)))
+        self.prompts = tk.Text(right, height=8, wrap="word", font=font, relief="flat", highlightthickness=1,
+                               highlightbackground="#d0d5dd", padx=px(6), pady=px(6))
+        self.prompts.pack(fill="both", expand=True, pady=(px(4), 0))
 
         self.reload_list(0)
-        fit_to_screen(self, 760, 500, 560, 380)
+        fit_to_screen(self, 820, 580, 600, 420)
         self.grab_set()
 
     def reload_list(self, select: int | None) -> None:
         self.listbox.delete(0, "end")
         for c in self.work:
             self.listbox.insert("end", c.name)
+        used = {c.name for c in self.work}
+        self.common_box["values"] = [name for name in COMMON_CATEGORIES if name not in used]
+        self.common_var.set("")
         self.index = None
         if self.work and select is not None:
             select = max(0, min(select, len(self.work) - 1))
@@ -450,6 +489,17 @@ class CategoryDialog(tk.Toplevel):
             self.work.append(Category(name.strip(), []))
             self.origins.append(None)
             self.reload_list(len(self.work) - 1)
+
+    def add_common(self, _event=None) -> None:
+        """從「加入常用分類」選一個：直接加到清單最後（英文說明會自動帶入）。"""
+        name = self.common_var.get().strip()
+        if not name or name in {c.name for c in self.work}:
+            return
+        self.commit()
+        self.work.append(Category(name, []))
+        self.origins.append(None)
+        self.reload_list(len(self.work) - 1)
+        self.listbox.see("end")
 
     def remove(self) -> None:
         if self.index is None:
@@ -537,7 +587,7 @@ class SettingsDialog(tk.Toplevel):
         for r, ((label, widget), hint) in enumerate(zip(rows, hints, strict=True)):
             ttk.Label(body, text=label).grid(row=r * 2, column=0, sticky="w", pady=(6, 0))
             widget.grid(row=r * 2, column=1, sticky="w", pady=(6, 0))
-            ttk.Label(body, text=hint, style="Hint.TLabel", wraplength=round(460 * ui_scale(self)), justify="left").grid(
+            ttk.Label(body, text=cjk_wrap(hint), style="Hint.TLabel", wraplength=round(460 * ui_scale(self)), justify="left").grid(
                 row=r * 2 + 1, column=1, sticky="w")
         fit_to_screen(self, 720, 420, 560, 360)
         self.grab_set()
