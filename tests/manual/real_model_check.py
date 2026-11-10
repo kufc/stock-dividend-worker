@@ -202,7 +202,20 @@ def texts_templates(c: Category) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-VARIANTS = {"目前的寫法": texts_current, "不放單獨的名稱": texts_no_bare_name, "每句都套樣板": texts_templates}
+def texts_without_hint(c: Category) -> list[str]:
+    """不自動補英文說明（舊的做法）：只有使用者寫的說明、名稱、「一張⋯的照片」。"""
+    texts = [p.strip() for p in c.prompts if p.strip()]
+    return list(dict.fromkeys(texts + [c.name, f"一張{c.name}的照片"]))
+
+
+def texts_english_only(c: Category) -> list[str]:
+    """只用英文說明（沒有英文可用時維持目前的寫法）。"""
+    english = [t for t in c.texts() if all(ord(ch) < 128 for ch in t)]
+    return english or c.texts()
+
+
+VARIANTS = {"目前的寫法": texts_current, "不自動補英文說明": texts_without_hint, "不放單獨的名稱": texts_no_bare_name,
+            "每句都套樣板": texts_templates, "只用英文說明": texts_english_only}
 
 
 def is_low(probs: np.ndarray, top_similarity: float, threshold: float = 0.5, margin: bool = True) -> bool:

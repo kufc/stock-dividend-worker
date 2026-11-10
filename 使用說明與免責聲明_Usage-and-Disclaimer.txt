@@ -267,6 +267,22 @@ counterpart.
    The category buttons, accept and skip only affect the thumbnails you
    have selected.
 
+・也可以像檔案總管那樣操作：在空白處拖曳框選、把選取的縮圖拖到左邊的
+　分類、按右鍵叫出選單（分到某類、略過、放大檢視、開啟檔案、開啟所在
+　資料夾）。進到某個分類時，最沒把握的檔案排在最前面。按兩下影片會用
+　電腦的播放程式開啟。
+   It also works like a file manager: drag a rectangle over empty space
+   to select, drag selected thumbnails onto a category on the left, or
+   right-click for a menu (move to a category, skip, zoom, open the
+   file, open its folder). Inside a category the least confident files
+   come first. Double-clicking a video opens it in your default player.
+
+・第 1 步會列出目前的分類；分類越貼近你的照片內容，分得越準。按
+　「修改分類…」可以新增、刪除、改名，或從「加入常用分類」挑選。
+   Step 1 lists the current categories; the closer they match your
+   photos, the better the result. "修改分類…" lets you add, delete or
+   rename categories, or pick from a list of common ones.
+
 ・第 3 步「預覽整理結果」：確認輸出位置（預設是來源資料夾裡的「已分類」）
 　與檔名規則（預設保留原檔名），檢查整理前後對照與所需空間。AI 分好的
 　加上你指定的檔案都會整理；AI 沒把握、你也沒改的檔案可以選擇依建議整理
