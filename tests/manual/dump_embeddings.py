@@ -1,0 +1,142 @@
+"""把真模型算出來的向量存成 .npz，之後不用模型也能離線試各種判斷規則（不屬於自動測試）。
+
+    pip install scikit-image scikit-learn pyarrow huggingface_hub
+    python tests/manual/dump_embeddings.py --preset standard --out tests/manual/embeddings_standard.npz
+
+圖片來源：real_model_check.py 的那一批（真實照片＋合成的截圖、收據、海報、影片），
+再加上從 Hugging Face 下載的 ImageNette 驗證集（10 類真實照片，每類取幾十張）。
+ImageNette 裡的狗、教堂、垃圾車屬於預設分類；其他七類（魚、錄音機、電鋸、法國號、加油機、高爾夫球、
+降落傘）不屬於任何預設分類，用來量「硬塞進最像的一類」有多嚴重、怎樣的規則抓得出來。
+
+存檔內容：
+  image_names, image_labels（預期分類；「（都不像）」代表不屬於任何預設分類）, image_emb
+  frame_owner, frame_emb（影片每張取樣畫面的向量；frame_owner 是它屬於哪個 image_names 的位置）
+  texts, text_emb（每一句文字各自的向量，離線可以自己組合成分類）, logit_scale, model
+"""
+
+from __future__ import annotations
+
+import argparse
+import io
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from real_model_check import EXPECTED, NONE, build_images  # noqa: E402
+
+from media_sorter.analysis import analyze  # noqa: E402
+from media_sorter.config import DEFAULT_CATEGORIES  # noqa: E402
+from media_sorter.vocabulary import COMMON_CATEGORIES, EXTRA_HINTS, VOCABULARY, category_hint  # noqa: E402
+
+# ImageNette 的 10 個類別（依 WordNet 編號排序，也就是資料集的 label 0～9）→ 預設分類裡的預期答案
+IMAGENETTE = [("tench", NONE), ("english_springer", "狗"), ("cassette_player", NONE), ("chain_saw", NONE),
+              ("church", "城市建築"), ("french_horn", NONE), ("garbage_truck", "交通工具"), ("gas_pump", NONE),
+              ("golf_ball", NONE), ("parachute", NONE)]
+OTHER_TEXTS = ["其他", "其他東西", "雜物", "不屬於以上任何一類", "一張照片", "一張圖片", "other", "something else",
+               "a photo", "a photo of something", "an object", "a random object", "miscellaneous"]
+
+
+def add_imagenette(folder: Path, per_class: int) -> dict[str, str]:
+    """下載 ImageNette 驗證集，每類存 per_class 張到 folder。回傳 {檔名: 預期分類}。"""
+    import pyarrow.parquet as pq
+    from huggingface_hub import hf_hub_download, list_repo_files
+
+    repo = "frgfm/imagenette"
+    files = [f for f in list_repo_files(repo, repo_type="dataset") if f.endswith(".parquet") and "validation" in f]
+    preferred = [f for f in files if "320px" in f] or [f for f in files if "160px" in f] or files
+    if not preferred:
+        raise RuntimeError(f"{repo} 裡找不到 validation 的 parquet 檔：{files[:20]}")
+    table = pq.read_table(hf_hub_download(repo, preferred[0], repo_type="dataset"))
+    columns = table.column_names
+    image_col = next(c for c in columns if "image" in c.lower())
+    label_col = next(c for c in columns if "label" in c.lower())
+    counts = [0] * len(IMAGENETTE)
+    expected = {}
+    for image, label in zip(table.column(image_col).to_pylist(), table.column(label_col).to_pylist(), strict=True):
+        if not isinstance(label, int) or not 0 <= label < len(IMAGENETTE) or counts[label] >= per_class:
+            continue
+        data = image["bytes"] if isinstance(image, dict) else image
+        name = f"inet_{IMAGENETTE[label][0]}_{counts[label]:03d}.jpg"
+        Image.open(io.BytesIO(data)).convert("RGB").save(folder / name, quality=90)
+        expected[name] = IMAGENETTE[label][1]
+        counts[label] += 1
+    print(f"ImageNette（{preferred[0]}）：每類 {counts}")
+    return expected
+
+
+def all_texts() -> list[str]:
+    texts: list[str] = []
+    for c in DEFAULT_CATEGORIES:
+        texts += c.texts() + [f"a photo of {c.name}", f"{c.name}的圖片"]
+    for zh, en in VOCABULARY:
+        texts += [zh, en, f"a photo of {en}", f"一張{zh}的照片"]
+    for name in list(COMMON_CATEGORIES) + list(EXTRA_HINTS):
+        hint = category_hint(name)
+        texts += [name, f"一張{name}的照片"] + ([hint, f"a photo of {hint}"] if hint else [])
+    texts += OTHER_TEXTS
+    return list(dict.fromkeys(t for t in texts if t))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--preset", default="standard")
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--per-class", type=int, default=40, help="ImageNette 每類取幾張（0＝不下載）")
+    parser.add_argument("--fake", action="store_true", help="用測試的假模型跑（只檢查這支程式本身）")
+    args = parser.parse_args()
+
+    folder = Path(tempfile.mkdtemp(prefix="dump_embeddings_"))
+    paths = build_images(folder)
+    expected = dict(EXPECTED)
+    if args.per_class > 0:
+        try:
+            extra = add_imagenette(folder, args.per_class)
+            expected.update(extra)
+            paths += [folder / name for name in sorted(extra)]
+        except Exception as exc:  # noqa: BLE001 - 下載不到就只用內附的圖片，並把原因印出來
+            print(f"（略過 ImageNette：{type(exc).__name__}: {exc}）")
+    if args.fake:
+        sys.path.insert(0, str(ROOT / "tests"))
+        from fakes import FakeClassifier
+        from media_sorter.classifier import normalize
+
+        clf = FakeClassifier()
+        clf.encode_texts = lambda texts: normalize(np.random.default_rng(0).random((len(texts), 3)))
+        clf.model_name = "fake"
+    else:
+        from media_sorter.classifier import Classifier
+
+        clf = Classifier(args.preset)
+    items = [it for it in analyze(paths, clf, list(DEFAULT_CATEGORIES)) if it.embedding is not None]
+    texts = all_texts()
+    text_emb = clf.encode_texts(texts)
+    frame_owner, frame_emb = [], []
+    for position, item in enumerate(items):
+        if item.frames is not None:
+            frame_owner += [position] * len(item.frames)
+            frame_emb.append(item.frames)
+    dim = text_emb.shape[1]
+    np.savez_compressed(
+        args.out,
+        image_names=np.array([it.path.name for it in items]),
+        image_labels=np.array([expected.get(it.path.name, "?") for it in items]),
+        image_emb=np.stack([it.embedding for it in items]).astype(np.float16),
+        frame_owner=np.array(frame_owner, dtype=np.int32),
+        frame_emb=(np.concatenate(frame_emb) if frame_emb else np.zeros((0, dim))).astype(np.float16),
+        texts=np.array(texts),
+        text_emb=text_emb.astype(np.float16),
+        logit_scale=np.float32(clf.logit_scale),
+        model=np.array(clf.model_name),
+    )
+    print(f"已存 {args.out}：{len(items)} 個檔案、{len(texts)} 句文字、向量 {dim} 維")
+
+
+if __name__ == "__main__":
+    main()
