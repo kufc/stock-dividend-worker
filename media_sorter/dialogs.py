@@ -430,8 +430,8 @@ class CategoryDialog(tk.Toplevel):
         self.name_var = tk.StringVar()
         ttk.Entry(right, textvariable=self.name_var).pack(fill="x", pady=(px(2), px(10)))
         ttk.Label(right, text="補充說明（可以留白）").pack(anchor="w")
-        for text in ("告訴 AI 這一類長什麼樣子，一行寫一種；中文、英文都可以，中英文各寫一句最穩。",
-                     "例：貓咪　a photo of a cat",
+        for text in ("告訴 AI 這一類長什麼樣子，一行寫一種；中文、英文都可以。寫大範圍的說法，比列舉幾個例子好。",
+                     "例：街景與建築物",
                      "留白時會直接用分類名稱判斷，常見的名稱（貓、美食、螢幕截圖⋯）這樣就夠了。"):
             hint = ttk.Label(right, style="Hint.TLabel", justify="left", text=cjk_wrap(text))
             hint.pack(anchor="w", fill="x")

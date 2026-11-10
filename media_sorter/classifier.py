@@ -24,9 +24,17 @@ SIMILARITY_FLOOR = 0.0
 # 用 425 張真實照片實測（tests/manual/embeddings_standard.npz）：不屬於任何分類的照片，被標出來的比例從
 # 31% 提高到 53%，分對的照片被誤標的比例不變（0.8%）。試過的其他寫法（英文、「其他」、「一張照片」）誤標都比較多。
 OTHER_TEXTS = ("其他東西", "雜物")
-# 「常出現但還沒有分類」的建議：詞彙跟檔案目前所在分類的文字相似度高於此值，就當作那個分類已經涵蓋它
-# （例如「汽車」之於「交通工具」），不再建議。同一批實測：教堂／汽車／公車被濾掉，魚／樂器／球類運動留下。
-TAG_COVERED_SIMILARITY = 0.82
+# 「常出現但還沒有分類」的建議：某個詞跟檔案目前所在分類的文字相似度，在所有內建詞彙裡特別突出
+# （高出平均這麼多個標準差）時，就當作那個分類已經涵蓋它（例如「汽車」之於「交通工具」），不再建議。
+# 用標準差而不是固定數值，因為兩個模型的相似度高低不同。兩個模型實測：汽車／公車被濾掉，魚／樂器／球類運動留下。
+TAG_COVERED_Z = 2.0
+
+
+def covered_tags(vocab_emb: np.ndarray, class_emb: np.ndarray) -> np.ndarray:
+    """(詞彙數, 分類數) 的布林矩陣：這個分類是否已經涵蓋這個詞。"""
+    sims = vocab_emb @ class_emb.T
+    spread = sims.std(axis=0, keepdims=True)
+    return (sims - sims.mean(axis=0, keepdims=True)) / np.clip(spread, 1e-9, None) >= TAG_COVERED_Z
 
 
 def total_ram_gb() -> float | None:

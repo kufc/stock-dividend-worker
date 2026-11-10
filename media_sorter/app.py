@@ -25,8 +25,8 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from . import APP_NAME, __version__
-from .analysis import CONFIRMED, ERROR, PENDING, SKIPPED, Item, analyze, rescore
-from .classifier import TAG_COVERED_SIMILARITY
+from .analysis import CONFIRMED, ERROR, PENDING, SKIPPED, Item, analyze, rescore, suggest_categories
+from .classifier import covered_tags
 from .config import (
     LOG_DIR,
     RENAME_MODES,
@@ -84,9 +84,6 @@ THUMB_SIZES = {"small": 104, "medium": 148, "large": 208}  # 縮圖格的縮圖�
 MAX_THUMBS = 900  # 記憶體裡最多留幾張縮圖（只畫看得到的，夠用了）
 UNSORTED_NAME = "未分類"  # AI 沒把握的檔案可以選擇放到這個資料夾
 BUCKET_ALL, BUCKET_LOW, BUCKET_SKIPPED, BUCKET_ERROR, BUCKET_CATEGORY = "all", "low", "skipped", "error", "cat:"
-# 「AI 還看到」裡描述拍法、不適合當分類的詞（不會出現在「常出現但還沒有分類」的建議裡）
-NOT_A_CATEGORY = {"黑白照片", "模糊照片", "夜間照片", "特寫", "空拍", "全景", "室內", "戶外"}
-SUGGEST_MIN_SCORE = 0.5  # 內建詞彙第一名的分數要夠高，才算「這個檔案就是這個東西」
 MAX_PLAN_ROWS = 300
 KIND_TEXT = {"image": "圖片", "video": "影片"}
 NO_RUN_ID = {"preview", "folder", "model", "viewer"}  # 這幾種訊息不屬於某一輪工作
@@ -728,37 +725,20 @@ class App:
         self.on_select()
 
     def suggested_categories(self, limit: int = 6) -> list[tuple[str, int]]:
-        """很多檔案明顯是某種東西（內建詞彙的第一名分數很高），但分類清單裡沒有 → 建議新增。
-
-        AI 一定會把每個檔案塞進現有的某一類；分類不合內容時結果就會很怪，加上合適的分類才分得準。
-        """
+        """「常出現、但還沒有這個分類」的建議（辨識進行中不顯示）。規則見 analysis.suggest_categories。"""
         if self.analysis_running() or not self.items:
             return []
-        existing = {c.name for c in self.categories}
-        covered = self._tag_coverage()
-        counts: Counter = Counter()
-        for item in self.items:
-            if item.status != ERROR and item.tags:
-                name, prob = item.tags[0]
-                if prob < SUGGEST_MIN_SCORE or name in existing or name in NOT_A_CATEGORY:
-                    continue
-                if (name, item.best(self.categories)[0]) in covered:
-                    continue  # 這個檔案所在的分類已經涵蓋這個詞（例如「汽車」在「交通工具」裡），不用另外建議
-                counts[name] += 1
-        minimum = max(3, len(self.items) // 50)
-        return [(name, count) for name, count in counts.most_common(limit) if count >= minimum]
+        return suggest_categories(self.items, self.categories, self._tag_coverage(), limit)
 
-    def _tag_coverage(self) -> set[tuple[str, str]]:
-        """(內建詞彙, 分類) 的組合中，文字意思夠接近、可以當作「這個分類已經涵蓋這個詞」的那些。"""
+    def _tag_coverage(self) -> np.ndarray | None:
+        """各分類已經涵蓋哪些內建詞彙（文字意思夠接近）；算不出來就不過濾。"""
         clf = self.classifier
         if clf is None or not self.categories:
-            return set()
+            return None
         try:
-            sims = clf.vocabulary_embeddings() @ clf.encode_categories(self.categories).T
+            return covered_tags(clf.vocabulary_embeddings(), clf.encode_categories(self.categories))
         except Exception:  # noqa: BLE001 - 只影響建議要不要顯示
-            return set()
-        rows, cols = np.nonzero(sims >= TAG_COVERED_SIMILARITY)
-        return {(VOCABULARY[r][0], self.categories[c].name) for r, c in zip(rows.tolist(), cols.tolist(), strict=True)}
+            return None
 
     def _refresh_visible(self) -> None:
         """辨識進行中：新辨識好的檔案要出現在它的分類裡（不重設選取與捲動位置）。"""

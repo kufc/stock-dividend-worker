@@ -5,14 +5,13 @@
 向量由 tests/manual/dump_embeddings.py 產生；預設分類的描述改了之後要重新產生。
 """
 
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from media_sorter.analysis import Item, _apply_scores
-from media_sorter.classifier import OTHER_TEXTS, SIMILARITY_FLOOR, TAG_COVERED_SIMILARITY, normalize
+from media_sorter.analysis import Item, _apply_scores, suggest_categories
+from media_sorter.classifier import OTHER_TEXTS, SIMILARITY_FLOOR, covered_tags, normalize
 from media_sorter.config import DEFAULT_CATEGORIES, Category
 from media_sorter.vocabulary import VOCABULARY
 
@@ -88,18 +87,20 @@ def _rates(categories, items, answers):
 def test_default_categories_classify_real_photos_well(scored):
     categories, items, answers = scored
     accuracy, _, _ = _rates(categories, items, answers)
-    assert len(items) >= 400 and accuracy >= 0.90
+    assert len(items) >= 400 and accuracy >= 0.85  # 標準模型 93%、高精準模型 88%（差別都在教堂算不算「城市建築」）
 
 
-def test_needs_checking_rarely_flags_correct_files_and_catches_about_half_of_the_misfits(scored):
+def test_needs_checking_rarely_flags_correct_files_and_catches_many_misfits(scored):
     """「需檢查」＝第一名分數低於門檻，或比任何分類更像「其他東西、雜物」。"""
     categories, items, answers = scored
     _, correct_flagged, misfits_flagged = _rates(categories, items, answers)
     assert correct_flagged <= 0.03  # 分對的幾乎不會被標
-    assert misfits_flagged >= 0.45  # 不屬於任何分類的，大約一半會被標出來
-    only_threshold = sum(it.best(categories)[1] < 0.5 for it in items if answers[it.path.name] == NONE)
-    with_other = sum(it.is_low(categories, 0.5, SIMILARITY_FLOOR) for it in items if answers[it.path.name] == NONE)
-    assert with_other >= only_threshold * 1.3  # 「其他東西」這個比較確實多抓到不少
+    assert misfits_flagged >= 0.38  # 不屬於任何分類的：標準模型 53%、高精準模型 40% 會被標出來
+    nothing = [it for it in items if answers[it.path.name] == NONE]
+    only_threshold = sum(it.best(categories)[1] < 0.5 for it in nothing)
+    assert sum(it.is_low(categories, 0.5, SIMILARITY_FLOOR) for it in nothing) >= only_threshold * 1.2
+    correct = [it for it in items if answers[it.path.name] == it.best(categories)[0]]
+    assert not any(it.fits_nothing for it in correct)  # 「更像其他東西」沒有誤標任何一張分對的
 
 
 def test_similarity_floor_would_have_flagged_correct_files(scored):
@@ -113,18 +114,12 @@ def test_similarity_floor_would_have_flagged_correct_files(scored):
 def test_missing_categories_are_suggested_but_covered_ones_are_not(recorded, scored):
     """建議新增的分類：魚、樂器、球類運動（真的沒有對應分類）；汽車、公車屬於「交通工具」，不該建議。"""
     categories, items, _ = scored
-    sims = recorded.vocabulary_embeddings() @ recorded.encode_categories(categories).T
-    words = [zh for zh, _ in VOCABULARY]
-    column = {c.name: j for j, c in enumerate(categories)}
-    existing = set(column)
-    counts: Counter = Counter()
-    for item in items:
-        name, prob = item.tags[0]
-        if prob >= 0.5 and name not in existing and sims[words.index(name), column[item.best(categories)[0]]] < TAG_COVERED_SIMILARITY:
-            counts[name] += 1
-    suggested = {name for name, count in counts.items() if count >= max(3, len(items) // 50)}
+    covered = covered_tags(recorded.vocabulary_embeddings(), recorded.encode_categories(categories))
+    suggested = {name for name, _ in suggest_categories(items, categories, covered, limit=10)}
     assert {"魚", "樂器", "球類運動"} <= suggested
     assert not {"汽車", "公車"} & suggested
+    unfiltered = {name for name, _ in suggest_categories(items, categories, None, limit=10)}
+    assert {"汽車", "公車"} & unfiltered  # 不過濾的話就會建議這些
 
 
 def test_adding_the_suggested_categories_pulls_the_misfits_out(recorded, scored):

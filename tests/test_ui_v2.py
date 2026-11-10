@@ -759,9 +759,7 @@ def test_frequent_content_without_a_category_is_suggested(app, tmp_path, monkeyp
 
     from media_sorter.analysis import PENDING
 
-    import media_sorter.app as app_module
-
-    monkeypatch.setattr(app_module, "TAG_COVERED_SIMILARITY", 2.0)  # 這個測試不看「分類已經涵蓋」的過濾
+    monkeypatch.setattr(app, "_tag_coverage", lambda: None)  # 這個測試不看「分類已經涵蓋」的過濾
     run_analysis(app, photos(tmp_path, 6))
     for i, item in enumerate(app.items):
         item.tags = [("聊天截圖", 0.9), ("手機", 0.05)] if i < 4 else [("特寫", 0.95), ("紅", 0.9)]
@@ -791,9 +789,9 @@ def test_suggestions_skip_things_the_current_category_already_covers(app, tmp_pa
     run_analysis(app, photos(tmp_path, 8))
     app.set_categories([Category("紅"), Category("交通工具"), Category("人像")])
     words = [zh for zh, _ in VOCABULARY]
-    sims = np.full((len(words), 3), 0.75)
-    sims[words.index("汽車"), 1] = 0.90  # 「汽車」跟「交通工具」意思很近
-    sims[words.index("魚"), 2] = 0.80  # 「魚」跟「人像」不近
+    sims = np.full((len(words), 3), 0.75) + np.linspace(0, 0.02, len(words))[:, None]  # 一般的詞：差不多
+    sims[words.index("汽車"), 1] = 0.90  # 「汽車」跟「交通工具」的意思特別近
+    sims[words.index("魚"), 2] = 0.76  # 「魚」跟「人像」沒有特別近
     monkeypatch.setattr(app.classifier, "vocabulary_embeddings", lambda: sims)
     monkeypatch.setattr(app.classifier, "encode_categories", lambda categories: np.eye(3))
     names = ("紅", "交通工具", "人像")

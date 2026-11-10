@@ -294,3 +294,33 @@ def accept_confident(items: list[Item], categories: list[Category], threshold: f
                 item.status, item.chosen = CONFIRMED, name
                 count += 1
     return count
+
+
+# 「AI 還看到」裡描述拍法、不適合當分類的詞
+NOT_A_CATEGORY = {"黑白照片", "模糊照片", "夜間照片", "特寫", "空拍", "全景", "室內", "戶外"}
+SUGGEST_MIN_SCORE = 0.5  # 內建詞彙第一名的分數要夠高，才算「這個檔案就是這個東西」
+_VOCAB_INDEX = {zh: i for i, (zh, _) in enumerate(VOCABULARY)}
+
+
+def suggest_categories(items: list[Item], categories: list[Category], covered: np.ndarray | None = None,
+                       limit: int = 6) -> list[tuple[str, int]]:
+    """很多檔案明顯是某種東西（內建詞彙的第一名分數很高），但分類清單裡沒有 → 建議新增。回傳 [(名稱, 檔案數)]。
+
+    AI 一定會把每個檔案塞進現有的某一類；分類不合內容時結果就會很怪，加上合適的分類才分得準。
+    covered：classifier.covered_tags() 的結果；檔案所在的分類已經涵蓋那個詞時不算（「汽車」在「交通工具」裡）。
+    """
+    existing = {c.name: j for j, c in enumerate(categories)}
+    counts: dict[str, int] = {}
+    for item in items:
+        if item.status == ERROR or not item.tags:
+            continue
+        name, prob = item.tags[0]
+        if prob < SUGGEST_MIN_SCORE or name in existing or name in NOT_A_CATEGORY:
+            continue
+        column = existing.get(item.best(categories)[0])
+        if covered is not None and column is not None and name in _VOCAB_INDEX and covered[_VOCAB_INDEX[name], column]:
+            continue
+        counts[name] = counts.get(name, 0) + 1
+    minimum = max(3, len(items) // 50)
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    return [(name, count) for name, count in ranked[:limit] if count >= minimum]
