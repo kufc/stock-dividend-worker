@@ -1,0 +1,33 @@
+REAL-MODEL CHECK: NOT RUN - model weights download blocked by the network proxy
+Date: 2026-11-10 (UTC)
+
+Command:
+  HF_HUB_DISABLE_XET=1 python tests/manual/real_model_check.py --preset standard --out tests/manual/real_model_results.txt
+
+Environment: Python 3.12, torch 2.15.0, torchvision 0.29.2, open_clip_torch 3.3.0,
+transformers 5.22.2, huggingface_hub 2.4.0, hf_xet uninstalled (and HF_HUB_DISABLE_XET=1).
+
+Exact error:
+  httpx2.ProxyError: 403 Forbidden
+  FileNotFoundError: Failed to download file (open_clip_pytorch_model.bin) for
+    laion/CLIP-ViT-B-32-xlm-roberta-base-laion5B-s13B-b90k. Last error: 403 Forbidden
+  RuntimeError: Failed to download weights for tag 'laion5b_s13b_b90k': Failed to download file
+    (open_clip_pytorch_model.bin) for laion/CLIP-ViT-B-32-xlm-roberta-base-laion5B-s13B-b90k.
+    Last error: 403 Forbidden
+  (raised from media_sorter/classifier.py:121 open_clip.create_model_and_transforms,
+   called by tests/manual/real_model_check.py:299 Classifier(args.preset))
+
+Blocked host (from $HTTPS_PROXY/__agentproxy/status -> recentRelayFailures):
+  us.aws.cdn.hf.co:443
+    kind:   connect_rejected
+    detail: gateway answered 403 to CONNECT (policy denial or other refusal)
+    ts:     2026-11-10T05:34:31.381Z
+
+What happens: huggingface.co itself is reachable and answers the plain-HTTP (non-Xet)
+request for .../resolve/main/open_clip_pytorch_model.bin with a 302 redirect to
+  https://us.aws.cdn.hf.co/xet-bridge-us/...
+(not cas-bridge.xethub.hf.co or cdn-lfs*.hf.co as expected). The proxy refuses the
+CONNECT to us.aws.cdn.hf.co, so the weights cannot be fetched. No other host was refused.
+
+To unblock: add us.aws.cdn.hf.co to the environment's allowed hosts and rerun the command.
+No mirrors or workarounds were used. The accurate preset was not attempted.
