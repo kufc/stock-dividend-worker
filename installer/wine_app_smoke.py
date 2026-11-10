@@ -45,6 +45,30 @@ print("images found:", app.stats.images)
 app.start_analysis()
 pump(lambda: app.items and all(i.analyzed for i in app.items) and not app.analysis_running())
 print("step:", app.step, "analyzed:", len(app.items))
+# Windows 專屬的部分：視窗最大化後仍在螢幕內、右鍵選單建得出來、框選與拖曳的事件處理跑得動
+root.update()
+print("window:", root.state(), root.winfo_width(), "x", root.winfo_height(), "screen", root.winfo_screenwidth(), "x",
+      root.winfo_screenheight())
+assert root.state() == "zoomed", root.state()
+assert root.winfo_width() <= root.winfo_screenwidth() and root.winfo_height() <= root.winfo_screenheight()
+bar = app.page2.next_btn
+assert bar.winfo_rooty() + bar.winfo_height() <= root.winfo_screenheight(), "「下一步」按鈕超出螢幕"
+grid = app.tree
+grid.selection_set(grid.get_children()[0])
+menu = app.build_context_menu()
+assert menu is not None and menu.index("end") >= 8
+from types import SimpleNamespace  # noqa: E402
+
+x0, y0, x1, y1 = grid._cell_box(0)
+below = SimpleNamespace(x=x0 + 5, y=grid.canvas.winfo_height() - 3, x_root=0, y_root=0)
+if grid._pos_at(below.x, below.y) is None:  # 空白處往上框選第一列
+    grid._on_press(below)
+    grid._on_motion(SimpleNamespace(x=x1 + 5, y=y0 + 5, x_root=0, y_root=0))
+    grid._on_release(SimpleNamespace(x=x1 + 5, y=y0 + 5, x_root=0, y_root=0))
+    root.update()
+    print("band selected:", len(grid.selection()))
+    assert len(grid.selection()) >= 1
+print("suggestions:", len(app.suggested_categories()))  # 只印數量：Wine 的主控台印不出中文
 app.select_bucket("cat:紅")
 app.tree.select_all()
 app.assign("綠")  # 把 AI 放在「紅」的全部改成「綠」
