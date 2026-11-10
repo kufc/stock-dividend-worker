@@ -20,6 +20,13 @@ TEXT_BATCH = 64
 # 這個數字分不出來：分對的照片相似度 0.10～0.25，不屬於任何分類的也是 0.12～0.25；以前設 0.18，
 # 結果大半分對的檔案都被標成「需檢查」。所以預設關掉（0），「需檢查」只看模型分數。
 SIMILARITY_FLOOR = 0.0
+# 「什麼都不是」的描述。檔案跟這個描述比跟任何一個分類都還像 → 可能不屬於任何分類，放進「需檢查」。
+# 用 425 張真實照片實測（tests/manual/embeddings_standard.npz）：不屬於任何分類的照片，被標出來的比例從
+# 31% 提高到 53%，分對的照片被誤標的比例不變（0.8%）。試過的其他寫法（英文、「其他」、「一張照片」）誤標都比較多。
+OTHER_TEXTS = ("其他東西", "雜物")
+# 「常出現但還沒有分類」的建議：詞彙跟檔案目前所在分類的文字相似度高於此值，就當作那個分類已經涵蓋它
+# （例如「汽車」之於「交通工具」），不再建議。同一批實測：教堂／汽車／公車被濾掉，魚／樂器／球類運動留下。
+TAG_COVERED_SIMILARITY = 0.82
 
 
 def total_ram_gb() -> float | None:
@@ -151,6 +158,8 @@ class Classifier:
         self.logit_scale = min(float(model.logit_scale.exp().item()), 100.0)
         self.similarity_floor = SIMILARITY_FLOOR if pretrained else 0.0
         self._vocab_embeddings: np.ndarray | None = None
+        self._other_embedding: np.ndarray | None = None
+        self._category_cache: dict[tuple, np.ndarray] = {}  # 分類描述 → 向量（同一份清單不用重算）
         self._max_batch: int | None = None  # 顯示卡記憶體不足後學到的安全批次大小
         self.fell_back_to_fp32 = False
 
@@ -166,6 +175,8 @@ class Classifier:
         self.dtype = self._torch.float32
         self.fell_back_to_fp32 = True
         self._vocab_embeddings = None
+        self._other_embedding = None
+        self._category_cache.clear()
         return True
 
     def encode_prepared(self, tensors: list) -> np.ndarray:
@@ -218,7 +229,18 @@ class Classifier:
         return np.stack(result)
 
     def encode_categories(self, categories: list[Category]) -> np.ndarray:
-        return self._encode_groups([c.texts() for c in categories])
+        key = tuple(tuple(c.texts()) for c in categories)
+        if key not in self._category_cache:
+            if len(self._category_cache) >= 4:
+                self._category_cache.pop(next(iter(self._category_cache)))
+            self._category_cache[key] = self._encode_groups([list(texts) for texts in key])
+        return self._category_cache[key]
+
+    def other_embedding(self) -> np.ndarray:
+        """「什麼都不是」的向量（見 OTHER_TEXTS）。"""
+        if self._other_embedding is None:
+            self._other_embedding = self._encode_groups([list(OTHER_TEXTS)])[0]
+        return self._other_embedding
 
     def vocabulary_embeddings(self) -> np.ndarray:
         if self._vocab_embeddings is None:

@@ -255,11 +255,13 @@ counterpart.
    ("採用 AI 建議"), S skips, Ctrl+Z undoes the last step ("撤回上一步"),
    Space opens the large view.
 
-・「需檢查」裡是模型沒有把握的檔案（縮圖右上角有「？」），請自己看一下；
+・「需檢查」裡是模型沒有把握、或可能不屬於任何分類的檔案（縮圖右上角
+　有「？」），請自己看一下；
 　分對的不用動，不改的話會依建議整理。模型給的分數只是參考，不代表判斷
 　正確的機率。
    "需檢查" (needs checking) collects the files the model is unsure about
-   (a "?" badge on the thumbnail); please look at them yourself. Correct
+   or that may not belong to any category (a "?" badge on the thumbnail);
+   please look at them yourself. Correct
    ones need no action and are organized by the suggestion. The model's
    score is only a hint and is not the probability that it is right.
 

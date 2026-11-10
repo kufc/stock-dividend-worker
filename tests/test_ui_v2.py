@@ -759,6 +759,9 @@ def test_frequent_content_without_a_category_is_suggested(app, tmp_path, monkeyp
 
     from media_sorter.analysis import PENDING
 
+    import media_sorter.app as app_module
+
+    monkeypatch.setattr(app_module, "TAG_COVERED_SIMILARITY", 2.0)  # 這個測試不看「分類已經涵蓋」的過濾
     run_analysis(app, photos(tmp_path, 6))
     for i, item in enumerate(app.items):
         item.tags = [("聊天截圖", 0.9), ("手機", 0.05)] if i < 4 else [("特寫", 0.95), ("紅", 0.9)]
@@ -775,3 +778,46 @@ def test_frequent_content_without_a_category_is_suggested(app, tmp_path, monkeyp
     assert [c.name for c in app.categories][-1] == "聊天截圖"
     assert all(item.status == PENDING for item in app.items)  # 只新增分類，沒有把選取的檔案指定過去
     assert app.page2.buckets.exists("cat:聊天截圖")
+
+
+def test_suggestions_skip_things_the_current_category_already_covers(app, tmp_path, monkeypatch):
+    """實測過的情況：垃圾車的照片在「交通工具」裡、最像的詞是「汽車」→ 不建議新增「汽車」；
+    抓著魚的人被放進「人像」、最像的詞是「魚」→ 建議新增「魚」。"""
+    import numpy as np
+
+    from media_sorter.config import Category
+    from media_sorter.vocabulary import VOCABULARY
+
+    run_analysis(app, photos(tmp_path, 8))
+    app.set_categories([Category("紅"), Category("交通工具"), Category("人像")])
+    words = [zh for zh, _ in VOCABULARY]
+    sims = np.full((len(words), 3), 0.75)
+    sims[words.index("汽車"), 1] = 0.90  # 「汽車」跟「交通工具」意思很近
+    sims[words.index("魚"), 2] = 0.80  # 「魚」跟「人像」不近
+    monkeypatch.setattr(app.classifier, "vocabulary_embeddings", lambda: sims)
+    monkeypatch.setattr(app.classifier, "encode_categories", lambda categories: np.eye(3))
+    names = ("紅", "交通工具", "人像")
+    for i, item in enumerate(app.items):
+        truck = i < 4
+        item.probs, item.prob_names = np.array([0.02, 0.96, 0.02] if truck else [0.05, 0.05, 0.9]), names
+        item.tags = [("汽車" if truck else "魚", 0.8)]
+    assert app.suggested_categories() == [("魚", 4)]
+    app.items[0].probs = np.array([0.9, 0.05, 0.05])  # 被放進別的分類的「汽車」：那個分類沒有涵蓋它，要算
+    assert app.suggested_categories() == [("魚", 4)]  # 只有 1 個，還不到建議的數量
+    for item in app.items[:3]:
+        item.probs = np.array([0.9, 0.05, 0.05])
+    assert ("汽車", 3) in app.suggested_categories()
+
+
+def test_files_that_fit_nothing_go_to_the_check_list(app, tmp_path):
+    """比起任何分類更像「其他東西、雜物」的檔案：就算第一名分數很高，也放進「需檢查」並說明原因。"""
+    run_analysis(app, photos(tmp_path, 3))
+    item = app.items[0]
+    assert not item.fits_nothing and not app._is_low(item)  # 測試用的假模型沒有「其他」向量
+    item.top_similarity, item.other_similarity = 0.14, 0.17
+    assert item.fits_nothing and app._is_low(item)
+    app.refresh_tree()
+    assert app.page2.buckets.item("low", "values")[0] == "1"
+    app.select_bucket("low")
+    assert "可能不屬於任何一個分類" in app.page2.notice_var.get()
+    assert app.cell_for(app._iid(0)).style == "low"

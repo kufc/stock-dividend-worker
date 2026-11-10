@@ -21,10 +21,12 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+import numpy as np
 from PIL import Image, ImageTk
 
 from . import APP_NAME, __version__
 from .analysis import CONFIRMED, ERROR, PENDING, SKIPPED, Item, analyze, rescore
+from .classifier import TAG_COVERED_SIMILARITY
 from .config import (
     LOG_DIR,
     RENAME_MODES,
@@ -733,14 +735,30 @@ class App:
         if self.analysis_running() or not self.items:
             return []
         existing = {c.name for c in self.categories}
+        covered = self._tag_coverage()
         counts: Counter = Counter()
         for item in self.items:
             if item.status != ERROR and item.tags:
                 name, prob = item.tags[0]
-                if prob >= SUGGEST_MIN_SCORE and name not in existing and name not in NOT_A_CATEGORY:
-                    counts[name] += 1
+                if prob < SUGGEST_MIN_SCORE or name in existing or name in NOT_A_CATEGORY:
+                    continue
+                if (name, item.best(self.categories)[0]) in covered:
+                    continue  # 這個檔案所在的分類已經涵蓋這個詞（例如「汽車」在「交通工具」裡），不用另外建議
+                counts[name] += 1
         minimum = max(3, len(self.items) // 50)
         return [(name, count) for name, count in counts.most_common(limit) if count >= minimum]
+
+    def _tag_coverage(self) -> set[tuple[str, str]]:
+        """(內建詞彙, 分類) 的組合中，文字意思夠接近、可以當作「這個分類已經涵蓋這個詞」的那些。"""
+        clf = self.classifier
+        if clf is None or not self.categories:
+            return set()
+        try:
+            sims = clf.vocabulary_embeddings() @ clf.encode_categories(self.categories).T
+        except Exception:  # noqa: BLE001 - 只影響建議要不要顯示
+            return set()
+        rows, cols = np.nonzero(sims >= TAG_COVERED_SIMILARITY)
+        return {(VOCABULARY[r][0], self.categories[c].name) for r, c in zip(rows.tolist(), cols.tolist(), strict=True)}
 
     def _refresh_visible(self) -> None:
         """辨識進行中：新辨識好的檔案要出現在它的分類裡（不重設選取與捲動位置）。"""
@@ -967,8 +985,8 @@ class App:
             note = f"你指定的分類：{item.chosen}"
         elif item.status == SKIPPED:
             note = "已略過，不會被整理。選一個分類就會整理回來。"
-        elif item.top_similarity < floor:
-            note = "這個檔案跟每個分類都不太像。建議自己看一下，必要時新增一個分類。"
+        elif item.top_similarity < floor or item.fits_nothing:
+            note = "這個檔案可能不屬於任何一個分類。請看一下；需要的話可以新增分類，或按「略過，不整理」。"
         elif low:
             note = "模型對這個檔案沒有把握，請自己看一下；不改的話會依建議整理。"
         else:

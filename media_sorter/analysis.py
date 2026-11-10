@@ -44,7 +44,8 @@ class Item:
     thumbnail: bytes | None = None
     probs: np.ndarray | None = None
     prob_names: tuple[str, ...] = ()  # probs 每個位置對應的分類名稱（分類清單改變時不會對錯位置）
-    top_similarity: float = 1.0       # 與最像分類的原始相似度；太低代表「哪個分類都不太像」
+    top_similarity: float = 1.0       # 與最像分類的原始相似度
+    other_similarity: float = -1.0    # 與「其他東西、雜物」的相似度；比 top_similarity 高代表可能不屬於任何分類
     tags: list[tuple[str, float]] = field(default_factory=list)
     error: str | None = None
     status: str = PENDING
@@ -74,8 +75,8 @@ class Item:
 
     def merge_analysis(self, other: "Item") -> None:
         """把背景辨識的結果併入這個項目，保留使用者已經做的確認／略過。"""
-        for attr in ("embedding", "frames", "date", "thumbnail", "probs", "prob_names", "top_similarity", "tags",
-                     "error"):
+        for attr in ("embedding", "frames", "date", "thumbnail", "probs", "prob_names", "top_similarity",
+                     "other_similarity", "tags", "error"):
             setattr(self, attr, getattr(other, attr))
         if other.status == ERROR and self.status == PENDING:
             self.status = ERROR
@@ -85,14 +86,21 @@ class Item:
         return top[0] if top else (None, 0.0)
 
     def is_low(self, categories: list[Category], threshold: float, similarity_floor: float) -> bool:
-        """AI 沒把握：第一名的模型分數低於門檻（或相似度低於 similarity_floor，預設不使用）。
+        """AI 沒把握：第一名的模型分數低於門檻，或比起任何分類更像「其他東西」（fits_nothing）。
+        （相似度低於 similarity_floor 也算，但預設不使用。）
 
         用真模型實測過：分對的照片第一名幾乎都在門檻以上；不屬於任何分類的照片有一半左右會落在門檻以下。
         「第一名要明顯領先第二名」這類額外條件沒有讓分對的照片少被標，反而漏掉該檢查的，所以只看門檻。
         """
         if self.status != PENDING or not self.analyzed:
             return False
-        return self.best(categories)[1] < threshold or self.top_similarity < similarity_floor
+        return (self.best(categories)[1] < threshold or self.top_similarity < similarity_floor
+                or self.fits_nothing)
+
+    @property
+    def fits_nothing(self) -> bool:
+        """比起任何一個分類，更像「其他東西、雜物」→ 可能不屬於任何分類。"""
+        return self.other_similarity > self.top_similarity
 
     def final_category(self, categories: list[Category]) -> str | None:
         """確認過就用使用者的選擇，否則用 AI 的第一名。"""
@@ -118,14 +126,20 @@ def square_crops(img: Image.Image) -> list[Image.Image]:
     return [img.crop(box) for box in boxes]
 
 
+def _other_embedding(classifier) -> np.ndarray | None:
+    getter = getattr(classifier, "other_embedding", None)
+    return getter() if getter is not None else None
+
+
 def _apply_scores(item: Item, class_emb: np.ndarray, names: tuple[str, ...], vocab_emb: np.ndarray | None,
-                  logit_scale: float) -> None:
+                  logit_scale: float, other_emb: np.ndarray | None = None) -> None:
     if item.embedding is None or not np.isfinite(item.embedding).all():
         item.status, item.error, item.probs = ERROR, "AI 計算結果異常（NaN），請在設定中改用其他模型或回報問題", None
         return
     item.probs = _probs(item, class_emb, logit_scale)
     item.prob_names = names
     item.top_similarity = float((class_emb @ item.embedding).max())
+    item.other_similarity = float(other_emb @ item.embedding) if other_emb is not None else -1.0
     if vocab_emb is not None:
         vocab_probs = _probs(item, vocab_emb, logit_scale)
         top = np.argsort(-vocab_probs)[:TAG_COUNT]
@@ -158,6 +172,7 @@ def analyze(
     names = tuple(c.name for c in categories)
     class_emb = classifier.encode_categories(categories)
     vocab_emb = classifier.vocabulary_embeddings()
+    other_emb = _other_embedding(classifier)
     total = len(items)
     done = 0
     stop_event = stop_event or threading.Event()
@@ -233,7 +248,7 @@ def analyze(
                 if item.kind == "video":
                     item.frames = embeddings[start:start + len(tensors)].copy()
                 start += len(tensors)
-                _apply_scores(item, class_emb, names, vocab_emb, classifier.logit_scale)
+                _apply_scores(item, class_emb, names, vocab_emb, classifier.logit_scale, other_emb)
                 finish(index, item)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
@@ -259,7 +274,7 @@ def rescore(items: list[Item], classifier, categories: list[Category]) -> int:
             item.probs, item.prob_names, item.top_similarity = probs[row], names, float(top_sims[row])
             item.tags = [(VOCABULARY[i][0], float(vocab_probs[row, i])) for i in top_tags[row]]
             if item.frames is not None:  # 影片：逐張畫面重算（數量少，逐一處理即可）
-                _apply_scores(item, class_emb, names, vocab_emb, classifier.logit_scale)
+                _apply_scores(item, class_emb, names, vocab_emb, classifier.logit_scale, _other_embedding(classifier))
     reverted = 0
     for item in items:
         if item.status == CONFIRMED and item.chosen not in names:
