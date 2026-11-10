@@ -82,6 +82,9 @@ THUMB_SIZES = {"small": 104, "medium": 148, "large": 208}  # 縮圖格的縮圖�
 MAX_THUMBS = 900  # 記憶體裡最多留幾張縮圖（只畫看得到的，夠用了）
 UNSORTED_NAME = "未分類"  # AI 沒把握的檔案可以選擇放到這個資料夾
 BUCKET_ALL, BUCKET_LOW, BUCKET_SKIPPED, BUCKET_ERROR, BUCKET_CATEGORY = "all", "low", "skipped", "error", "cat:"
+# 「AI 還看到」裡描述拍法、不適合當分類的詞（不會出現在「常出現但還沒有分類」的建議裡）
+NOT_A_CATEGORY = {"黑白照片", "模糊照片", "夜間照片", "特寫", "空拍", "全景", "室內", "戶外"}
+SUGGEST_MIN_SCORE = 0.5  # 內建詞彙第一名的分數要夠高，才算「這個檔案就是這個東西」
 MAX_PLAN_ROWS = 300
 KIND_TEXT = {"image": "圖片", "video": "影片"}
 NO_RUN_ID = {"preview", "folder", "model", "viewer"}  # 這幾種訊息不屬於某一輪工作
@@ -718,8 +721,26 @@ class App:
             p.grid_hint_var.set("AI 放在這個分類的檔案，最沒把握的排在最前面。看到分錯的，點它（可以多選或拖曳框選），再按下面正確的分類。"
                                 if self._sorts_by_confidence() else
                                 "AI 放在這個分類的檔案。看到分錯的，點它（可以多選或拖曳框選），再按下面正確的分類。")
+        p.show_suggestions(self.suggested_categories())
         self.update_counts(force=True)
         self.on_select()
+
+    def suggested_categories(self, limit: int = 6) -> list[tuple[str, int]]:
+        """很多檔案明顯是某種東西（內建詞彙的第一名分數很高），但分類清單裡沒有 → 建議新增。
+
+        AI 一定會把每個檔案塞進現有的某一類；分類不合內容時結果就會很怪，加上合適的分類才分得準。
+        """
+        if self.analysis_running() or not self.items:
+            return []
+        existing = {c.name for c in self.categories}
+        counts: Counter = Counter()
+        for item in self.items:
+            if item.status != ERROR and item.tags:
+                name, prob = item.tags[0]
+                if prob >= SUGGEST_MIN_SCORE and name not in existing and name not in NOT_A_CATEGORY:
+                    counts[name] += 1
+        minimum = max(3, len(self.items) // 50)
+        return [(name, count) for name, count in counts.most_common(limit) if count >= minimum]
 
     def _refresh_visible(self) -> None:
         """辨識進行中：新辨識好的檔案要出現在它的分類裡（不重設選取與捲動位置）。"""
@@ -1143,8 +1164,9 @@ class App:
         if name and self.add_category(name, []):
             self._assign_after_add(name.strip(), selected)
 
-    def add_category_from_tag(self, name: str) -> None:
-        selected = self._selected_indices()
+    def add_category_from_tag(self, name: str, assign: bool = True) -> None:
+        """把「AI 還看到」的詞新增為分類。assign：是否順便把選取中的檔案分到這個分類。"""
+        selected = self._selected_indices() if assign else []
         if name not in {c.name for c in self.categories}:
             extra = f"選取中的 {len(selected):,} 個檔案會直接分到這個分類。\n" if selected else ""
             if not messagebox.askyesno(APP_NAME, f"要新增分類「{name}」嗎？\n{extra}新增後 AI 會重新判斷所有檔案。"):

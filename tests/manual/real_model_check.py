@@ -218,7 +218,7 @@ VARIANTS = {"目前的寫法": texts_current, "不自動補英文說明": texts_
             "每句都套樣板": texts_templates, "只用英文說明": texts_english_only}
 
 
-def is_low(probs: np.ndarray, top_similarity: float, threshold: float = 0.5, margin: bool = True) -> bool:
+def is_low(probs: np.ndarray, top_similarity: float, threshold: float = 0.5, margin: bool = False) -> bool:
     order = np.sort(probs)[::-1]
     best, second = float(order[0]), float(order[1]) if len(order) > 1 else 0.0
     if top_similarity < SIMILARITY_FLOOR:
@@ -243,7 +243,7 @@ def report(title: str, items, categories: list[Category], clf, expected: dict, o
             want = expected.get(item.path.name, "?")
             got = names[order[0]]
             low = is_low(probs[row], top_sim)
-            low_old += is_low(probs[row], top_sim, margin=False)
+            low_old += is_low(probs[row], top_sim, margin=True)
             low_new += low
             if want == NONE:
                 none_total += 1
@@ -255,7 +255,7 @@ def report(title: str, items, categories: list[Category], clf, expected: dict, o
                 mark = ("對" if got == want else "錯") + ("（需檢查）" if low else "")
             print(f"{item.path.name:24s} 預期 {want:6s} → {top:42s} 相似度 {top_sim:.3f}  {mark}", file=out)
         print(f"[小計] 有答案的：對 {right}／錯 {wrong}；不屬於任何分類的 {none_total} 張中標成需檢查 {none_flagged} 張；"
-              f"需檢查總數：舊規則 {low_old}、新規則 {low_new}（共 {len(items)} 張）", file=out)
+              f"需檢查總數：只看門檻（程式的規則）{low_new}、加上領先幅度條件 {low_old}（共 {len(items)} 張）", file=out)
 
 
 def video_scoring(items, paths, categories, clf, out) -> None:

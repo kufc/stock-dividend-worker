@@ -212,17 +212,57 @@ def test_model_status_returns_none_when_unknown(monkeypatch):
     assert classifier.model_status("auto") is None
 
 
-def test_common_category_names_get_an_english_hint():
-    """沒寫補充說明的分類：常見名稱自動補上英文，AI 才知道指的是什麼；寫了說明就以使用者的為準。"""
+def test_common_categories_all_have_an_english_description():
+    """「加入常用分類」的每一項都查得到英文說明（加入時會填進補充說明）；只有名稱的分類不會被偷偷加料。"""
     from media_sorter.config import Category
     from media_sorter.vocabulary import COMMON_CATEGORIES, category_hint
 
     assert all(category_hint(name) for name in COMMON_CATEGORIES)
-    texts = Category("廣告").texts()
-    assert any("advertisement" in t for t in texts) and "廣告" in texts
-    assert Category("廣告", ["促銷傳單"]).texts() == ["促銷傳單", "廣告", "一張廣告的照片"]
-    assert Category("我家阿福").texts() == ["我家阿福", "一張我家阿福的照片"]  # 不認得的名稱不亂補
     assert category_hint("其他") is None
+    assert Category("廣告").texts() == ["廣告", "一張廣告的照片"]
+    assert Category("廣告", ["促銷傳單"]).texts() == ["促銷傳單", "廣告", "一張廣告的照片"]
+
+
+def test_needs_checking_only_looks_at_the_model_score():
+    """實測數字（tests/manual/real_model_results.txt）：太空人照片 人像 91%、相似度只有 0.099，是分對的，不該被標。"""
+    import numpy as np
+
+    from media_sorter.analysis import Item
+    from media_sorter.classifier import SIMILARITY_FLOOR
+    from media_sorter.config import Category
+
+    cats = [Category("人像"), Category("交通工具"), Category("螢幕截圖")]
+    names = tuple(c.name for c in cats)
+    sure = Item(Path("astronaut.png"), "image", probs=np.array([0.91, 0.03, 0.02]), prob_names=names, top_similarity=0.099)
+    unsure = Item(Path("rocket.jpg"), "image", probs=np.array([0.13, 0.37, 0.34]), prob_names=names, top_similarity=0.109)
+    lone = Item(Path("coins.png"), "image", probs=np.array([0.45, 0.10, 0.16]), prob_names=names, top_similarity=0.122)
+    assert SIMILARITY_FLOOR == 0
+    assert not sure.is_low(cats, 0.5, SIMILARITY_FLOOR)
+    assert unsure.is_low(cats, 0.5, SIMILARITY_FLOOR)
+    assert lone.is_low(cats, 0.5, SIMILARITY_FLOOR)  # 第一名領先很多但分數不到門檻：仍然要看一下
+
+
+def test_videos_are_scored_frame_by_frame(tmp_path):
+    """畫面內容差很多的影片：逐張比對後平均機率，結果是「幾類各占一些」而不是很有把握的單一答案；重算分類時也一樣。"""
+    import numpy as np
+
+    from fakes import FakeClassifier
+    from media_sorter.analysis import Item, _apply_scores, rescore
+    from media_sorter.classifier import combine_frames, normalize
+    from media_sorter.config import Category
+
+    cats = [Category("紅"), Category("綠"), Category("藍")]
+    clf = FakeClassifier()
+    frames = normalize(np.array([[1.0, 0.02, 0.02], [0.02, 0.02, 1.0], [1.0, 0.02, 0.02], [0.02, 0.02, 1.0]]))
+    video = Item(Path("mixed.mp4"), "video", embedding=combine_frames(frames), frames=frames)
+    same = Item(Path("red.mp4"), "video", embedding=frames[0], frames=np.stack([frames[0]] * 4))
+    for item in (video, same):
+        _apply_scores(item, clf.encode_categories(cats), ("紅", "綠", "藍"), clf.vocabulary_embeddings(), clf.logit_scale)
+    assert video.probs == pytest.approx([0.5, 0.0, 0.5], abs=0.01) and video.is_low(cats, 0.6, 0.0)
+    assert same.probs[0] > 0.99 and len(video.tags) == 5
+    rescore([video, same], clf, [cats[2], cats[0]])  # 刪掉「綠」、調換順序
+    assert video.prob_names == ("藍", "紅") and video.probs == pytest.approx([0.5, 0.5], abs=0.01)
+    assert same.best([cats[2], cats[0]])[0] == "紅"
 
 
 def test_cjk_wrap_keeps_latin_words_attached_to_chinese_text():

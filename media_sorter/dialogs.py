@@ -18,7 +18,7 @@ from . import APP_NAME
 from .config import DEFAULT_CATEGORIES, MODEL_CHOICES, Category
 from .organizer import LogInfo, folder_key, list_logs
 from .theme import cjk_wrap
-from .vocabulary import COMMON_CATEGORIES
+from .vocabulary import COMMON_CATEGORIES, category_hint
 
 LOG_KIND_TEXT = {
     "active": "可處理",
@@ -430,9 +430,9 @@ class CategoryDialog(tk.Toplevel):
         self.name_var = tk.StringVar()
         ttk.Entry(right, textvariable=self.name_var).pack(fill="x", pady=(px(2), px(10)))
         ttk.Label(right, text="補充說明（可以留白）").pack(anchor="w")
-        for text in ("告訴 AI 這一類長什麼樣子，一行寫一種；中文、英文都可以，英文通常比較準。",
-                     "例：a photo of a cat",
-                     "留白時會直接用分類名稱判斷（常見的名稱會自動補上英文說明）。"):
+        for text in ("告訴 AI 這一類長什麼樣子，一行寫一種；中文、英文都可以，中英文各寫一句最穩。",
+                     "例：貓咪　a photo of a cat",
+                     "留白時會直接用分類名稱判斷，常見的名稱（貓、美食、螢幕截圖⋯）這樣就夠了。"):
             hint = ttk.Label(right, style="Hint.TLabel", justify="left", text=cjk_wrap(text))
             hint.pack(anchor="w", fill="x")
             hint.bind("<Configure>", lambda e, w=hint: w.configure(wraplength=max(200, e.width)))
@@ -496,7 +496,8 @@ class CategoryDialog(tk.Toplevel):
         if not name or name in {c.name for c in self.work}:
             return
         self.commit()
-        self.work.append(Category(name, []))
+        hint = category_hint(name)
+        self.work.append(Category(name, [f"a photo of {hint}"] if hint else []))
         self.origins.append(None)
         self.reload_list(len(self.work) - 1)
         self.listbox.see("end")
@@ -581,7 +582,7 @@ class SettingsDialog(tk.Toplevel):
         hints = [
             "有 NVIDIA 顯示卡時會自動使用 CUDA 加速",
             "每支影片平均擷取幾張畫面來判斷，越多越準但越慢",
-            "第一名的模型分數低於此值、而且沒有明顯領先第二名的檔案，會放進「需檢查」（分數不等於判斷正確的機率）",
+            "第一名的模型分數低於此值的檔案，會放進「需檢查」（分數不等於判斷正確的機率）",
             "顯示卡記憶體不足時請調低（例如 8）",
         ]
         for r, ((label, widget), hint) in enumerate(zip(rows, hints, strict=True)):

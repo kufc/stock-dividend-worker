@@ -51,8 +51,8 @@ VOCABULARY: list[tuple[str, str]] = [
     ("特寫", "a close-up photo"), ("空拍", "an aerial drone photo"), ("全景", "a panorama photo"),
 ]
 
-# 常見的分類名稱 → 英文說明（VOCABULARY 沒有的補在這裡）。使用者新增分類卻沒寫補充說明時，
-# 名稱對得上就自動用這裡的英文，AI 才知道那個名稱指的是什麼畫面。
+# 常見的分類名稱 → 英文說明（VOCABULARY 沒有的補在這裡）。從「加入常用分類」加入時，會把英文說明
+# 填進補充說明（跟預設分類一樣中英文都有）。只有名稱、沒寫說明的分類不會自動補：實測沒有比較準。
 EXTRA_HINTS: dict[str, str] = {
     "人像": "a person", "寵物": "a pet animal", "動物": "an animal", "風景": "a landscape of nature",
     "建築": "buildings and architecture", "城市建築": "city streets and buildings", "食物": "food",

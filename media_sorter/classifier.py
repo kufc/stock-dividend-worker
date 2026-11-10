@@ -16,8 +16,10 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 ACCURATE_MIN_VRAM_GB = 5.5
 ACCURATE_MIN_RAM_GB = 12  # 載入高精準模型時系統記憶體也要夠
 TEXT_BATCH = 64
-# 與最像分類的原始相似度低於此值 → 視為「哪個分類都不太像」（低信心）。多語言 CLIP 相符時通常在 0.2 以上
-SIMILARITY_FLOOR = 0.18
+# 「與最像分類的原始相似度」低於此值 → 視為「哪個分類都不太像」。實測（tests/manual/real_model_results.txt）
+# 這個數字分不出來：分對的照片相似度 0.10～0.25，不屬於任何分類的也是 0.12～0.25；以前設 0.18，
+# 結果大半分對的檔案都被標成「需檢查」。所以預設關掉（0），「需檢查」只看模型分數。
+SIMILARITY_FLOOR = 0.0
 
 
 def total_ram_gb() -> float | None:
@@ -79,8 +81,17 @@ def normalize(vectors: np.ndarray) -> np.ndarray:
 
 
 def combine_frames(frame_embeddings: np.ndarray) -> np.ndarray:
-    """影片的多張畫面向量取平均，代表整段影片。"""
+    """多張畫面的向量取平均（細長圖片切成的幾塊、或代表整段影片的向量）。"""
     return normalize(frame_embeddings.mean(axis=0))
+
+
+def score_frames(frame_embeddings: np.ndarray, class_embeddings: np.ndarray, logit_scale: float) -> np.ndarray:
+    """影片：每張畫面各自比對後，把機率平均 (C,)。
+
+    內容一致的影片跟「向量平均」結果一樣；畫面內容差很多的影片，向量平均會得到一個很有把握的怪答案，
+    機率平均則會老實地顯示成幾個分類各占一些（實測見 tests/manual/real_model_results.txt）。
+    """
+    return score(frame_embeddings, class_embeddings, logit_scale).mean(axis=0)
 
 
 def score(media_embeddings: np.ndarray, class_embeddings: np.ndarray, logit_scale: float) -> np.ndarray:

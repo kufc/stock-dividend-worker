@@ -746,6 +746,32 @@ def test_category_dialog_adds_common_categories_in_one_click(app):
     dialog.common_var.set("寶寶")
     dialog.add_common()
     assert dialog.work[-1].name == "寶寶" and "寶寶" not in dialog.common_box["values"]
+    assert dialog.prompts.get("1.0", "end").strip() == "a photo of a baby"  # 英文說明填進補充說明，看得到也改得掉
     assert dialog.listbox.get("end") == "寶寶" and dialog.name_var.get() == "寶寶"
     dialog.save()
     assert [c.name for c in saved[0][0]] == ["紅", "綠", "藍", "寶寶"] and saved[0][1] == {}
+    assert saved[0][0][-1].prompts == ["a photo of a baby"]
+
+
+def test_frequent_content_without_a_category_is_suggested(app, tmp_path, monkeypatch):
+    """很多檔案明顯是「聊天截圖」但沒有這個分類 → 縮圖格上方建議新增；點了就新增並重新判斷，不會動到選取的檔案。"""
+    from tkinter import messagebox
+
+    from media_sorter.analysis import PENDING
+
+    run_analysis(app, photos(tmp_path, 6))
+    for i, item in enumerate(app.items):
+        item.tags = [("聊天截圖", 0.9), ("手機", 0.05)] if i < 4 else [("特寫", 0.95), ("紅", 0.9)]
+    assert app.suggested_categories() == [("聊天截圖", 4)]  # 「特寫」是拍法不是分類；只有 2 個檔案的也不建議
+    app.refresh_tree()
+    app.root.update()
+    page = app.page2
+    assert page.suggest_frame.winfo_ismapped()
+    assert [b.cget("text") for b in page.suggest_bar.widgets] == ["聊天截圖（4）＋"]
+    app.items[0].tags = [("聊天截圖", 0.3)]  # 分數不夠高的不算
+    assert app.suggested_categories() == [("聊天截圖", 3)]
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
+    page.suggest_bar.widgets[0].invoke()
+    assert [c.name for c in app.categories][-1] == "聊天截圖"
+    assert all(item.status == PENDING for item in app.items)  # 只新增分類，沒有把選取的檔案指定過去
+    assert app.page2.buckets.exists("cat:聊天截圖")

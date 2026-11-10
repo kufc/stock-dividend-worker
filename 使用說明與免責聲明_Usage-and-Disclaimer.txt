@@ -277,6 +277,15 @@ counterpart.
    file, open its folder). Inside a category the least confident files
    come first. Double-clicking a video opens it in your default player.
 
+・AI 一定會把每個檔案放進現有的某一類，所以分類不合內容時結果會很怪。
+　很多檔案明顯是某種東西（例如聊天截圖）而你沒有這個分類時，縮圖格
+　上方會列出來，點一下就新增並重新判斷。
+   The AI always puts every file into one of the existing categories, so
+   results look odd when the categories do not fit your files. When many
+   files clearly show something you have no category for (for example
+   chat screenshots), it is listed above the thumbnails; one click adds
+   the category and re-evaluates everything.
+
 ・第 1 步會列出目前的分類；分類越貼近你的照片內容，分得越準。按
 　「修改分類…」可以新增、刪除、改名，或從「加入常用分類」挑選。
    Step 1 lists the current categories; the closer they match your
@@ -447,7 +456,7 @@ counterpart.
 　加密連線」，這是防毒軟體的加密連線檢查與下載元件不相容，不是病毒。
 　請選擇「新增至排除項目」後再試一次；可能出現的網站有 huggingface.co、
 　名稱結尾是 xethub.hf.co 或 hf.co 的模型下載主機（例如
-　cas-server.xethub.hf.co、cas-bridge.xethub.hf.co）、pypi.org、
+　cas-server.xethub.hf.co、us.aws.cdn.hf.co）、pypi.org、
 　files.pythonhosted.org，以及 download.pytorch.org、
 　download-r2.pytorch.org。
    If antivirus software (for example Kaspersky) says it cannot check
@@ -456,7 +465,7 @@ counterpart.
    warning. Choose to add the site to the exclusions and try again. The
    sites involved may be huggingface.co, the model download hosts whose
    names end in xethub.hf.co or hf.co (for example
-   cas-server.xethub.hf.co and cas-bridge.xethub.hf.co), pypi.org,
+   cas-server.xethub.hf.co and us.aws.cdn.hf.co), pypi.org,
    files.pythonhosted.org, download.pytorch.org and
    download-r2.pytorch.org.
 

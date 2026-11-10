@@ -19,7 +19,7 @@ from typing import Callable
 import numpy as np
 from PIL import Image
 
-from .classifier import combine_frames, score
+from .classifier import combine_frames, score, score_frames
 from .config import Category
 from .media import load_media, media_kind
 from .vocabulary import VOCABULARY
@@ -39,6 +39,7 @@ class Item:
     path: Path
     kind: str
     embedding: np.ndarray | None = None
+    frames: np.ndarray | None = None  # 影片：每張取樣畫面各自的向量（逐張比對後平均機率，見 score_frames）
     date: datetime | None = None
     thumbnail: bytes | None = None
     probs: np.ndarray | None = None
@@ -73,7 +74,8 @@ class Item:
 
     def merge_analysis(self, other: "Item") -> None:
         """把背景辨識的結果併入這個項目，保留使用者已經做的確認／略過。"""
-        for attr in ("embedding", "date", "thumbnail", "probs", "prob_names", "top_similarity", "tags", "error"):
+        for attr in ("embedding", "frames", "date", "thumbnail", "probs", "prob_names", "top_similarity", "tags",
+                     "error"):
             setattr(self, attr, getattr(other, attr))
         if other.status == ERROR and self.status == PENDING:
             self.status = ERROR
@@ -83,18 +85,14 @@ class Item:
         return top[0] if top else (None, 0.0)
 
     def is_low(self, categories: list[Category], threshold: float, similarity_floor: float) -> bool:
-        """AI 沒把握：跟所有分類都不太像；或第一名機率低於門檻、而且領先第二名不多（分類一多，機率本來就會分散，
-        只看第一名的絕對值會把大半檔案都標成沒把握；第一名明顯領先時其實是清楚的判斷）。"""
+        """AI 沒把握：第一名的模型分數低於門檻（或相似度低於 similarity_floor，預設不使用）。
+
+        用真模型實測過：分對的照片第一名幾乎都在門檻以上；不屬於任何分類的照片有一半左右會落在門檻以下。
+        「第一名要明顯領先第二名」這類額外條件沒有讓分對的照片少被標，反而漏掉該檢查的，所以只看門檻。
+        """
         if self.status != PENDING or not self.analyzed:
             return False
-        if self.top_similarity < similarity_floor:
-            return True
-        top = self.suggestions(categories, 2)
-        if not top:
-            return True
-        best = top[0][1]
-        second = top[1][1] if len(top) > 1 else 0.0
-        return best < threshold and (best - second) < threshold / 2
+        return self.best(categories)[1] < threshold or self.top_similarity < similarity_floor
 
     def final_category(self, categories: list[Category]) -> str | None:
         """確認過就用使用者的選擇，否則用 AI 的第一名。"""
@@ -125,13 +123,20 @@ def _apply_scores(item: Item, class_emb: np.ndarray, names: tuple[str, ...], voc
     if item.embedding is None or not np.isfinite(item.embedding).all():
         item.status, item.error, item.probs = ERROR, "AI 計算結果異常（NaN），請在設定中改用其他模型或回報問題", None
         return
-    item.probs = score(item.embedding[None, :], class_emb, logit_scale)[0]
+    item.probs = _probs(item, class_emb, logit_scale)
     item.prob_names = names
     item.top_similarity = float((class_emb @ item.embedding).max())
     if vocab_emb is not None:
-        vocab_probs = score(item.embedding[None, :], vocab_emb, logit_scale)[0]
+        vocab_probs = _probs(item, vocab_emb, logit_scale)
         top = np.argsort(-vocab_probs)[:TAG_COUNT]
         item.tags = [(VOCABULARY[i][0], float(vocab_probs[i])) for i in top]
+
+
+def _probs(item: Item, text_emb: np.ndarray, logit_scale: float) -> np.ndarray:
+    """這個檔案屬於各個文字描述的機率：圖片用它的向量；影片逐張畫面比對後平均。"""
+    if item.frames is not None and len(item.frames) > 1 and np.isfinite(item.frames).all():
+        return score_frames(item.frames, text_emb, logit_scale)
+    return score(item.embedding[None, :], text_emb, logit_scale)[0]
 
 
 def analyze(
@@ -225,6 +230,8 @@ def analyze(
             start = 0
             for index, item, tensors in batch:
                 item.embedding = combine_frames(embeddings[start:start + len(tensors)])
+                if item.kind == "video":
+                    item.frames = embeddings[start:start + len(tensors)].copy()
                 start += len(tensors)
                 _apply_scores(item, class_emb, names, vocab_emb, classifier.logit_scale)
                 finish(index, item)
@@ -251,6 +258,8 @@ def rescore(items: list[Item], classifier, categories: list[Category]) -> int:
         for row, item in enumerate(scored):
             item.probs, item.prob_names, item.top_similarity = probs[row], names, float(top_sims[row])
             item.tags = [(VOCABULARY[i][0], float(vocab_probs[row, i])) for i in top_tags[row]]
+            if item.frames is not None:  # 影片：逐張畫面重算（數量少，逐一處理即可）
+                _apply_scores(item, class_emb, names, vocab_emb, classifier.logit_scale)
     reverted = 0
     for item in items:
         if item.status == CONFIRMED and item.chosen not in names:

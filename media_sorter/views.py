@@ -414,6 +414,13 @@ class ReviewPage(ttk.Frame):
         self.grid_hint = autowrap(ttk.Label(parent, textvariable=self.grid_hint_var, style="CardHint.TLabel",
                                             justify="left"))
         self.grid_hint.pack(anchor="w", fill="x", pady=(0, px(6)))
+        # 「常出現但還沒有分類」的建議列（有建議時才顯示）
+        self.suggest_frame = ttk.Frame(parent, style="Card.TFrame")
+        ttk.Label(self.suggest_frame, text="你的檔案裡常出現、但還沒有這個分類（點一下新增）：", style="CardHint.TLabel").pack(
+            anchor="w")
+        self.suggest_bar = WrapFrame(self.suggest_frame, px(4), style="Card.TFrame")
+        self.suggest_bar.pack(fill="x")
+        self._suggestions: list[tuple[str, int]] = []
 
         # 底部的操作列先排（視窗矮時才不會被縮圖格擠掉）
         actions = ttk.Frame(parent, style="Card.TFrame")
@@ -447,6 +454,19 @@ class ReviewPage(ttk.Frame):
                                     on_context=app.show_context_menu, on_drag=app.on_grid_drag,
                                     on_drop=app.on_grid_drop)
         self.thumb_grid.pack(fill="both", expand=True)
+
+    def show_suggestions(self, suggestions: list[tuple[str, int]]) -> None:
+        """suggestions：[(名稱, 檔案數)]；空的就把整列收起來。"""
+        if suggestions != self._suggestions:
+            self._suggestions = list(suggestions)
+            self.suggest_bar.clear()
+            for name, count in suggestions:
+                self.suggest_bar.add(ttk.Button(self.suggest_bar, text=f"{name}（{count:,}）＋", style="Link.TButton",
+                                                command=lambda n=name: self.app.add_category_from_tag(n, assign=False)))
+        if suggestions and not self.short:
+            self.suggest_frame.pack(fill="x", pady=(0, self.app.theme.px(6)), before=self.thumb_grid)
+        else:
+            self.suggest_frame.pack_forget()
 
     def rebuild_category_buttons(self, names: list[str]) -> None:
         app = self.app
@@ -576,7 +596,9 @@ class ReviewPage(ttk.Frame):
             self.bucket_hint.pack_forget()
             self.tags_head.pack_forget()
             self.tags_frame.pack_forget()
+            self.suggest_frame.pack_forget()
         else:
+            self.show_suggestions(self._suggestions)
             self.tags_frame.pack(fill="x")
             self.app.show_detail(self.app.current, len(self.app.tree.selection()) or 1)
             self.shortcut_label.pack(anchor="w", fill="x", pady=(px(4), 0))
