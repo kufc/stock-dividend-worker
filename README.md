@@ -241,7 +241,7 @@ AI 一定會把檔案歸到「最像」的分類，所以分類太少時，不�
 
 | 狀況 | 解決方式 |
 | --- | --- |
-| 防毒軟體（例如卡巴斯基）說「無法檢查 huggingface.co 的加密連線」 | 防毒軟體的加密連線檢查跟下載元件不相容（不是病毒警告）。選「新增至排除項目」後再試一次；可能還會出現 `pypi.org`、`files.pythonhosted.org`、`download.pytorch.org`。模型下載完成後程式就不再連到這些網站 |
+| 防毒軟體（例如卡巴斯基）說「無法檢查 huggingface.co 的加密連線」 | 防毒軟體的加密連線檢查跟下載元件不相容（不是病毒警告）。選「新增至排除項目」後再試一次；可能還會出現模型下載主機（名稱結尾是 `xethub.hf.co` 或 `hf.co`，例如 `cas-server.xethub.hf.co`）、`pypi.org`、`files.pythonhosted.org`、`download.pytorch.org`、`download-r2.pytorch.org`。模型下載完成後程式就不再連到這些網站 |
 | 辨識時狀態列顯示「CPU（未偵測到可用的 NVIDIA 顯示卡）」 | 更新 NVIDIA 驅動程式後，重新執行 `install.bat` |
 | 雙擊 `start.bat` 沒反應 | 程式可能已經開著（看工作列）；或查看 `logs\error.log`、`logs\console.log`，也可以在命令提示字元執行 `.venv\Scripts\python -m media_sorter` 看錯誤訊息 |
 | 安裝時說「程式正在執行中」 | 先關閉 AI 媒體分類器視窗再執行 `install.bat` |

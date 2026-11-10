@@ -446,13 +446,19 @@ counterpart.
 ・防毒軟體（例如卡巴斯基）若跳出「無法檢查 huggingface.co 等網站的
 　加密連線」，這是防毒軟體的加密連線檢查與下載元件不相容，不是病毒。
 　請選擇「新增至排除項目」後再試一次；可能出現的網站有 huggingface.co、
-　pypi.org、files.pythonhosted.org 與 download.pytorch.org。
+　名稱結尾是 xethub.hf.co 或 hf.co 的模型下載主機（例如
+　cas-server.xethub.hf.co、cas-bridge.xethub.hf.co）、pypi.org、
+　files.pythonhosted.org，以及 download.pytorch.org、
+　download-r2.pytorch.org。
    If antivirus software (for example Kaspersky) says it cannot check
    the encrypted connection to huggingface.co or similar sites, its
    HTTPS scanning is incompatible with the downloader; it is not a virus
    warning. Choose to add the site to the exclusions and try again. The
-   sites involved may be huggingface.co, pypi.org,
-   files.pythonhosted.org and download.pytorch.org.
+   sites involved may be huggingface.co, the model download hosts whose
+   names end in xethub.hf.co or hf.co (for example
+   cas-server.xethub.hf.co and cas-bridge.xethub.hf.co), pypi.org,
+   files.pythonhosted.org, download.pytorch.org and
+   download-r2.pytorch.org.
 
 ・程式會在你的電腦上保存：settings.json（設定）、categories.json
 　（分類）、logs 資料夾（整理紀錄、錯誤紀錄與主控台輸出）。整理紀錄
