@@ -1,6 +1,6 @@
 """把真模型算出來的向量存成 .npz，之後不用模型也能離線試各種判斷規則（不屬於自動測試）。
 
-    pip install scikit-image scikit-learn pyarrow huggingface_hub
+    pip install scikit-image scikit-learn huggingface_hub
     python tests/manual/dump_embeddings.py --preset standard --out tests/manual/embeddings_standard.npz
 
 圖片來源：real_model_check.py 的那一批（真實照片＋合成的截圖、收據、海報、影片），
@@ -45,28 +45,40 @@ OTHER_TEXTS = ["其他", "其他東西", "雜物", "不屬於以上任何一類"
 
 def add_imagenette(folder: Path, per_class: int) -> dict[str, str]:
     """下載 ImageNette 驗證集，每類存 per_class 張到 folder。回傳 {檔名: 預期分類}。"""
-    import pyarrow.parquet as pq
-    from huggingface_hub import hf_hub_download, list_repo_files
+    import tarfile
+    import urllib.request
 
-    repo = "frgfm/imagenette"
-    files = [f for f in list_repo_files(repo, repo_type="dataset") if f.endswith(".parquet") and "validation" in f]
-    preferred = [f for f in files if "320px" in f] or [f for f in files if "160px" in f] or files
-    if not preferred:
-        raise RuntimeError(f"{repo} 裡找不到 validation 的 parquet 檔：{files[:20]}")
-    table = pq.read_table(hf_hub_download(repo, preferred[0], repo_type="dataset"))
-    columns = table.column_names
-    image_col = next(c for c in columns if "image" in c.lower())
-    label_col = next(c for c in columns if "label" in c.lower())
+    from huggingface_hub import hf_hub_download
+
+    # frgfm/imagenette 沒有 parquet 檔：它的載入程式（imagenette.py）是抓 fast.ai 的壓縮檔，
+    # 再用 metadata/…/val.txt 挑出驗證集；label 就是 WordNet 編號排序後的位置。這裡照做。
+    repo, variant = "frgfm/imagenette", "imagenette2-320"
+    with open(hf_hub_download(repo, f"metadata/{variant}/val.txt", repo_type="dataset"), encoding="utf-8") as f:
+        keep = {line for line in f.read().split("\n") if line}
+    wnids = sorted({name.split("/")[-2] for name in keep})
+    if len(wnids) != len(IMAGENETTE):
+        raise RuntimeError(f"{repo} 的驗證集類別數不是 {len(IMAGENETTE)}：{wnids}")
+    archive = Path(tempfile.gettempdir()) / f"{variant}.tgz"
+    if not archive.exists():
+        partial = archive.with_suffix(".part")
+        urllib.request.urlretrieve(f"https://s3.amazonaws.com/fast-ai-imageclas/{variant}.tgz", partial)
+        partial.rename(archive)
     counts = [0] * len(IMAGENETTE)
     expected = {}
-    for image, label in zip(table.column(image_col).to_pylist(), table.column(label_col).to_pylist(), strict=True):
-        if not isinstance(label, int) or not 0 <= label < len(IMAGENETTE) or counts[label] >= per_class:
-            continue
-        data = image["bytes"] if isinstance(image, dict) else image
-        name = f"inet_{IMAGENETTE[label][0]}_{counts[label]:03d}.jpg"
-        Image.open(io.BytesIO(data)).convert("RGB").save(folder / name, quality=90)
-        expected[name] = IMAGENETTE[label][1]
-        counts[label] += 1
+    with tarfile.open(archive) as tar:
+        for member in tar:
+            if member.name not in keep:
+                continue
+            label = wnids.index(member.name.split("/")[-2])
+            if counts[label] >= per_class:
+                continue
+            name = f"inet_{IMAGENETTE[label][0]}_{counts[label]:03d}.jpg"
+            Image.open(io.BytesIO(tar.extractfile(member).read())).convert("RGB").save(folder / name, quality=90)
+            expected[name] = IMAGENETTE[label][1]
+            counts[label] += 1
+            if min(counts) >= per_class:
+                break
+    preferred = [f"{variant}.tgz"]
     print(f"ImageNette（{preferred[0]}）：每類 {counts}")
     return expected
 
