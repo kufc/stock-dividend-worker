@@ -47,8 +47,8 @@ def _make_app(monkeypatch, tmp_path, scaling=None, geometry=None):
         (config.APP_DIR / name).unlink(missing_ok=True)
     tk = pytest.importorskip("tkinter")
     root = tk.Tk()
-    if scaling is not None:
-        root.tk.call("tk", "scaling", scaling)
+    # Tk 的縮放值是跟著顯示器連線記住的：上一個測試設成 200% 之後，新開的視窗還會沿用，所以每次都明確設定
+    root.tk.call("tk", "scaling", scaling if scaling is not None else 96 / 72)
     instance = app_module.App(root, classifier_factory=FakeClassifier, model_status_func=lambda choice: None)
     if geometry:
         root.geometry(geometry)
