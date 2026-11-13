@@ -1,0 +1,117 @@
+額外標記圖片的來源（embeddings_standard.npz / embeddings_accurate.npz 裡 image_groups 不是空字串的那些）
+Sources of the extra labelled photo set used by dump_embeddings.py --extra-dir.
+All images come from public, non-gated datasets on the Hugging Face Hub, were re-saved as JPEG
+(longer side <= 1024 px) into <extra-dir>/<group>/NNN.jpg, and are NOT committed (only embeddings are).
+Images were picked at random across each dataset (fixed random seeds), then every group was checked
+by eye on a contact sheet and obviously wrong or ambiguous images were deleted (noted per group).
+"License" is what the dataset card / its license tag states; "not stated" = the card has no license.
+
+== Groups that are default categories ==
+
+人像 (44 images)
+  - Ryan-sjtu/ffhq512-caption, default/train, one random parquet shard, 25 random rows (FFHQ face portraits,
+    every image is one person by construction). License: mit (card tag; FFHQ itself is CC BY-NC-SA 4.0). 24 kept
+    (1 removed: two faces in frame).
+  - detection-datasets/coco, default/val (shard val-00000-of-00002), 25 random images whose annotations contain
+    exactly ONE "person" box covering 25-85 % of the image and no other object larger than 30 % of that box.
+    License: not stated on the card (COCO annotations are CC BY 4.0, images are Flickr). 20 kept
+    (5 removed: only hands/feet visible, a CG avatar, food dominating the frame).
+
+合照 (45 images)
+  - CUHK-CSE/wider_face, data/WIDER_val.zip + wider_face_split.zip (validation set). Only the event folders
+    "12--Group" and "20--Family_Group", and only images whose annotation has 3-15 faces of at least 40x40 px
+    and at most 3 smaller faces; 50 random. License: cc-by-nc-nd-4.0. 45 kept (5 removed: a web-page
+    screenshot, a collage, a show poster, two where the people are not the subject).
+
+貓 (50 images) / 狗 (47 images)
+  - microsoft/cats_vs_dogs, default/train, labels 0 = cat -> 貓, 1 = dog -> 狗; 50 random rows per label over
+    the whole split. License: unknown (card tag). 狗: 3 removed (one mislabelled non-dog image, one where
+    the animal is not recognisable, one thumbnail-sized).
+
+風景 (50 images) / 城市建築 (50 images)
+  - tanganke/sun397, default/test (all 18 shards, only the needed row groups were read). Scene-class label ->
+    group, 1-2 random images per class:
+    風景: badlands, beach, butte, canyon, cliff, coast, creek, desert sand, desert vegetation, forest broadleaf,
+      forest needleleaf, hill, islet, lake natural, marsh, mountain, mountain snowy, ocean, river, sky,
+      snowfield, valley, waterfall block/fan/plunge, iceberg, field wild, rainforest, sea cliff, volcano, wave,
+      sandbar, pond, swamp, rock arch.
+    城市建築: abbey, alley, apartment building outdoor, bridge, building facade, castle, cathedral outdoor,
+      church outdoor, courthouse, crosswalk, fire station, hotel outdoor, house, inn outdoor, library outdoor,
+      lighthouse, mansion, mosque outdoor, motel, office building, pagoda, palace, plaza,
+      residential neighborhood, shopfront, skyscraper, street, synagogue outdoor, temple east asia, tower,
+      viaduct.
+    License: not stated on the card.
+
+美食 (50 images)
+  - ethz/food101, default/validation (shard validation-00000-of-00003), 50 random rows; every image in the
+    dataset is a dish. License: unknown (card tag).
+
+花草植物 (50 images)
+  - nelorth/oxford-flowers, default/test, 30 random rows (Oxford 102 Flowers; all flowers). License: unknown (card tag).
+  - bhargob11/houseplants, files under houseplant_images/healthy/, 20 random JPEGs (potted house plants).
+    License: mit.
+
+交通工具 (50 images)
+  - flwrlabs/caltech101, default/train, class label -> vehicle: airplanes 6, car_side 5, motorbikes 6, ferry 4,
+    ketch 3, schooner 3, helicopter 5 (random within each class). License: unknown (card tag).
+  - detection-datasets/coco, default/val (same shard as above): images whose LARGEST annotated object is a
+    bus, train or truck covering >= 35 % of the image and with no person box above 4 %; 6 random of each kind.
+    License: not stated on the card.
+
+螢幕截圖 (52 images)
+  - rootsautomation/ScreenSpot, default/test (3 shards), de-duplicated by file_name, 6-7 random screenshots per
+    data_source (windows, macos, ios, android, gitlab, shop, forum, tool) -> phone, desktop and web UIs.
+    License: apache-2.0.
+
+文件收據 (50 images)
+  - jordyvl/rvl_cdip_100_examples_per_class, default/test, 25 random scanned documents from every class
+    except advertisement (4), file folder (8) and presentation (12). License: not stated on the card
+    (subset of RVL-CDIP).
+  - naver-clova-ix/cord-v2, default/test, 25 random photographed receipts. License: cc-by-4.0.
+
+動漫插畫 (52 images)
+  - Norod78/cartoon-blip-captions, default/train, 22 random rows (frames/art of western cartoons).
+    License: cc-by-nc-sa-4.0.
+  - deepghs/fancaps_animes, files under images/ (one key visual per anime series), 30 random.
+    License: other (card tag).
+
+== Groups that belong to NO default category ==
+
+none_meme (49 images)
+  - harpreetsahota/memes-dataset, files data/*-captioned.jpg (classic meme templates WITH caption text; the
+    uncaptioned templates were not used). 50 files, 1 skipped because the file in the dataset is not an image.
+    License: not stated on the card.
+
+none_poster (43 images)
+  - teticio/imdb-posters-and-description-512, default/train, one random shard, 25 random rows (movie posters).
+    License: not stated on the card. 18 kept (7 removed: video stills / artwork without poster layout).
+  - creative-graphic-design/PKU-PosterLayout, default/train (shard train-00007-of-00015), column
+    original_poster, 25 random rows (e-commerce advertising posters). License: cc-by-sa-4.0.
+
+none_product (41 images)
+  - philschmid/amazon-product-descriptions-vlm, default/train, 50 random rows after dropping categories
+    containing Vehicle, Stuffed, Dolls, Puppet, Figure, Dress Up, Train, Puzzle, Books, Arts & Crafts
+    (to avoid toys that look like a default category). License: cc-by-nc-4.0. 9 more removed by eye
+    (products showing a dog, a person in costume, a model plane/car/truck, a floral print, a book cover).
+    Note: the dataset is mostly "Toys & Games", with some home, clothing and sports products.
+
+none_chart (50 images)
+  - HuggingFaceM4/ChartQA, default/val, de-duplicated by image, 50 random charts (bar/line/pie charts from
+    Statista, Pew etc.). License: gpl-3.0.
+
+none_misc (45 images)
+  - flwrlabs/caltech101, default/train, 2 random images of each of: accordion, anchor, barrel, binocular,
+    camera, ceiling_fan, chair, chandelier, cup, electric_guitar, gramophone, grand_piano, headphone,
+    inline_skate, lamp, mandolin, metronome, saxophone, scissors, soccer_ball, stapler, umbrella, watch,
+    wheelchair, windsor_chair, wrench. License: unknown (card tag). 7 removed (a person dominating the frame,
+    clip-art drawings, a beach hut labelled umbrella).
+
+== Skipped groups ==
+None - all 17 groups were collected.
+
+== Known limits ==
+- 人像: half are tight face crops (FFHQ); the COCO half are full-body / action shots of one person.
+- 合照: includes candid groups (meetings, people at a table), not only posed group photos.
+- 動漫插畫: the anime part is poster-like key visuals with title text; the cartoon part is TV-cartoon frames.
+- none_poster: the advertising posters are Chinese e-commerce posters, some show a product or a model.
+- A few 風景 images contain a small building or person; a few 城市建築 classes are single houses.
