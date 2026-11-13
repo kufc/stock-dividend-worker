@@ -98,13 +98,15 @@ class ThumbGrid(ttk.Frame):
         self.thumb = thumb_px
         self.pad = self.px(6)
         self.label_h = self.px(24)
-        self.cell_w = self.thumb + self.pad * 2
+        self.min_cell_w = self.thumb + self.pad * 2
+        self.cell_w = self.min_cell_w  # 實際欄寬：把一列排滿，右邊不留一條空白（見 _layout）
         self.cell_h = self.thumb + self.pad * 2 + self.label_h
         self._layout()
 
     def _layout(self) -> None:
         width = self.canvas.winfo_width()
-        self._cols = max(1, (width - self.pad) // self.cell_w) if width > 1 else 1
+        self._cols = max(1, (width - self.pad) // self.min_cell_w) if width > 1 else 1
+        self.cell_w = max(self.min_cell_w, (width - self.pad) // self._cols) if width > 1 else self.min_cell_w
         rows = math.ceil(len(self._iids) / self._cols) if self._iids else 0
         self.canvas.configure(scrollregion=(0, 0, max(width, 1), max(rows * self.cell_h + self.pad, 1)))
         self._schedule_redraw()

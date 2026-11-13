@@ -819,3 +819,15 @@ def test_files_that_fit_nothing_go_to_the_check_list(app, tmp_path):
     app.select_bucket("low")
     assert "可能不屬於任何一個分類" in app.page2.notice_var.get()
     assert app.cell_for(app._iid(0)).style == "low"
+
+
+def test_grid_columns_fill_the_whole_row(app, tmp_path):
+    """縮圖格的欄位平均分配整列的寬度：右邊不會留下一條放不下一格的空白。"""
+    run_analysis(app, photos(tmp_path, 12))
+    grid = app.tree
+    app.root.update()
+    width = grid.canvas.winfo_width()
+    assert grid._cols >= 2 and grid.cell_w >= grid.min_cell_w
+    right_edge = grid._cell_box(grid._cols - 1)[2]
+    assert width - right_edge < grid._cols + grid.pad  # 最後一欄貼近右邊
+    assert grid._pos_at(right_edge - 5, grid._cell_box(0)[1] + 5) == grid._cols - 1  # 點最右邊那一格選得到
