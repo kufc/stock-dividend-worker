@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from prompt_candidates import CANDIDATES  # noqa: E402
 from real_model_check import EXPECTED, NONE, build_images  # noqa: E402
 
 from media_sorter.analysis import analyze  # noqa: E402
@@ -93,7 +94,35 @@ def all_texts() -> list[str]:
         hint = category_hint(name)
         texts += [name, f"一張{name}的照片"] + ([hint, f"a photo of {hint}"] if hint else [])
     texts += OTHER_TEXTS
+    for name, candidates in CANDIDATES.items():
+        texts += [name, f"一張{name}的照片", f"{name}的圖片"] + candidates
     return list(dict.fromkeys(t for t in texts if t))
+
+
+def add_extra_dir(extra_dir: Path, folder: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """extra_dir 底下每個子資料夾是一組圖片，資料夾名稱就是那一組的名稱：
+    名稱是預設分類（例如「美食」）→ 預期答案就是那個分類；其他名稱（例如 none_meme）→ 不屬於任何預設分類。
+    回傳 ({檔名: 預期分類}, {檔名: 組名})。"""
+    defaults = {c.name for c in DEFAULT_CATEGORIES}
+    expected, groups = {}, {}
+    for sub in sorted(p for p in extra_dir.iterdir() if p.is_dir()):
+        count = 0
+        for source in sorted(sub.iterdir()):
+            if source.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"):
+                continue
+            name = f"x_{sub.name}_{count:03d}.jpg"
+            try:
+                image = Image.open(source).convert("RGB")
+                image.thumbnail((1024, 1024))
+                image.save(folder / name, quality=90)
+            except Exception as exc:  # noqa: BLE001 - 壞圖略過
+                print(f"（略過 {source}：{exc}）")
+                continue
+            expected[name] = sub.name if sub.name in defaults else NONE
+            groups[name] = sub.name
+            count += 1
+        print(f"額外圖片 {sub.name}：{count} 張")
+    return expected, groups
 
 
 def main() -> None:
@@ -101,12 +130,18 @@ def main() -> None:
     parser.add_argument("--preset", default="standard")
     parser.add_argument("--out", required=True)
     parser.add_argument("--per-class", type=int, default=40, help="ImageNette 每類取幾張（0＝不下載）")
+    parser.add_argument("--extra-dir", default="", help="額外的圖片：每個子資料夾一組，資料夾名稱＝預期分類或 none_xxx")
     parser.add_argument("--fake", action="store_true", help="用測試的假模型跑（只檢查這支程式本身）")
     args = parser.parse_args()
 
     folder = Path(tempfile.mkdtemp(prefix="dump_embeddings_"))
     paths = build_images(folder)
     expected = dict(EXPECTED)
+    groups: dict[str, str] = {}
+    if args.extra_dir:
+        extra_expected, groups = add_extra_dir(Path(args.extra_dir), folder)
+        expected.update(extra_expected)
+        paths += [folder / name for name in sorted(extra_expected)]
     if args.per_class > 0:
         try:
             extra = add_imagenette(folder, args.per_class)
@@ -139,6 +174,7 @@ def main() -> None:
         args.out,
         image_names=np.array([it.path.name for it in items]),
         image_labels=np.array([expected.get(it.path.name, "?") for it in items]),
+        image_groups=np.array([groups.get(it.path.name, "") for it in items]),
         image_emb=np.stack([it.embedding for it in items]).astype(np.float16),
         frame_owner=np.array(frame_owner, dtype=np.int32),
         frame_emb=(np.concatenate(frame_emb) if frame_emb else np.zeros((0, dim))).astype(np.float16),
