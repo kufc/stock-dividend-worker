@@ -590,7 +590,8 @@ class SettingsDialog(tk.Toplevel):
             widget.grid(row=r * 2, column=1, sticky="w", pady=(6, 0))
             ttk.Label(body, text=cjk_wrap(hint), style="Hint.TLabel", wraplength=round(460 * ui_scale(self)), justify="left").grid(
                 row=r * 2 + 1, column=1, sticky="w")
-        fit_to_screen(self, 720, 420, 560, 360)
+        self.update_idletasks()  # 高度依內容決定，下面不留一大片空白
+        fit_to_screen(self, 720, round(self.winfo_reqheight() / ui_scale(self)) + 24, 560, 300)
         self.grab_set()
 
     def save(self) -> None:
