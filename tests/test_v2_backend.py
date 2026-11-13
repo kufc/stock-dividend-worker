@@ -287,3 +287,45 @@ def test_cjk_wrap_keeps_latin_words_attached_to_chinese_text():
         assert var.get() == "共 3 個：AI 分好 3 個"
     finally:
         root.destroy()
+
+
+def test_untouched_old_default_descriptions_are_upgraded_but_edited_ones_are_kept(tmp_path):
+    """舊版的預設描述每類只有兩三句；使用者沒改過的，讀取時換成新的整組描述，改過的原樣保留。"""
+    import json
+
+    from media_sorter.config import load_categories
+    from media_sorter.prompts import BUILTIN_PROMPTS, LEGACY_DEFAULT_PROMPTS
+
+    path = tmp_path / "categories.json"
+    path.write_text(json.dumps({"categories": [
+        {"name": "美食", "prompts": LEGACY_DEFAULT_PROMPTS["美食"]},           # 沒改過 → 升級
+        {"name": "狗", "prompts": ["我家的柴犬", "a shiba inu"]},               # 改過 → 保留
+        {"name": "廣告", "prompts": []},                                       # 自己加的、沒寫說明、有內建描述 → 帶入
+        {"name": "我家阿福", "prompts": []},                                    # 沒有內建描述 → 不動
+        {"name": "人像", "prompts": list(reversed(LEGACY_DEFAULT_PROMPTS["人像"]))},  # 順序不同就算改過
+    ]}, ensure_ascii=False), encoding="utf-8")
+    loaded = {c.name: c.prompts for c in load_categories(path)}
+    assert loaded["美食"] == BUILTIN_PROMPTS["美食"] and len(loaded["美食"]) > len(LEGACY_DEFAULT_PROMPTS["美食"])
+    assert loaded["狗"] == ["我家的柴犬", "a shiba inu"]
+    assert loaded["廣告"] == BUILTIN_PROMPTS["海報廣告"] and loaded["我家阿福"] == []
+    assert loaded["人像"] == list(reversed(LEGACY_DEFAULT_PROMPTS["人像"]))
+
+
+def test_builtin_descriptions_for_common_names():
+    from media_sorter.config import DEFAULT_CATEGORIES
+    from media_sorter.prompts import BUILTIN_PROMPTS, LEGACY_DEFAULT_PROMPTS, builtin_prompts
+    from media_sorter.vocabulary import COMMON_CATEGORIES
+
+    names = [c.name for c in DEFAULT_CATEGORIES]
+    assert names[-1] == "迷因梗圖" and len(names) == 13
+    for c in DEFAULT_CATEGORIES:
+        assert len(c.prompts) >= 6 and len(set(c.prompts)) == len(c.prompts)
+        if c.name in LEGACY_DEFAULT_PROMPTS:  # 舊的幾句還在（新的是往上加）
+            assert c.prompts[:len(LEGACY_DEFAULT_PROMPTS[c.name])] == LEGACY_DEFAULT_PROMPTS[c.name]
+    assert builtin_prompts("廣告") == BUILTIN_PROMPTS["海報廣告"] and builtin_prompts(" 梗圖 ") == BUILTIN_PROMPTS["迷因梗圖"]
+    assert builtin_prompts("寶寶") == ["a photo of a baby"]  # 沒有整組描述的常見名稱：給一句英文
+    assert builtin_prompts("我家阿福") == []
+    assert all(builtin_prompts(name) for name in COMMON_CATEGORIES)
+    prompts = builtin_prompts("商品")
+    prompts.append("x")
+    assert "x" not in BUILTIN_PROMPTS["商品"]  # 回傳的是副本，改它不會動到內建的

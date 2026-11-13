@@ -61,13 +61,13 @@ EXTRA_HINTS: dict[str, str] = {
     "寶寶": "a baby", "婚禮": "a wedding", "運動": "people playing sports", "截圖": "a screenshot of a phone or computer screen",
     "文件收據": "a document, receipt or paper with text", "動漫插畫": "an anime or cartoon illustration",
     "廣告": "an advertisement, a promotional poster or flyer", "梗圖": "a meme with text", "貼圖": "a cartoon sticker",
-    "商品": "a product photo", "書籍": "books", "簡報": "a presentation slide",
+    "商品": "a product photo", "書籍": "books", "簡報": "a presentation slide", "海報廣告": "a poster or an advertisement",
 }
 # 「分類設定」裡一按就能加入的常用分類（每一個都要查得到英文說明）
 COMMON_CATEGORIES = [
     "人像", "自拍", "合照", "寶寶", "小孩", "貓", "狗", "寵物", "風景", "夕陽", "海灘", "山", "城市夜景", "建築",
     "美食", "甜點", "飲料", "旅行", "汽車", "機車", "花", "植物", "螢幕截圖", "聊天截圖", "文件", "收據", "發票",
-    "證件", "迷因梗圖", "貼圖", "海報", "廣告", "動漫", "插畫", "電玩遊戲", "演唱會", "婚禮", "運動", "商品",
+    "證件", "迷因梗圖", "貼圖", "海報廣告", "商品", "圖表", "動漫", "插畫", "電玩遊戲", "演唱會", "婚禮", "運動",
 ]
 
 

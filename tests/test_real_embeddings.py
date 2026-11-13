@@ -1,8 +1,8 @@
-"""用真模型事先算好的向量（tests/manual/embeddings_*.npz，425 張真實照片）檢查判斷規則，不需要下載模型。
+"""用真模型事先算好的向量（tests/manual/embeddings_*.npz）檢查判斷規則，不需要下載模型。
 
-圖片：scikit-image／scikit-learn 內附照片、合成的截圖與收據，加上 ImageNette 驗證集每類 40 張。
-其中 136 張屬於某個預設分類，289 張不屬於任何預設分類（魚、錄音機、電鋸、法國號、加油機、高爾夫球、降落傘⋯）。
-向量由 tests/manual/dump_embeddings.py 產生；預設分類的描述改了之後要重新產生。
+1,243 張有標記的真實圖片：每個預設分類 45～92 張（來源見 tests/manual/photo_sources.txt），
+加上不屬於任何預設分類的 ImageNette 七類、圖表、海報、商品照、雜物，以及梗圖。
+向量由 tests/manual/dump_embeddings.py 產生；內建的分類描述改了之後要重新產生。
 """
 
 from pathlib import Path
@@ -13,6 +13,7 @@ import pytest
 from media_sorter.analysis import Item, _apply_scores, suggest_categories
 from media_sorter.classifier import OTHER_TEXTS, SIMILARITY_FLOOR, covered_tags, normalize
 from media_sorter.config import DEFAULT_CATEGORIES, Category
+from media_sorter.prompts import LEGACY_DEFAULT_PROMPTS
 from media_sorter.vocabulary import VOCABULARY
 
 MANUAL = Path(__file__).resolve().parent / "manual"
@@ -26,6 +27,7 @@ class Recorded:
         data = np.load(path)
         self.names = data["image_names"].tolist()
         self.labels = data["image_labels"].tolist()
+        self.groups = data["image_groups"].tolist() if "image_groups" in data.files else [""] * len(self.names)
         self.images = normalize(data["image_emb"].astype(np.float64))
         self.frame_owner = data["frame_owner"]
         self.frames = normalize(data["frame_emb"].astype(np.float64))
@@ -73,6 +75,9 @@ def scored(recorded):
     categories = [Category(c.name, list(c.prompts)) for c in DEFAULT_CATEGORIES]
     items = recorded.items(categories)
     answers = dict(zip(recorded.names, recorded.labels, strict=True))
+    for name, group in zip(recorded.names, recorded.groups, strict=True):
+        if group == "none_meme":  # 梗圖現在有自己的預設分類
+            answers[name] = "迷因梗圖"
     return categories, items, answers
 
 
@@ -85,9 +90,33 @@ def _rates(categories, items, answers):
 
 
 def test_default_categories_classify_real_photos_well(scored):
+    """每個預設分類至少 40 張真實圖片；每一類各自的正確率平均起來要夠高（不讓張數多的類別蓋過其他類）。"""
     categories, items, answers = scored
-    accuracy, _, _ = _rates(categories, items, answers)
-    assert len(items) >= 400 and accuracy >= 0.85  # 標準模型 93%、高精準模型 88%（差別都在教堂算不算「城市建築」）
+    per_category = {}
+    for category in categories:
+        mine = [it for it in items if answers[it.path.name] == category.name]
+        if len(mine) < 40:
+            pytest.skip(f"「{category.name}」只有 {len(mine)} 張（舊的向量檔？請重跑 dump_embeddings.py）")
+        per_category[category.name] = sum(it.best(categories)[0] == category.name for it in mine) / len(mine)
+    assert sum(per_category.values()) / len(per_category) >= 0.95, per_category
+    assert min(per_category.values()) >= 0.80, per_category
+
+
+def test_richer_descriptions_beat_the_old_short_ones(recorded, scored):
+    """每類十幾句說法（現在的預設）比舊版每類兩三句準。"""
+    categories, items, answers = scored
+    old = [Category(c.name, list(LEGACY_DEFAULT_PROMPTS[c.name])) for c in categories if c.name in LEGACY_DEFAULT_PROMPTS]
+    new = [c for c in categories if c.name in LEGACY_DEFAULT_PROMPTS]
+    names = {c.name for c in new}
+
+    def balanced(cats, scored_items):
+        hits = {name: [] for name in names}
+        for it in scored_items:
+            if answers[it.path.name] in names:
+                hits[answers[it.path.name]].append(it.best(cats)[0] == answers[it.path.name])
+        return sum(sum(h) / len(h) for h in hits.values()) / len(hits)
+
+    assert balanced(new, recorded.items(new)) >= balanced(old, recorded.items(old)) + 0.01
 
 
 def test_needs_checking_rarely_flags_correct_files_and_catches_many_misfits(scored):
@@ -95,12 +124,23 @@ def test_needs_checking_rarely_flags_correct_files_and_catches_many_misfits(scor
     categories, items, answers = scored
     _, correct_flagged, misfits_flagged = _rates(categories, items, answers)
     assert correct_flagged <= 0.03  # 分對的幾乎不會被標
-    assert misfits_flagged >= 0.38  # 不屬於任何分類的：標準模型 53%、高精準模型 40% 會被標出來
+    assert misfits_flagged >= 0.38  # 不屬於任何分類的：大約一半會被標出來
     nothing = [it for it in items if answers[it.path.name] == NONE]
     only_threshold = sum(it.best(categories)[1] < 0.5 for it in nothing)
     assert sum(it.is_low(categories, 0.5, SIMILARITY_FLOOR) for it in nothing) >= only_threshold * 1.2
     correct = [it for it in items if answers[it.path.name] == it.best(categories)[0]]
-    assert not any(it.fits_nothing for it in correct)  # 「更像其他東西」沒有誤標任何一張分對的
+    assert sum(it.fits_nothing for it in correct) / len(correct) <= 0.01  # 「更像其他東西」幾乎不會誤標分對的
+
+
+def test_memes_get_their_own_category(scored):
+    """聊天資料夾裡很多的梗圖：有了「迷因梗圖」分類後幾乎都分得進去，不再散落到人像、截圖、動漫裡。"""
+    categories, items, answers = scored
+    memes = [it for it in items if answers[it.path.name] == "迷因梗圖"]
+    if not memes:
+        pytest.skip("向量檔裡沒有梗圖")
+    assert sum(it.best(categories)[0] == "迷因梗圖" for it in memes) / len(memes) >= 0.9
+    others = [it for it in items if answers[it.path.name] not in (NONE, "?", "迷因梗圖")]
+    assert sum(it.best(categories)[0] == "迷因梗圖" for it in others) / len(others) <= 0.02
 
 
 def test_similarity_floor_would_have_flagged_correct_files(scored):

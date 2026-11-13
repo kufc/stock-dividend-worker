@@ -16,6 +16,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .prompts import BUILTIN_PROMPTS, DEFAULT_CATEGORY_NAMES, upgrade_prompts
+
 ROOT = Path(__file__).resolve().parent.parent
 INSTALLED = (ROOT / "installed.flag").is_file()  # 由安裝程式（setup.exe）安裝的版本
 DATA_DIR_NAME = "AI Media Sorter"
@@ -95,7 +97,7 @@ DEFAULT_SETTINGS = {
 
 @dataclass
 class Category:
-    """一個分類。name 會用來當資料夾名稱與檔名；prompts 是給 AI 看的描述（中英文皆可，越具體越準）。"""
+    """一個分類。name 會用來當資料夾名稱與檔名；prompts 是給 AI 看的描述（中英文皆可，多寫幾種說法比較準）。"""
 
     name: str
     prompts: list[str] = field(default_factory=list)
@@ -110,20 +112,7 @@ class Category:
         return {"name": self.name, "prompts": self.prompts}
 
 
-DEFAULT_CATEGORIES = [
-    Category("人像", ["人物照片", "自拍", "a photo of a person", "a selfie"]),
-    Category("合照", ["一群人的合照", "a group photo of several people"]),
-    Category("貓", ["貓咪", "a photo of a cat"]),
-    Category("狗", ["狗狗", "a photo of a dog"]),
-    Category("風景", ["自然風景", "山、海、天空", "a landscape photo of mountains, sea, sky or nature"]),
-    Category("城市建築", ["街景與建築物", "a photo of city streets and buildings"]),
-    Category("美食", ["食物與餐點", "a photo of food or a meal"]),
-    Category("花草植物", ["花與植物", "a photo of flowers or plants"]),
-    Category("交通工具", ["汽車、機車、火車、飛機", "a photo of a car, motorcycle, train or airplane"]),
-    Category("螢幕截圖", ["手機或電腦的截圖", "a screenshot of a phone or computer screen"]),
-    Category("文件收據", ["文件、收據、紙本文字", "a photo of a document, receipt or paper with text"]),
-    Category("動漫插畫", ["卡通或動漫圖", "an anime or cartoon illustration"]),
-]
+DEFAULT_CATEGORIES = [Category(name, list(BUILTIN_PROMPTS[name])) for name in DEFAULT_CATEGORY_NAMES]
 
 
 def ensure_data_dir(path: Path | None = None) -> None:
@@ -166,7 +155,7 @@ def load_categories(path: Path = CATEGORIES_FILE) -> list[Category]:
     for entry in data["categories"]:
         name = " ".join(str(entry.get("name", "")).split())  # 名稱中的換行、定位字元一律換成空白
         if name:
-            categories.append(Category(name, [str(p) for p in entry.get("prompts", [])]))
+            categories.append(Category(name, upgrade_prompts(name, [str(p) for p in entry.get("prompts", [])])))
     return categories
 
 

@@ -61,6 +61,7 @@ from .organizer import (
     snapshot_log,
     undo,
 )
+from .prompts import builtin_prompts
 from .theme import setup_theme
 from .grid import Cell
 from .views import (
@@ -1159,7 +1160,7 @@ class App:
         selected = self._selected_indices()
         hint = f"\n\n選取中的 {len(selected):,} 個檔案會直接分到新分類。" if selected else ""
         name = simpledialog.askstring(APP_NAME, "新分類的名稱（例如：寶寶、旅行、車子）：" + hint, parent=self.root)
-        if name and self.add_category(name, []):
+        if name and self.add_category(name, builtin_prompts(name)):  # 常見的名稱會帶入內建的說明
             self._assign_after_add(name.strip(), selected)
 
     def add_category_from_tag(self, name: str, assign: bool = True) -> None:
@@ -1169,8 +1170,7 @@ class App:
             extra = f"選取中的 {len(selected):,} 個檔案會直接分到這個分類。\n" if selected else ""
             if not messagebox.askyesno(APP_NAME, f"要新增分類「{name}」嗎？\n{extra}新增後 AI 會重新判斷所有檔案。"):
                 return
-            english = dict(VOCABULARY).get(name)
-            if not self.add_category(name, [f"a photo of {english}"] if english else []):
+            if not self.add_category(name, builtin_prompts(name)):
                 return
         self._assign_after_add(name, selected)
 

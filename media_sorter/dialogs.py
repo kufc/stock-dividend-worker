@@ -18,7 +18,8 @@ from . import APP_NAME
 from .config import DEFAULT_CATEGORIES, MODEL_CHOICES, Category
 from .organizer import LogInfo, folder_key, list_logs
 from .theme import cjk_wrap
-from .vocabulary import COMMON_CATEGORIES, category_hint
+from .prompts import builtin_prompts
+from .vocabulary import COMMON_CATEGORIES
 
 LOG_KIND_TEXT = {
     "active": "可處理",
@@ -430,9 +431,9 @@ class CategoryDialog(tk.Toplevel):
         self.name_var = tk.StringVar()
         ttk.Entry(right, textvariable=self.name_var).pack(fill="x", pady=(px(2), px(10)))
         ttk.Label(right, text="補充說明（可以留白）").pack(anchor="w")
-        for text in ("告訴 AI 這一類長什麼樣子，一行寫一種；中文、英文都可以。寫大範圍的說法，比列舉幾個例子好。",
+        for text in ("告訴 AI 這一類長什麼樣子，一行寫一種說法；中文、英文都可以，多寫幾種說法比較準。",
                      "例：街景與建築物",
-                     "留白時會直接用分類名稱判斷，常見的名稱（貓、美食、螢幕截圖⋯）這樣就夠了。"):
+                     "留白時會直接用分類名稱判斷。常見的名稱（廣告、商品、圖表⋯）新增時會自動帶入說明。"):
             hint = ttk.Label(right, style="Hint.TLabel", justify="left", text=cjk_wrap(text))
             hint.pack(anchor="w", fill="x")
             hint.bind("<Configure>", lambda e, w=hint: w.configure(wraplength=max(200, e.width)))
@@ -486,7 +487,7 @@ class CategoryDialog(tk.Toplevel):
         self.commit()
         name = simpledialog.askstring("新增分類", "分類名稱：", parent=self)
         if name and name.strip():
-            self.work.append(Category(name.strip(), []))
+            self.work.append(Category(name.strip(), builtin_prompts(name)))  # 常見的名稱會帶入內建的說明
             self.origins.append(None)
             self.reload_list(len(self.work) - 1)
 
@@ -496,8 +497,7 @@ class CategoryDialog(tk.Toplevel):
         if not name or name in {c.name for c in self.work}:
             return
         self.commit()
-        hint = category_hint(name)
-        self.work.append(Category(name, [f"a photo of {hint}"] if hint else []))
+        self.work.append(Category(name, builtin_prompts(name)))
         self.origins.append(None)
         self.reload_list(len(self.work) - 1)
         self.listbox.see("end")

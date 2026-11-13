@@ -748,9 +748,12 @@ def test_category_dialog_adds_common_categories_in_one_click(app):
     assert dialog.work[-1].name == "寶寶" and "寶寶" not in dialog.common_box["values"]
     assert dialog.prompts.get("1.0", "end").strip() == "a photo of a baby"  # 英文說明填進補充說明，看得到也改得掉
     assert dialog.listbox.get("end") == "寶寶" and dialog.name_var.get() == "寶寶"
+    dialog.common_var.set("海報廣告")
+    dialog.add_common()
+    assert "促銷廣告圖" in dialog.prompts.get("1.0", "end") and "an advertisement" in dialog.prompts.get("1.0", "end")
     dialog.save()
-    assert [c.name for c in saved[0][0]] == ["紅", "綠", "藍", "寶寶"] and saved[0][1] == {}
-    assert saved[0][0][-1].prompts == ["a photo of a baby"]
+    assert [c.name for c in saved[0][0]] == ["紅", "綠", "藍", "寶寶", "海報廣告"] and saved[0][1] == {}
+    assert saved[0][0][3].prompts == ["a photo of a baby"] and len(saved[0][0][4].prompts) >= 6
 
 
 def test_frequent_content_without_a_category_is_suggested(app, tmp_path, monkeypatch):
