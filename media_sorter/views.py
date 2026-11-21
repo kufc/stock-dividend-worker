@@ -15,7 +15,10 @@ from .grid import ThumbGrid
 from .theme import TextVar, cjk_wrap
 
 STEP_NAMES = ["選擇資料夾", "檢查分類", "預覽整理結果", "完成"]
-LOW_MODES = [("suggest", "依 AI 的建議整理"), ("unsorted", "放到「未分類」資料夾，之後自己看"), ("leave", "這次不整理")]
+# 預設是第一個：AI 沒把握的檔案不要悄悄混進分類資料夾（用獨立測試集量過：這些檔案被分錯的比例高很多，見 docs/evaluation.md）
+LOW_MODES = [("unsorted", "放到「未分類」資料夾，之後自己看（建議）"), ("suggest", "仍然依 AI 的建議放進分類"),
+             ("leave", "這次不整理")]
+DEFAULT_LOW_MODE = LOW_MODES[0][0]
 SKIP = "__skip__"
 _SCROLL_IGNORE = {"Treeview", "Text", "Listbox", "TCombobox", "TSpinbox"}
 

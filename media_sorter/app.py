@@ -65,6 +65,7 @@ from .prompts import builtin_prompts
 from .theme import setup_theme
 from .grid import Cell
 from .views import (
+    DEFAULT_LOW_MODE,
     SKIP,
     DonePage,
     FolderPage,
@@ -83,6 +84,7 @@ SHORT_HEIGHT = 640  # 比這個矮就收起提示文字，把高度留給縮圖�
 WIDE_PLAN_WIDTH = 1200  # 「預覽整理結果」夠寬時分成左右兩欄
 THUMB_SIZES = {"small": 104, "medium": 148, "large": 208}  # 縮圖格的縮圖邊長（100% 縮放）
 MAX_THUMBS = 900  # 記憶體裡最多留幾張縮圖（只畫看得到的，夠用了）
+RANK_MARKS = ("①", "②", "③", "④", "⑤")  # 候選分類只顯示名次：分數是相對值，寫成百分比會被當成正確率
 UNSORTED_NAME = "未分類"  # AI 沒把握的檔案可以選擇放到這個資料夾
 BUCKET_ALL, BUCKET_LOW, BUCKET_SKIPPED, BUCKET_ERROR, BUCKET_CATEGORY = "all", "low", "skipped", "error", "cat:"
 MAX_PLAN_ROWS = 300
@@ -152,6 +154,28 @@ def _fmt_size(n: float) -> str:
     if n < 1024**2:
         return "不到 1 MB"
     return f"約 {n / 1024**2:.0f} MB"
+
+
+def score_note(suggestions: list[tuple[str, float]], category_count: int) -> str:
+    """候選分類下面那一行小字：說明名次的意思，並用文字（不是百分比）講前幾名差多少。
+
+    分數是 softmax 的相對值：只在「目前這幾個分類」之間比較，不代表正確率。數字仍然列出來供參考（滿分 100），
+    但明講它是相對分數。分類少於 3 個時，是跟「其他東西」一起比（見 classifier.score）。
+    """
+    if not suggestions:
+        return ""
+    top = suggestions[0][1]
+    second = suggestions[1][1] if len(suggestions) > 1 else 0.0
+    if category_count < 3:
+        lead = "比起「其他東西」明顯更像這個分類" if top >= 0.8 else "跟「其他東西」差不多像，不一定屬於這個分類"
+    elif top >= 0.8:
+        lead = "第一名明顯領先"
+    elif top - second < 0.2:
+        lead = "前兩名很接近"
+    else:
+        lead = "第一名領先不多"
+    numbers = "／".join(f"{round(prob * 100)}" for _, prob in suggestions)
+    return f"名次＝在目前的分類裡相對最像誰，不代表正確率。{lead}（相對分數 {numbers}，滿分 100）。"
 
 
 def _default_classifier_factory(preset: str):
@@ -242,7 +266,7 @@ class App:
         self.output_var = tk.StringVar(value=self.settings.get("output_dir", ""))
         self.rename_mode_var = tk.StringVar(value=self.settings["rename_mode"])
         self.pattern_var = tk.StringVar(value=self.settings["rename_pattern"])
-        self.low_mode_var = tk.StringVar(value="suggest")
+        self.low_mode_var = tk.StringVar(value=DEFAULT_LOW_MODE)
         self.bucket_var = tk.StringVar(value=BUCKET_ALL)
         self.sort_by_confidence = True  # 分類裡的縮圖：AI 最沒把握的排最前面（分錯的通常在這裡）
 
@@ -729,7 +753,7 @@ class App:
             p.sort_btn.configure(text="排序：原本的順序")
             p.sort_btn.state(["disabled"])
         if key == BUCKET_LOW:
-            p.grid_hint_var.set("這些檔案 AI 沒有把握。看一下縮圖：分對的可以不管（會依 AI 建議整理），分錯的選起來改分類。")
+            p.grid_hint_var.set("這些檔案 AI 沒有把握。看一下縮圖，把它們選起來指定分類；你沒指定的，預設會放到「未分類」資料夾（步驟 3 可以改）。")
         elif key == BUCKET_SKIPPED:
             p.grid_hint_var.set("略過的檔案不會被整理。想整理回來：選取後按一個分類。")
         elif key == BUCKET_ERROR:
@@ -986,7 +1010,7 @@ class App:
         elif item.top_similarity < floor or item.fits_nothing:
             note = "這個檔案可能不屬於任何一個分類。請看一下；需要的話可以新增分類，或按「略過，不整理」。"
         elif low:
-            note = "模型對這個檔案沒有把握，請自己看一下；不改的話會依建議整理。"
+            note = "模型對這個檔案沒有把握，請自己看一下；你沒指定分類的話，預設會放到「未分類」資料夾（步驟 3 可以改）。"
         else:
             note = ""
         p.show_notice(note)
@@ -995,13 +1019,13 @@ class App:
         for i, button in enumerate(p.candidate_buttons):
             if i < len(suggestions):
                 name, prob = suggestions[i]
-                button.configure(text=f"{name}　{prob:.0%}" + ("　← AI 建議" if i == 0 else ""),
+                button.configure(text=f"{RANK_MARKS[i]} {name}" + ("　← AI 建議" if i == 0 else ""),
                                  style="ChoiceOn.TButton" if i == 0 else "Choice.TButton")
                 button.state(["!disabled"] if item.status != ERROR and not self.organizing else ["disabled"])
                 button.pack(fill="x", pady=(0, self.px(4)))
             else:
                 button.pack_forget()
-        p.score_var.set("百分比是模型分數，只是參考，不代表正確率。" if suggestions else "")
+        p.score_var.set(score_note(suggestions, len(self.categories)))
         existing = {c.name for c in self.categories}
         if item.tags and not p.short:
             p.tags_head.pack(anchor="w", pady=(self.px(8), 0), before=p.tags_frame)
@@ -1352,8 +1376,10 @@ class App:
             return
         if len(self.categories) < 3 and not messagebox.askokcancel(
             APP_NAME,
-            f"目前只有 {len(self.categories)} 個分類。AI 一定會把每個檔案歸到最像的分類，"
-            "分類太少時，不相關的照片也會被歸進去。\n\n建議至少設定 3 個分類（可以加一個「其他」）。要繼續嗎？",
+            f"目前只有 {len(self.categories)} 個分類。分類這麼少時，AI 只能判斷「比起其他東西，像不像這{'個' if len(self.categories) == 1 else '幾個'}分類」，"
+            "不相關的照片裡大約有一到三成仍會被歸進來（用真實照片量過，見 docs/evaluation.md）；"
+            "其餘 AI 沒把握的會進「需檢查」，預設放到「未分類」資料夾。\n\n"
+            "把你資料夾裡常見的東西也設成分類（建議至少 3 個）會準很多。要繼續嗎？",
         ):
             return
         if any(item.status in (CONFIRMED, SKIPPED) for item in self.items):
@@ -1365,7 +1391,7 @@ class App:
         self.session_source = folder
         self.run_info = None
         self.plan = None
-        self.low_mode_var.set("suggest")
+        self.low_mode_var.set(DEFAULT_LOW_MODE)
         self.bucket_var.set(BUCKET_ALL)
         self._sync_output_default()
         self._set_items([])

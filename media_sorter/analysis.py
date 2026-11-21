@@ -136,7 +136,7 @@ def _apply_scores(item: Item, class_emb: np.ndarray, names: tuple[str, ...], voc
     if item.embedding is None or not np.isfinite(item.embedding).all():
         item.status, item.error, item.probs = ERROR, "AI 計算結果異常（NaN），請在設定中改用其他模型或回報問題", None
         return
-    item.probs = _probs(item, class_emb, logit_scale)
+    item.probs = _probs(item, class_emb, logit_scale, other_emb)
     item.prob_names = names
     item.top_similarity = float((class_emb @ item.embedding).max())
     item.other_similarity = float(other_emb @ item.embedding) if other_emb is not None else -1.0
@@ -146,11 +146,12 @@ def _apply_scores(item: Item, class_emb: np.ndarray, names: tuple[str, ...], voc
         item.tags = [(VOCABULARY[i][0], float(vocab_probs[i])) for i in top]
 
 
-def _probs(item: Item, text_emb: np.ndarray, logit_scale: float) -> np.ndarray:
-    """這個檔案屬於各個文字描述的機率：圖片用它的向量；影片逐張畫面比對後平均。"""
+def _probs(item: Item, text_emb: np.ndarray, logit_scale: float, other_emb: np.ndarray | None = None) -> np.ndarray:
+    """這個檔案對各個文字描述的相對分數：圖片用它的向量；影片逐張畫面比對後平均。
+    other_emb：分類很少時一起比的「其他東西」（見 classifier.score）；內建詞彙不需要。"""
     if item.frames is not None and len(item.frames) > 1 and np.isfinite(item.frames).all():
-        return score_frames(item.frames, text_emb, logit_scale)
-    return score(item.embedding[None, :], text_emb, logit_scale)[0]
+        return score_frames(item.frames, text_emb, logit_scale, other_emb)
+    return score(item.embedding[None, :], text_emb, logit_scale, other_emb)[0]
 
 
 def analyze(
@@ -266,15 +267,18 @@ def rescore(items: list[Item], classifier, categories: list[Category]) -> int:
         class_emb = classifier.encode_categories(categories)
         vocab_emb = classifier.vocabulary_embeddings()
         emb = np.stack([it.embedding for it in scored])
-        probs = score(emb, class_emb, classifier.logit_scale)
+        other_emb = _other_embedding(classifier)
+        probs = score(emb, class_emb, classifier.logit_scale, other_emb)
         top_sims = (emb @ class_emb.T).max(axis=1)
         vocab_probs = score(emb, vocab_emb, classifier.logit_scale)
         top_tags = np.argsort(-vocab_probs, axis=1)[:, :TAG_COUNT]
         for row, item in enumerate(scored):
             item.probs, item.prob_names, item.top_similarity = probs[row], names, float(top_sims[row])
+            if other_emb is not None:
+                item.other_similarity = float(other_emb @ item.embedding)
             item.tags = [(VOCABULARY[i][0], float(vocab_probs[row, i])) for i in top_tags[row]]
             if item.frames is not None:  # 影片：逐張畫面重算（數量少，逐一處理即可）
-                _apply_scores(item, class_emb, names, vocab_emb, classifier.logit_scale, _other_embedding(classifier))
+                _apply_scores(item, class_emb, names, vocab_emb, classifier.logit_scale, other_emb)
     reverted = 0
     for item in items:
         if item.status == CONFIRMED and item.chosen not in names:

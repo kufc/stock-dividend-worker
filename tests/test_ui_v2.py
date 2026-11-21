@@ -84,13 +84,16 @@ def test_low_confidence_goes_to_the_check_bucket(app, tmp_path):
     app.select_bucket("low")
     assert len(app.tree.get_children()) == 1 and app.current == app.items.index(gray)
     assert "沒有把握" in app.page2.notice_var.get()
-    # 沒把握的檔案預設仍依 AI 建議整理；步驟 3 可以改成放到「未分類」或不整理
+    # 沒把握的檔案預設放到「未分類」（第九輪審查：以前預設是依 AI 建議放進分類）；步驟 3 可以改
     assert app.show_step(3)
     app.root.update()
     assert len(app.plan.ops) == 2 and app.page3.low_frame.winfo_ismapped()
-    app.low_mode_var.set("unsorted")
-    app.refresh_plan()
+    assert app.low_mode_var.get() == "unsorted"
     assert {op.dst.parent.name for op in app.plan.ops if op.src.name == "gray.png"} == {"未分類"}
+    assert {op.dst.parent.name for op in app.plan.ops if op.src.name == "red.png"} == {"紅"}
+    app.low_mode_var.set("suggest")
+    app.refresh_plan()
+    assert {op.dst.parent.name for op in app.plan.ops if op.src.name == "gray.png"} <= {"紅", "綠", "藍"}
     app.low_mode_var.set("leave")
     app.refresh_plan()
     assert [op.src.name for op in app.plan.ops] == ["red.png"] and "沒把握而這次不整理 1 個" in app.page3.excluded_var.get()

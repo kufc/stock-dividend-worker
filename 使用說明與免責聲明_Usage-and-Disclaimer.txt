@@ -256,14 +256,16 @@ counterpart.
    Space opens the large view.
 
 ・「需檢查」裡是模型沒有把握、或可能不屬於任何分類的檔案（縮圖右上角
-　有「？」），請自己看一下；
-　分對的不用動，不改的話會依建議整理。模型給的分數只是參考，不代表判斷
-　正確的機率。
+　有「？」），請自己看一下，並指定正確的分類；你沒指定的，預設會放到
+　「未分類」資料夾。畫面上的候選分類只顯示名次：模型的分數是「在目前
+　的分類之間相對最像誰」，不代表判斷正確的機率。
    "需檢查" (needs checking) collects the files the model is unsure about
    or that may not belong to any category (a "?" badge on the thumbnail);
-   please look at them yourself. Correct
-   ones need no action and are organized by the suggestion. The model's
-   score is only a hint and is not the probability that it is right.
+   please look at them yourself and assign the right category. Those you
+   do not assign go to an "未分類" (unsorted) folder by default. The
+   candidate categories are shown as a ranking only: the model's score
+   says which of the current categories is relatively closest and is not
+   the probability that it is right.
 
 ・分類按鈕、採用建議、略過只會處理你選取的縮圖。
    The category buttons, accept and skip only affect the thumbnails you
@@ -296,16 +298,16 @@ counterpart.
 
 ・第 3 步「預覽整理結果」：確認輸出位置（預設是來源資料夾裡的「已分類」）
 　與檔名規則（預設保留原檔名），檢查整理前後對照與所需空間。AI 分好的
-　加上你指定的檔案都會整理；AI 沒把握、你也沒改的檔案可以選擇依建議整理
-　（預設）、放到「未分類」資料夾，或這次不整理。按「開始複製」之前，不會
-　建立或改動任何檔案。
+　加上你指定的檔案都會整理；AI 沒把握、你也沒改的檔案可以選擇放到
+　「未分類」資料夾（預設）、仍然依建議放進分類，或這次不整理。按「開始
+　複製」之前，不會建立或改動任何檔案。
    Step 3, preview the result: check the output location (by default
    "已分類" inside the source folder) and the naming rule (original names
    are kept by default), and review the before/after table and the space
    needed. Files sorted by the AI plus the ones you assigned are all
    organized; for files the model is unsure about that you did not
-   change, you can follow the suggestion (default), put them in an
-   "未分類" (unsorted) folder, or leave them out this time. Nothing is
+   change, you can put them in an "未分類" (unsorted) folder (default),
+   follow the suggestion anyway, or leave them out this time. Nothing is
    created or changed until you click "開始複製".
 
 ・複製過程中可以按「完成目前檔案後停止」；已複製好的檔案會保留。

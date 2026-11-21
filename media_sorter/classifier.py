@@ -104,21 +104,37 @@ def combine_frames(frame_embeddings: np.ndarray) -> np.ndarray:
     return normalize(frame_embeddings.mean(axis=0))
 
 
-def score_frames(frame_embeddings: np.ndarray, class_embeddings: np.ndarray, logit_scale: float) -> np.ndarray:
+def score_frames(frame_embeddings: np.ndarray, class_embeddings: np.ndarray, logit_scale: float,
+                 other_embedding: np.ndarray | None = None) -> np.ndarray:
     """影片：每張畫面各自比對後，把機率平均 (C,)。
 
     內容一致的影片跟「向量平均」結果一樣；畫面內容差很多的影片，向量平均會得到一個很有把握的怪答案，
     機率平均則會老實地顯示成幾個分類各占一些（實測見 tests/manual/real_model_results.txt）。
     """
-    return score(frame_embeddings, class_embeddings, logit_scale).mean(axis=0)
+    return score(frame_embeddings, class_embeddings, logit_scale, other_embedding).mean(axis=0)
 
 
-def score(media_embeddings: np.ndarray, class_embeddings: np.ndarray, logit_scale: float) -> np.ndarray:
-    """回傳每個檔案屬於各分類的機率 (N, C)。"""
+# 分類少於這個數目時，分數要把「其他東西」也算進去比（見 score 的說明）
+FEW_CATEGORIES = 3
+
+
+def score(media_embeddings: np.ndarray, class_embeddings: np.ndarray, logit_scale: float,
+          other_embedding: np.ndarray | None = None) -> np.ndarray:
+    """回傳每個檔案對各分類的「相對分數」(N, C)：在拿來比的選項之間，相對最像哪一個（softmax）。
+
+    這不是正確率，也不是「這個檔案屬於這個分類的機率」：它只回答「這幾個選項裡比較像誰」。
+    選項只有一個時，不管像不像都是 100%；只有兩個時，兩個都不像的檔案也會有一個拿到高分。
+    所以分類少於 FEW_CATEGORIES 個、又有「其他東西」的向量（other_embedding）時，把它當成多出來的一個選項一起比：
+    這時分數的意思是「比起『其他東西』，更像這個分類多少」，一個分類也不會永遠 100%。回傳值不含那個多出來的選項，
+    所以這種情況下每一列的總和小於 1。分類夠多時不加（維持原本用真實照片調過的行為，見 docs/evaluation.md）。
+    """
+    count = class_embeddings.shape[0]
+    if other_embedding is not None and 0 < count < FEW_CATEGORIES:
+        class_embeddings = np.vstack([class_embeddings, other_embedding[None, :]])
     logits = logit_scale * media_embeddings @ class_embeddings.T
     logits -= logits.max(axis=-1, keepdims=True)
     exp = np.exp(logits)
-    return exp / exp.sum(axis=-1, keepdims=True)
+    return (exp / exp.sum(axis=-1, keepdims=True))[..., :count]
 
 
 class ModelLoadError(RuntimeError):
