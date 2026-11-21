@@ -95,8 +95,13 @@ def test_organize_never_touches_originals(tmp_path):
 def test_log_write_failure_stops_but_originals_are_safe(tmp_path, monkeypatch):
     files = [touch(tmp_path / "src" / f"{i}.jpg", str(i)) for i in range(3)]
 
+    real_fsync = os.fsync
+
     def broken_fsync(fd):
-        raise OSError(errno.ENOSPC, "No space left on device")
+        # 只讓「紀錄檔」的寫入失敗：複製的媒體檔現在也會 fsync（那是另一種失敗，見 test_regressions_review9）
+        if os.fstat(fd).st_size != 1:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        real_fsync(fd)
 
     monkeypatch.setattr(organizer.os, "fsync", broken_fsync)
     _, result = organize(tmp_path, files)

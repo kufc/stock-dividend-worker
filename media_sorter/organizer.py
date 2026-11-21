@@ -9,7 +9,13 @@
 - 每一次移除都是「比對 → 先在同一個資料夾內改名 → 用『禁止其他程式寫入』的方式開啟兩份檔案 →
   握著它們再比對一次、送資源回收筒 → 最後才放開」：從比對到送出為止，沒有程式能修改任何一份；
   任何一份已被其他程式開著寫入時，開檔會失敗而保留檔案
-  （限制：這個強制保護只有 Windows 有；其他系統只能做到改名與第二次比對）
+- 兩份的保護不一樣：要移除的那一份必須允許刪除（資源回收筒才搬得走）；「必須留下的那一份」連刪除、
+  改名、被別的檔案取代都不允許（開檔時不給 FILE_SHARE_DELETE），送出前還會再確認它仍是同一個檔案
+  （限制：這些強制保護只有 Windows 有；其他系統只能做到改名、第二次比對與送出前的檢查）
+- 複製：寫完暫存檔先 fsync 到磁碟，再把寫進去的內容讀回來跟讀到的原檔比對（雜湊），確認無誤才改成正式檔名
+- 資源回收筒不是到處都有：網路磁碟、隨身碟上的檔案「送回收筒」其實是直接永久刪除。
+  所以先看檔案所在的磁碟（recycle_bin_problem）：沒有回收筒就不移除原檔，並明確告訴使用者；
+  復原時的複本則搬到同一個磁碟上的隔離資料夾，而不是刪除
 - 紀錄記著這次整理的來源資料夾與輸出資料夾，每一列都必須落在這兩個資料夾內。
   注意：這些資料夾本身也寫在紀錄裡，能改紀錄的人可以一起改，所以這只是一致性檢查，不是安全邊界；
   真正的保護是「刪除前一定有另一份內容相同的檔案」與確認視窗列出的完整清單
@@ -185,19 +191,72 @@ def _rename_no_clobber(src: Path, dst: Path) -> None:
     os.unlink(src)
 
 
+COPY_CHUNK = 1 << 20
+
+
+class CopyVerifyError(OSError):
+    """複製後的檢查沒過：複本沒有保留，原檔不受影響。"""
+
+
+def _fingerprint(path: Path) -> tuple[int, int]:
+    st = os.stat(path)
+    return st.st_size, st.st_mtime_ns
+
+
+def _hash_file(path: Path) -> bytes:
+    digest = hashlib.blake2b(digest_size=32)
+    with open(path, "rb") as f:
+        while block := f.read(COPY_CHUNK):
+            digest.update(block)
+    return digest.digest()
+
+
+def _sync_dir(folder: Path) -> None:
+    """把「資料夾裡多了一個檔名」也寫到磁碟（POSIX；Windows 不能對資料夾 fsync，由檔案系統日誌負責）。"""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(folder, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _copy_no_clobber(src: Path, dst: Path) -> None:
-    """先複製到絕對不會跟既有檔案撞名的暫存檔，完整寫完才改成正式檔名；失敗只清掉自己建立的暫存檔。
+    """先複製到絕對不會跟既有檔案撞名的暫存檔，完整寫完、確認無誤才改成正式檔名；失敗只清掉自己建立的暫存檔。
 
     用 mkstemp「獨佔建立」取得保證不存在的檔名，避免目的地資料夾裡剛好已經有
     `<檔名>.partial`（例如使用者自己放的）時被覆蓋、失敗時又被誤刪。
+
+    確認的方式（成本：目的地多讀一次，原檔只讀一次）：
+    1. 邊讀原檔邊算雜湊，寫完後 flush＋fsync：資料真的交給磁碟，不是只在系統的快取裡
+    2. 把暫存檔重新開啟讀回來算雜湊，跟第 1 步讀到的內容比對：寫入途中出錯、被截斷都會被發現
+    3. 複製前後原檔的大小與修改時間要一樣：複製到一半原檔被改寫的話，複本是「半新半舊」，不保留
+    之後「移除原檔」前還會再逐位元組比對一次；這裡是讓問題在複製當下就被發現，而不是等到那時候。
     """
     fd, tmp_name = tempfile.mkstemp(dir=dst.parent, prefix=f"{dst.name}.", suffix=PARTIAL_SUFFIX)
     tmp = Path(tmp_name)
     try:
-        os.close(fd)
-        shutil.copyfile(src, tmp)
+        before = _fingerprint(src)
+        digest = hashlib.blake2b(digest_size=32)
+        with os.fdopen(fd, "wb") as out, open(src, "rb") as source:
+            while block := source.read(COPY_CHUNK):
+                digest.update(block)
+                out.write(block)
+            out.flush()
+            os.fsync(out.fileno())
+        if _fingerprint(src) != before:
+            raise CopyVerifyError(errno.EIO, "複製期間原檔被其他程式修改，這次的複本沒有保留，請稍後重試", str(src))
+        if _hash_file(tmp) != digest.digest():
+            raise CopyVerifyError(errno.EIO, "複本寫入後讀回來的內容跟原檔不同（磁碟或連線可能有問題），複本沒有保留", str(dst))
         shutil.copystat(src, tmp)
         _rename_no_clobber(tmp, dst)
+        _sync_dir(dst.parent)
     except BaseException:
         try:
             tmp.unlink()
@@ -247,6 +306,8 @@ def describe_error(exc: BaseException) -> str:
     winerror = getattr(exc, "winerror", None)
     if code == errno.ENOSPC or winerror in (39, 112):
         hint = "輸出磁碟空間不足。請清出空間或改選其他位置，再重試失敗的檔案。"
+    elif isinstance(exc, CopyVerifyError):
+        return str(exc.strerror)
     elif isinstance(exc, FileExistsError) or code == errno.EEXIST:
         hint = "目的地已經有同名檔案，為了安全沒有覆蓋。請改用不同的命名方式，或先處理那個檔案。"
     elif isinstance(exc, FileNotFoundError) or code == errno.ENOENT:
@@ -479,11 +540,14 @@ def _validate_row(row: dict) -> str | None:
     return None
 
 
-def _open_deny_write(path: Path):
-    """開檔讀取，同時禁止任何程式寫入這個檔案（Windows）。
+FILE_SHARE_READ, FILE_SHARE_DELETE = 0x1, 0x4
 
-    share mode 不含 FILE_SHARE_WRITE：只要已經有程式握著可寫入的控制代碼，開檔就會失敗
-    （共用違規 WinError 32），我們就知道檔案正在被寫入；開成功之後、關閉之前，也沒有程式能再開寫入。
+
+def _open_shared(path: Path, share_mode: int):
+    """開檔讀取，並用 Windows 的共用模式限制「我們握著的期間，其他程式還能對這個檔案做什麼」。
+
+    share mode 沒給的權限有兩個效果：已經有程式用那種權限開著 → 我們開檔失敗（共用違規 WinError 32）；
+    我們開成功之後、關閉之前 → 其他程式要用那種權限開檔會失敗。
     其他系統沒有這種強制鎖，只是一般開檔。
     """
     if os.name != "nt":
@@ -492,13 +556,13 @@ def _open_deny_write(path: Path):
     import msvcrt
     from ctypes import wintypes
 
-    generic_read, file_share_read, file_share_delete, open_existing = 0x80000000, 0x1, 0x4, 3
+    generic_read, open_existing = 0x80000000, 3
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     create_file = kernel32.CreateFileW
     create_file.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
                             wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     create_file.restype = wintypes.HANDLE
-    handle = create_file(str(path), generic_read, file_share_read | file_share_delete, None, open_existing, 0x80, None)
+    handle = create_file(str(path), generic_read, share_mode, None, open_existing, 0x80, None)
     if handle is None or handle == wintypes.HANDLE(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())
     try:
@@ -507,6 +571,76 @@ def _open_deny_write(path: Path):
         kernel32.CloseHandle(wintypes.HANDLE(handle))
         raise
     return os.fdopen(fd, "rb")
+
+
+def _open_deny_write(path: Path):
+    """給「要移除的那一份」：禁止任何程式寫入，但允許刪除／搬移——資源回收筒要搬走它，需要刪除權限。"""
+    return _open_shared(path, FILE_SHARE_READ | FILE_SHARE_DELETE)
+
+
+def _open_deny_write_delete(path: Path):
+    """給「必須留下的那一份」：禁止寫入，也禁止刪除、改名、被別的檔案取代（不給 FILE_SHARE_DELETE）。
+
+    刪除、改名、取代在 Windows 都需要 DELETE 存取權；我們握著這個控制代碼的期間，那些要求一律被系統拒絕，
+    所以「送出另一份的那一刻，這一份一定還在、內容沒變」。已經有程式用可刪除的方式開著它時，這裡會開檔失敗（保留檔案）。
+    """
+    return _open_shared(path, FILE_SHARE_READ)
+
+
+def _still_same_file(handle, path: Path) -> bool:
+    """握著的控制代碼跟這個路徑現在指到的，還是同一個檔案嗎（沒被刪除、改名或換成別的檔案）。
+
+    Windows 上 _open_deny_write_delete 已經讓這些事不可能發生，這是多一層確認；
+    其他系統沒有強制鎖，這是唯一的檢查（檢查完到送出之間仍有極短的空檔，見模組說明的限制）。
+    """
+    try:
+        held, current = os.fstat(handle.fileno()), os.stat(path)
+    except OSError:
+        return False
+    if os.name != "nt" and held.st_nlink == 0:
+        return False
+    return (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino)
+
+
+# Windows 的磁碟種類（GetDriveTypeW）。只有本機固定磁碟（含大部分外接硬碟）有資源回收筒。
+DRIVE_FIXED = 3
+_DRIVE_KINDS = {0: "無法判斷種類的磁碟", 1: "找不到的磁碟", 2: "卸除式磁碟（隨身碟、記憶卡）", 4: "網路磁碟",
+                5: "光碟", 6: "RAM 磁碟"}
+
+
+def recycle_bin_problem_for_drive_type(drive_type: int) -> str | None:
+    if drive_type == DRIVE_FIXED:
+        return None
+    kind = _DRIVE_KINDS.get(drive_type, "無法判斷種類的磁碟")
+    return f"這個檔案在{kind}上，那裡沒有資源回收筒（Windows 會直接永久刪除，無法救回）"
+
+
+def recycle_bin_problem(path: Path) -> str | None:
+    """這個檔案所在的磁碟沒有資源回收筒時，回傳給使用者看的原因；有（或這個系統交給 send2trash 判斷）回傳 None。
+
+    Windows 對網路磁碟、隨身碟上的檔案「送資源回收筒」其實是直接永久刪除，而且不會警告。
+    本程式的底線是「移除一定救得回來」，所以先看磁碟種類；判斷不出來一律當成沒有。
+    """
+    if os.name != "nt":
+        return None  # Linux／macOS：send2trash 找不到可用的回收筒會自己丟錯誤，不會改成永久刪除
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetVolumePathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        kernel32.GetVolumePathNameW.restype = wintypes.BOOL
+        kernel32.GetDriveTypeW.argtypes = [wintypes.LPCWSTR]
+        kernel32.GetDriveTypeW.restype = wintypes.UINT
+        buffer = ctypes.create_unicode_buffer(1024)
+        full = os.path.abspath(str(path))
+        if kernel32.GetVolumePathNameW(full, buffer, len(buffer)) and buffer.value:
+            root = buffer.value
+        else:
+            root = os.path.splitdrive(full)[0] + "\\"
+        return recycle_bin_problem_for_drive_type(int(kernel32.GetDriveTypeW(root)))
+    except (OSError, AttributeError, ValueError):
+        return recycle_bin_problem_for_drive_type(0)
 
 
 def _same_content(a: Path, b: Path, chunk: int = 1 << 20, reader_a=None, reader_b=None) -> bool:
@@ -597,11 +731,12 @@ def _remove_verified(path: Path, reference: Path, mark: str, sink: Callable[[Pat
 
     「比對完再移除」中間有空檔，其他程式可能剛好改寫其中一份，所以：
     1. 先把 path 在同一個資料夾內改名：之後照原路徑存檔的程式只會產生新檔，不會動到我們這一份
-    2. 用「禁止其他程式寫入」的方式同時開啟兩份檔案（見 _open_deny_write）：
-       任何一份已被其他程式開著寫入，這一步就會失敗（保留、改回原名）
-    3. 握著這兩個控制代碼比對內容，而且一直握到 sink 完成才放開：
-       從比對到送出為止，沒有程式能修改要移除的那一份或留下的那一份
-    （強制的「禁止寫入」只有 Windows 有；其他系統只做得到改名與再次比對）
+    2. 用「禁止其他程式寫入」的方式同時開啟兩份檔案：要移除的那一份允許刪除（_open_deny_write，
+       回收筒才搬得走）；留下的 reference 連刪除、改名、取代都不允許（_open_deny_write_delete）。
+       任何一份已被其他程式用衝突的方式開著，這一步就會失敗（保留、改回原名）
+    3. 握著這兩個控制代碼比對內容，確認 reference 仍是同一個檔案，而且一直握到 sink 完成才放開：
+       從比對到送出為止，沒有程式能修改任何一份，也沒有程式能讓留下的那一份消失
+    （這些強制保護只有 Windows 有；其他系統只做得到改名、再次比對與送出前的檢查）
     任何一步失敗都把檔案改回原名、不移除。回傳 sink 的結果（隔離位置或 None）。
     """
     if precheck and not _same_content(path, reference):
@@ -618,12 +753,14 @@ def _remove_verified(path: Path, reference: Path, mark: str, sink: Callable[[Pat
             raise OSError(f"檔案正被其他程式開啟寫入，為了安全保留：{path}（{exc}）") from exc
         with guard:
             try:
-                reference_guard = _open_deny_write(reference)
+                reference_guard = _open_deny_write_delete(reference)
             except OSError as exc:
-                raise OSError(f"另一份（{reference}）正被其他程式開啟寫入，為了安全保留：{path}（{exc}）") from exc
+                raise OSError(f"另一份（{reference}）正被其他程式使用（或已不在），為了安全保留：{path}（{exc}）") from exc
             with reference_guard:
                 if not _same_content(staged, reference, reader_a=guard, reader_b=reference_guard):
                     raise OSError(f"移除前內容被其他程式修改，已保留：{path}")
+                if not _still_same_file(reference_guard, reference):
+                    raise OSError(f"另一份（{reference}）剛剛被刪除、改名或換成別的檔案，為了安全保留：{path}")
                 return sink(staged)  # 兩個控制代碼都還握著：送出的內容 = 留下的內容
     except BaseException as exc:
         try:
@@ -664,16 +801,24 @@ def undo(log_path: Path, expected_digest: str | None = None) -> ExecuteResult:
             if not _same_content(src, dst):
                 warnings.append(f"{dst.name}：複本跟原檔內容不同（整理後被修改過），為了安全保留複本")
                 continue
-            if _send2trash is not None:
+            no_bin = recycle_bin_problem(dst)
+            if _send2trash is not None and no_bin is None:
                 def sink(staged: Path) -> Path | None:
                     _send2trash(str(staged))
                     return None
+            elif no_bin is not None:
+                # 複本所在的磁碟沒有回收筒：搬到同一個磁碟（輸出資料夾裡）的隔離資料夾，不刪除
+                same_drive = dst.parent.parent / QUARANTINE_DIR / quarantine_dir.name  # 輸出資料夾（已驗證過）
+
+                def sink(staged: Path, same_drive=same_drive) -> Path | None:
+                    return _to_quarantine(staged, same_drive)
             else:
                 def sink(staged: Path) -> Path | None:
                     return _to_quarantine(staged, quarantine_dir)
             location = _remove_verified(dst, src, STAGE_MARK_COPY, sink, precheck=False)
             if location is not None:
-                warnings.append(f"{dst.name}：沒有資源回收筒可用，已搬到隔離資料夾：{location}")
+                why = no_bin or "沒有資源回收筒可用"
+                warnings.append(f"{dst.name}：{why}，所以沒有刪除，已搬到隔離資料夾：{location}")
             done += 1
             _remove_if_empty(dst.parent)
         except Exception as exc:  # noqa: BLE001 - 任何錯誤都只影響這一個檔案
@@ -718,6 +863,12 @@ def remove_originals(log_path: Path, expected_digest: str | None = None) -> Exec
                 errors.append((src, f"複本跟原檔內容不同，為了安全不移除原檔：{dst}"))
                 retry.append(row)
                 continue
+            no_bin = recycle_bin_problem(src)
+            if no_bin is not None:
+                errors.append((src, f"{no_bin}，所以沒有移除，原檔與複本都保留。"
+                                    "確定不需要原檔的話，請自行在檔案總管刪除。"))
+                retry.append(row)
+                continue
             _remove_verified(src, dst, STAGE_MARK_ORIGINAL, lambda staged: _send2trash(str(staged)), precheck=False)
             done += 1
         except Exception as exc:  # noqa: BLE001 - 任何錯誤都只影響這一個檔案
@@ -749,6 +900,8 @@ def classify_rows(rows: list[dict], mode: str) -> list[tuple[dict, str | None]]:
         else:
             note = ("略過：原檔已不在" if not src_exists
                     else "保留原檔：找不到複本" if not dst_exists else None)
+            if note is None and recycle_bin_problem(Path(row["原始路徑"])) is not None:
+                note = "保留原檔：所在的磁碟沒有資源回收筒，移除後無法救回"
         result.append((row, note))
     return result
 

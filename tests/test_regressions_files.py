@@ -58,11 +58,13 @@ def test_two_runs_in_same_second_keep_separate_logs(tmp_path):
 def test_failed_copy_leaves_no_partial_file(tmp_path, monkeypatch):
     a = touch(tmp_path / "a.jpg", "A" * 1000)
 
-    def broken_copy(src, dst, *args, **kwargs):
-        Path(dst).write_text("half")
+    def disk_full(fd):
+        # 資料已經寫進暫存檔（磁碟上看得到半成品），交給磁碟時才發現空間不足。
+        # （複製改成自己邊讀邊算雜湊再 fsync，不再呼叫 shutil.copyfile，所以改在這裡讓它失敗）
+        assert any((tmp_path / "out").rglob("*.partial"))
         raise OSError(errno.ENOSPC, "No space left on device")
 
-    monkeypatch.setattr(shutil, "copyfile", broken_copy)
+    monkeypatch.setattr(organizer.os, "fsync", disk_full)
     ops = plan_operations([(a, "貓", D)], tmp_path / "out")
     result = execute(ops, tmp_path / "logs")
     assert result.done == 0 and result.errors

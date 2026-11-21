@@ -359,6 +359,18 @@ counterpart.
    open for writing in another program, the program reports "in use" and
    keeps the file.
 
+・留下的那一份（移除原檔時是複本，移除複本時是原檔）在這段期間還不能
+　被其他程式刪除、改名或用別的檔案取代。
+   The file that stays (the copy when removing originals, the original
+   when removing copies) also cannot be deleted, renamed or replaced by
+   another program during that time.
+
+・複製時，程式會把寫好的複本讀回來跟原檔比對，確認無誤才給它正式的
+　檔名；所以複製大檔案會比單純複製慢一些。
+   When copying, the program reads the finished copy back and compares
+   it with the original before giving it its final name, so copying
+   large files is somewhat slower than a plain copy.
+
 ・原檔被移到資源回收筒後，檔名會帶有「(整理前)」；從資源回收筒還原
 　之後，請自行把檔名改回來。
    After an original is moved to the Recycle Bin its name carries the
@@ -398,16 +410,24 @@ counterpart.
    files in use, write locking) has only a few dedicated tests and may
    still contain undiscovered differences.
 
-・「禁止其他程式寫入」的保護只有 Windows 上有；其他系統只能做到改名
-　與再次比對。
-   The "block other programs from writing" protection exists only on
-   Windows; other systems only get the rename and the second comparison.
+・「禁止其他程式寫入、刪除、改名」的保護只有 Windows 上有；其他系統
+　只能做到改名、再次比對，以及送出前確認留下的那一份還在。
+   The "block other programs from writing, deleting or renaming"
+   protection exists only on Windows; other systems only get the rename,
+   the second comparison and a last check that the kept file is still
+   there.
 
-・網路磁碟機（NAS）在 Windows 上通常沒有資源回收筒，檔案送出時可能
-　被直接刪除（刪除前仍會確認另一份相同內容存在）。
-   Network drives (NAS) usually have no Recycle Bin on Windows, so a
-   file may be deleted outright when it is sent off (the check for
-   another identical copy still applies).
+・網路磁碟機（NAS）、隨身碟與記憶卡在 Windows 上沒有資源回收筒。原檔在
+　這些地方時，程式不會移除它（會說明原因，原檔與複本都保留）；複本在
+　這些地方時，「移除這次建立的複本」會把複本搬到輸出資料夾裡的
+　「復原移除」資料夾，而不是刪除。程式是依 Windows 回報的磁碟種類判斷，
+　判斷不出來時一律當成沒有資源回收筒。
+   Network drives (NAS), USB sticks and memory cards have no Recycle Bin
+   on Windows. Originals stored there are not removed (the program says
+   why and keeps both the original and the copy); copies stored there
+   are moved to a "復原移除" folder inside the output folder instead of
+   being deleted. The program relies on the drive type reported by
+   Windows and treats an unknown type as having no Recycle Bin.
 
 ・雲端同步的資料夾（例如 OneDrive）在複製與改名期間可能同時進行同步，
 　建議先暫停同步。

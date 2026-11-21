@@ -30,14 +30,19 @@ def organize(tmp_path, files):
 def guards(monkeypatch):
     """記錄每一個「禁止寫入」的控制代碼：(路徑, 檔案物件)。"""
     opened = []
-    real = organizer._open_deny_write
 
-    def spy(path):
-        handle = real(path)
-        opened.append((Path(path), handle))
-        return handle
+    def spy_on(name):
+        real = getattr(organizer, name)
 
-    monkeypatch.setattr(organizer, "_open_deny_write", spy)
+        def spy(path):
+            handle = real(path)
+            opened.append((Path(path), handle))
+            return handle
+
+        monkeypatch.setattr(organizer, name, spy)
+
+    spy_on("_open_deny_write")         # 要移除的那一份
+    spy_on("_open_deny_write_delete")  # 留下的那一份（第九輪起用更嚴格的開法，見 test_regressions_review9）
     return opened
 
 
@@ -84,14 +89,11 @@ def test_reference_in_use_keeps_file(tmp_path, monkeypatch):
     a = touch(tmp_path / "src" / "a.jpg", "A")
     ops, result = organize(tmp_path, [a])
     bin_dir = make_trash(tmp_path, monkeypatch)
-    real = organizer._open_deny_write
-
     def busy_reference(path):
-        if Path(path) == ops[0].dst:
-            raise PermissionError(32, "檔案正由另一個程序使用")
-        return real(path)
+        assert Path(path) == ops[0].dst
+        raise PermissionError(32, "檔案正由另一個程序使用")
 
-    monkeypatch.setattr(organizer, "_open_deny_write", busy_reference)
+    monkeypatch.setattr(organizer, "_open_deny_write_delete", busy_reference)
     removed = remove_originals(result.log_path)
     assert removed.done == 0 and removed.errors and a.read_text() == "A" and not list(bin_dir.iterdir())
 
