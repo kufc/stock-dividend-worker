@@ -66,7 +66,7 @@ class Recorded:
 def recorded(request):
     path = MANUAL / f"embeddings_{request.param}.npz"
     if not path.exists():
-        pytest.skip(f"沒有 {path.name}")
+        pytest.fail(f"沒有 {path.name}：評測資料是 repo 與 ZIP 的一部分（tools/build_zip.py），缺了就無法重現 README 的數字")
     return Recorded(path)
 
 

@@ -131,12 +131,16 @@ def main() -> None:
     parser.add_argument("--out", required=True)
     parser.add_argument("--per-class", type=int, default=40, help="ImageNette 每類取幾張（0＝不下載）")
     parser.add_argument("--extra-dir", default="", help="額外的圖片：每個子資料夾一組，資料夾名稱＝預期分類或 none_xxx")
+    parser.add_argument("--only-extra", action="store_true",
+                        help="只算 --extra-dir 的圖片：不產生內建的那一批（搭配 --per-class 0 就連 ImageNette 也不加）")
     parser.add_argument("--fake", action="store_true", help="用測試的假模型跑（只檢查這支程式本身）")
     args = parser.parse_args()
+    if args.only_extra and not args.extra_dir:
+        parser.error("--only-extra 需要搭配 --extra-dir")
 
     folder = Path(tempfile.mkdtemp(prefix="dump_embeddings_"))
-    paths = build_images(folder)
-    expected = dict(EXPECTED)
+    paths = [] if args.only_extra else build_images(folder)
+    expected = {} if args.only_extra else dict(EXPECTED)
     groups: dict[str, str] = {}
     if args.extra_dir:
         extra_expected, groups = add_extra_dir(Path(args.extra_dir), folder)

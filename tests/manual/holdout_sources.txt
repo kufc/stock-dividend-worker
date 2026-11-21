@@ -1,0 +1,238 @@
+HOLD-OUT SET - DO NOT USE FOR TUNING.
+This set was collected on 2026-11-21, AFTER all default prompts and thresholds were fixed. It exists only for a
+one-off final evaluation of the default categories. Never tune prompts, thresholds or rules against it; if that
+ever happens it is no longer a hold-out set and a new one has to be collected.
+
+Sources of the hold-out images behind embeddings_holdout_standard.npz / embeddings_holdout_accurate.npz
+(1,176 images in 23 groups: 13 default categories + 10 "belongs to no default category" groups).
+All images come from public, non-gated datasets on the Hugging Face Hub. None of the datasets of the dev set
+(photo_sources.txt) is used, nor any repackaging of the same underlying data (no COCO, FFHQ, WIDER FACE,
+cats_vs_dogs, SUN397, Food-101, Oxford Flowers, Caltech-101, ScreenSpot, RVL-CDIP, CORD, ImageNet/ImageNette ...).
+Images were re-saved as JPEG (RGB, longer side <= 1024 px) into <extra-dir>/<group>/NNN.jpg and are NOT committed
+(only the embeddings are). The whole set is rebuilt by
+    python tests/manual/collect_holdout.py --out <extra-dir>
+which pins every dataset to a commit hash (REV in the script), and was checked to reproduce the files
+byte-for-byte. <extra-dir>/manifest.tsv lists group, file, source key (dataset:file#row) and kept/removed.
+The embeddings were made with
+    python tests/manual/dump_embeddings.py --preset <standard|accurate> --only-extra --per-class 0
+        --extra-dir <extra-dir> --out tests/manual/embeddings_holdout_<preset>.npz
+In the .npz the n-th KEPT file of a group (sorted by name) is called x_<group>_<n>.jpg, so its number differs
+from NNN.jpg wherever an earlier file of the group was removed; image_groups holds the group name.
+
+Selection discipline
+- Every pick is random with a fixed seed, random.Random("20261121:<group>:<source>"), using only dataset labels
+  and metadata (rules below). The classifier was never run on any image before the selection was final.
+- Then every group was looked at on a contact sheet, and only images that are mislabelled, unrecognisable, or
+  genuinely ambiguous between two default categories (or between "none" and a default category) were deleted -
+  the same rule as the dev set. Nothing was deleted for looking "hard". Deleted files are listed by name in
+  REMOVED in collect_holdout.py; counts and reasons are given per group below.
+- Changes made to the selection rules after seeing contact sheets (all before any model was run, all made on
+  metadata only, none aimed at difficulty):
+  * 花草植物: a plain random pick of the Pl@ntNet shard gave ~12 species (the shard is sorted by species and
+    long-tailed), so it was replaced by "at most 2 images per species, then 60 at random".
+  * 螢幕截圖: the first Rico config picked (default "data/") turned out to hold colour-block semantic
+    annotations, not screenshots; replaced by the config with the real screenshots.
+  * 迷因梗圖: not-lain/meme-dataset (20 images) was dropped completely because it holds meme TEMPLATES without
+    any caption (plain photos of a dog, a baby ...; the dev set excluded uncaptioned templates for the same
+    reason); the MemeCap pick was enlarged from 40 to 60 instead.
+  * 城市建築: about half of the Oxford/Paris images were not buildings (see below), so the Intel part was
+    enlarged from 8 to 15 per class.
+  * none_art: the WikiArt shard has no abstract paintings, so 14 (not 11) per remaining genre.
+"License" is what the dataset card / its license tag states; "not stated" = the card has no license tag.
+
+== Groups that are default categories ==
+
+人像 (58 images)
+  - logasja/lfw, data/train-00000-of-00001.parquet, 30 random rows (Labeled Faces in the Wild: loosely cropped
+    press photos of one named person, 250x250). License: not stated. 29 kept (1 removed: two equally
+    prominent faces).
+  - HuggingFaceM4/pascal_voc, voc2007.tar.gz (PASCAL VOC 2007, all 9,963 images): images whose annotation has
+    exactly ONE object, a "person" that is not "difficult" and whose box covers 20-85 % of the image; 30 random.
+    License: not stated (VOC images are Flickr photos). 29 kept (1 removed: a skier who is small in a mountain
+    landscape).
+
+合照 (61 images)
+  - lmms-lab/flickr30k, data/test-0000N-of-00009.parquet (all 9 shards, captions only were read): images where
+    at least 2 of the 5 captions match "pos(e|es|ing|ed) ... (picture|photo|photograph|portrait|camera)" AND a
+    word for several people (group, family, team, friends, people, men, women, girls, boys, children, kids,
+    guys, ladies, adults, students, players, three...ten), and at most 1 caption contains "two"/"couple"/
+    "a man and a woman". 69 images qualify; 45 random. License: not stated (Flickr30k: research use, Flickr
+    photos). 43 kept (2 removed: people tiny in a balloon basket seen from the air; a dark crowd around a fire).
+  - HuggingFaceM4/pascal_voc, voc2007.tar.gz: images with 3-12 annotated objects, ALL of them "person", at least
+    3 of them with a box height >= 30 % of the image height; 20 random. License: not stated. 18 kept (2 removed:
+    three people seen from behind in front of a painting; people from behind looking at a locomotive).
+
+貓 (60 images) / 狗 (58 images)
+  - timm/oxford-iiit-pet, data/test-00000-of-00001.parquet (Oxford-IIIT Pet, 37 breeds), column label_cat_dog:
+    0 = cat -> 貓, 1 = dog -> 狗; 60 random rows per label. License: cc-by-sa-4.0.
+    狗: 2 removed (dog tiny inside an arcade; a person walking a small dog at night, both tiny).
+
+風景 (51 images)
+  - larrygzlb1994/lhq_256, data/train-00000-of-00021-60e9330dc194e473.parquet (LHQ, "Landscapes HQ", 256x256,
+    no labels - every image is supposed to be a landscape), 36 random rows. License: not stated. 28 kept
+    (8 removed: plant close-ups (2), a blurred tree trunk, a warehouse ceiling, a ruin with columns, roof
+    silhouettes at sunset, a stone chapel, pebbles under water).
+  - sfarrukhm/intel-image-classification, files data/seg_test/<class>/*.jpg, 6 random of each of forest,
+    glacier, mountain, sea (150x150 px). License: other. 23 kept (1 removed: jumping dolphins filed under sea).
+
+城市建築 (51 images)
+  - JamieSJS/r-paris (25 random) and JamieSJS/r-oxford (20 random), corpus-00000-of-00001.parquet (Revisited
+    Paris / Oxford buildings retrieval sets). The script samples "corpus ids that are a positive for another
+    query in qrels", but in this repackaging qrels lists every pair with score 1, so in effect this is a random
+    pick of the corpus - Flickr photos tagged with a landmark name, of which many do not show the building.
+    License: not stated. Paris 13 kept, Oxford 8 kept (24 removed: people (6), statues / reliefs (5), paintings
+    (2), building interiors and ceilings (4), a lawn, a room, candles, a teddy bear on a bus, double-decker
+    buses, a view straight down from a tower, a shop sign). This is by far the heaviest by-eye cleaning of the
+    set: for this source the cleaning amounts to labelling by eye.
+  - sfarrukhm/intel-image-classification, data/seg_test/<class>/*.jpg, 15 random of each of buildings, street
+    (150x150 px). License: other. 30 kept.
+
+美食 (58 images)
+  - chaeso/food_chinese_2017, data/test-00000-of-00003-ac558dbfa237ee1c.parquet, 22 random rows (Chinese dishes;
+    every image is a dish; many are small, soft images). License: not stated. 20 kept (2 removed: blurred
+    beyond recognition).
+  - bharat-raghunathan/indian-foods-dataset, data/test-00000-of-00001-75236f054535aed8.parquet, 20 random rows
+    (15 Indian dishes). License: cc0-1.0. 20 kept.
+  - Matthijs/snacks, images.zip, folder data/test/, 1 random image of each of the 20 classes (apple, banana,
+    cake, candy, carrot, cookie, doughnut, grape, hot dog, ice cream, juice, muffin, orange, pineapple, popcorn,
+    pretzel, salad, strawberry, waffle, watermelon; photos from Open Images). License: cc-by-4.0. 18 kept
+    (2 removed: grapes on the vine; children eating ice cream where the people are the subject).
+
+花草植物 (60 images)
+  - mikehemberger/plantnet300K, data/test-00000-of-00008-ccdf9a8395f11a02.parquet (Pl@ntNet-300K, user photos
+    of wild and garden plants). The shard holds 36 species; up to 2 random images per species, then 60 random of
+    those. License: not stated. 60 kept.
+
+交通工具 (60 images)
+  - HuggingFaceM4/pascal_voc, voc2007.tar.gz: images in which ALL annotated objects belong to one single class
+    out of aeroplane, bicycle, boat, bus, car, motorbike, train (so no annotated person) and the largest box
+    covers >= 25 % of the image; 9 random per class. License: not stated. 60 kept (3 removed: a mural with a
+    bicycle parked in front; a view over a motorbike mirror onto a road; a view out of a train window).
+
+螢幕截圖 (60 images)
+  - creative-graphic-design/Rico, ui-screenshots-and-view-hierarchies/test-00000-of-00002.parquet, column
+    screenshot, 25 random rows (Android app screenshots, ~2012-2017). License: unknown (card tag). 25 kept.
+  - Writer/omniact, data.zip: 20 random of data/data/desktop/**.png (macOS / Windows / Linux desktop apps) and
+    15 random of data/data/web/**.png (web pages). License: mit. 35 kept.
+
+文件收據 (59 images)
+  - jsdnrs/ICDAR2019-SROIE, data/test-00000-of-00001.parquet, 25 random rows (scanned shop receipts, Malaysia).
+    License: cc-by-4.0. 25 kept.
+  - ds4sd/DocLayNet-v1.1, data/test-00001-of-00002-b2396409212624ed.parquet, 7 random pages of each
+    metadata.doc_category in the shard (financial_reports, government_tenders, laws_and_regulations, manuals,
+    patents; born-digital PDF pages rendered at 1025x1025). License: other (card tag; the card text says
+    CDLA-Permissive-1.0). 34 kept (1 removed: a manual page that is almost entirely a photo of an aircraft).
+
+動漫插畫 (56 images)
+  - kurumikz/AnimeOmni, files <range>/data/image_<n>.jpg, 40 random (safe-rated anime character illustrations).
+    License: cc-by-4.0. 38 kept (2 removed: stop-motion puppets inside a drawing program; an unrecognisable
+    blue ornament).
+  - puruchinera/anime_wallpapers, image files in the repo root of at most 4 MB (dated sub-folders not used),
+    20 random (wide anime wallpapers, several are scenery with a small character). License: not stated.
+    18 kept (2 removed: painted landscapes without any character - ambiguous with 風景).
+
+迷因梗圖 (60 images)
+  - Leonardo6/memecap, data/train-00000-of-00003.parquet, column images, 60 random rows (MemeCap: memes posted
+    on Reddit r/memes, all with caption text; mostly English). License: apache-2.0. 60 kept.
+    Note: some memes contain crude or offensive jokes; they were not filtered.
+
+== Groups that belong to NO default category ==
+
+none_wildlife (43 images)
+  - bentrevett/caltech-ucsd-birds-200-2011, data/test-00000-of-00002.parquet, 15 random rows (CUB-200 birds).
+    License: not stated. 15 kept.
+  - lucabaggi/animal-wildlife, data/test-00000-of-00001.parquet, 30 random rows whose label is not cat or dog
+    (90 animal classes: mammals, birds, insects, sea animals; includes farm animals). License: not stated.
+    28 kept (2 removed: oysters served on a plate; a person holding a snake).
+
+none_indoor (43 images)
+  - keremberke/indoor-scene-classification, data/test.zip (MIT Indoor Scenes), 1 random image per class plus
+    6 more at random, after dropping the classes cloister, florist, greenhouse, inside_bus, inside_subway,
+    subway, trainstation, fastfood_restaurant, restaurant, restaurant_kitchen, grocerystore, pantry (they would
+    overlap 城市建築 / 花草植物 / 交通工具 / 美食). License: not stated. 43 kept (2 removed: a kindergarten class
+    sitting together; a cameraman filling the frame).
+
+none_sports (41 images)
+  - HES-XPLAIN/SportsImageClassification, SportsImageClassification.zip, folder train/: 45 random classes,
+    1 random image each, after dropping the vehicle / boat / dog sports (formula 1 racing, nascar racing,
+    motorcycle racing, sidecar racing, snowmobile racing, hydroplane racing, sailboat racing, ice yachting,
+    track bicycle, bmx, bike polo, water cycling, mushing, rowing, canoe slamon). License: cc0-1.0. 41 kept
+    (4 removed: two close-up portraits of one athlete; a ski-jump hill and a surfing wave where the landscape
+    dominates).
+
+none_art (42 images)
+  - huggan/wikiart, data/train-00000-of-00072.parquet, 14 random of each of the genres genre_painting,
+    religious_painting, sketch_and_study (abstract_painting was also allowed but does not occur in the shard;
+    portrait, landscape, cityscape, still_life, nude_painting, illustration were excluded on purpose).
+    License: unknown (card tag). 42 kept, none removed.
+
+none_texture (43 images)
+  - tanganke/dtd, data/test-00000-of-00001.parquet (Describable Textures Dataset), 1 random image of each of
+    the 47 texture classes. License: not stated. 43 kept (4 removed: foliage (2), a woman's face filed under
+    "freckled", a waffle).
+
+none_aerial (40 images)
+  - blanchon/UC_Merced, data/train-00000-of-00001.parquet (UC Merced Land Use, 256x256 aerial tiles), 2 random
+    of each of the 21 classes. License: unknown (card tag). 40 kept (2 removed: one airliner filling the frame).
+
+none_xray (40 images)
+  - keremberke/chest-xray-classification, data/test.zip, 40 random (paediatric chest X-rays, NORMAL and
+    PNEUMONIA). License: CC BY 4.0 (card text; no license tag). 40 kept.
+
+none_diagram (45 images)
+  - lmms-lab/ai2d, data/test-00000-of-00002.parquet (AI2 Diagrams: school-science diagrams), first row of each
+    distinct image, 45 random. License: not stated. 45 kept.
+
+none_product (42 images)
+  - heshamdahy/stanford-products-images (Stanford Online Products: eBay listing photos; the repo holds a part
+    of the dataset), 4 random files of each folder except bicycle_final: cabinet, chair, coffee_maker, fan,
+    kettle, lamp, mug, sofa, stapler, table, toaster. License: not stated. 42 kept (2 removed: unrecognisable
+    close-ups of a surface).
+
+none_objects (45 images)
+  - garythung/trashnet, dataset-resized.zip, 9 random of each of cardboard, glass, metal, plastic, trash
+    (single waste items on a white board; "paper" was not used because printed paper is close to 文件收據).
+    License: mit. 45 kept.
+
+== Skipped / dropped ==
+- not-lain/meme-dataset: collected, then dropped as a source (uncaptioned templates, see above).
+- none_handwriting / none_map / none_logo were considered and not collected (handwritten pages are too close to
+  文件收據; no suitable labelled map or logo photo set was looked for further).
+- Tried and rejected before any image was selected: ferrariedhgs/Nature-Landscape (synthetic images),
+  Kaludi/food-category-classification-v2.0 (may be derived from Food-101), Places365 and ADE20K (too close to
+  SUN397), the Flickr30k rule on one shard only (too few hits, so all 9 shards are used).
+
+== Known limits ==
+- "Expected = none" is debatable for part of the none groups, and the evaluation should be read with that in
+  mind:
+  * none_sports: almost every image shows one or several people doing sport (a user might accept 人像 / 合照);
+    a few show horses or a hand-cycle.
+  * none_art: paintings and sketches whose SUBJECT is people, a landscape, a building or a horse (genre labels
+    are loose; e.g. a few landscape sketches and two portrait drawings are in). Nothing was removed here.
+  * none_aerial: aerial tiles of buildings, harbours with boats, car parks, forest, beach, river.
+  * none_wildlife: includes cows, a goose, a turkey and one toy rhinoceros; coyote / fox / wolf look like dogs
+    and big cats like cats (kept on purpose - they are not pets).
+  * none_indoor: a few rooms contain a person or shop goods (clothes, shoes, toys, books).
+  * none_product overlaps the KIND of objects of the dev set's none_misc (chair, lamp, mug, stapler), from a
+    different dataset.
+- 人像: the LFW half are small (250 px) press photos of public figures, mostly men, often with other people
+  partly visible at the edge; the VOC half are candid full-body shots, including babies and people seen from
+  behind.
+- 合照: includes candid groups and very large groups (teams, classes); some Flickr30k images show 2-3 people.
+- 貓 / 狗: pet-breed photos, one clear animal each (an easy set).
+- 風景 / 城市建築: the Intel images are only 150x150 px and LHQ only 256x256 px; LHQ has no labels, so its
+  cleaning relied on the eye; some 風景 images contain a road, a flag pole or a warning sign; 城市建築 contains
+  skyline views, building details, street scenes with cars and people. The Oxford/Paris part is small (21).
+- 美食: the Chinese-food images are low resolution; the snack images include raw fruit, packaged candy and food
+  being prepared.
+- 花草植物: only 36 species (thistles, pelargoniums, ferns, St John's wort ...), all outdoor phone photos; some
+  show mostly leaves or sparse weeds on soil. No bouquets, trees or house-plant product shots.
+- 交通工具: about 9 per class; several bicycles and motorbikes are parked close-ups; a few buses and trains are
+  seen only partly; boats range from a rubber dinghy to a cruise ship and warships.
+- 螢幕截圖: Android screenshots are old (Android 4-7 look); several desktop screenshots are dark, nearly empty
+  windows or mostly wallpaper. No chat screenshots, no games, no Chinese-language UIs.
+- 文件收據: receipts are all Malaysian shop receipts on a white scan background; the documents are clean
+  rendered PDF pages (no photographed paper, no handwriting, no ID cards / invoices photographed by phone).
+- 動漫插畫: Japanese-style illustrations only (no western cartoons, no manga pages, no TV frames).
+- 迷因梗圖: English Reddit memes only (no Chinese-language memes, no stickers).
+- The by-eye cleaning was done by one reviewer on 200-px thumbnails.
