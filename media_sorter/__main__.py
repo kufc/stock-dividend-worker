@@ -1,7 +1,9 @@
 """程式進入點：python -m media_sorter
 
   python -m media_sorter                    開啟視窗程式
-  python -m media_sorter --download-model   預先下載 AI 模型並測試顯示卡（install.bat 會自動執行）
+  python -m media_sorter --download-model   下載 AI 模型並測試顯示卡（install.bat 會自動執行；執行它就是同意連網下載）
+  python -m media_sorter --verify-model     重新核對模型檔的雜湊（不連網）
+  python -m media_sorter --repair-model     核對後把壞掉或缺少的模型檔重新下載（會連網）
 """
 
 from __future__ import annotations
@@ -133,6 +135,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="media_sorter", description="AI 媒體分類器")
     parser.add_argument("--download-model", nargs="?", const="auto", metavar="MODEL",
                         help="預先下載模型並測試（auto / standard / accurate）")
+    parser.add_argument("--verify-model", nargs="?", const="auto", metavar="MODEL",
+                        help="重新核對模型檔的雜湊，不連網")
+    parser.add_argument("--repair-model", nargs="?", const="auto", metavar="MODEL",
+                        help="核對模型檔，壞掉或缺少的重新下載（會連網）")
     args = parser.parse_args(argv)
 
     if args.download_model:
@@ -144,6 +150,23 @@ def main(argv: list[str] | None = None) -> int:
 
         download_model(args.download_model)
         return 0
+    if args.verify_model or args.repair_model:
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+        from .classifier import repair_model
+
+        label, problems, fetched = repair_model(args.repair_model or args.verify_model,
+                                                allow_download=bool(args.repair_model))
+        print(f"模型：{label}")
+        for problem in problems:
+            print(f"  ✘ {problem}")
+        if not problems:
+            print("  ✔ 每個檔案的大小與 SHA-256 都正確")
+        elif fetched:
+            print(f"  ✔ 已重新下載並核對：{'、'.join(fetched)}")
+        return 0 if (not problems or fetched) else 1
 
     if not _required_packages_present():
         return 1

@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+import copy
+import json
 import os
+from pathlib import Path
+
 import numpy as np
 
 from . import netpolicy
-from .config import MODEL_PRESETS, Category
+from .config import MODEL_CONFIG_DIR, MODEL_PRESETS, WEIGHTS_FILE, Category
 from .vocabulary import VOCABULARY
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
@@ -117,6 +121,39 @@ def score(media_embeddings: np.ndarray, class_embeddings: np.ndarray, logit_scal
     return exp / exp.sum(axis=-1, keepdims=True)
 
 
+class ModelLoadError(RuntimeError):
+    """模型檔是完整的，但載入失敗（記憶體不足、套件版本不合、沒有權限⋯）。沒有連網重試。"""
+
+    def __init__(self, preset: str, cause: BaseException):
+        self.preset, self.cause = preset, cause
+        hint = ("記憶體不足：請關閉其他程式，或在「設定」改用「標準」模型、調低每批處理張數"
+                if _is_oom(cause) or isinstance(cause, MemoryError)
+                else "請從開始功能表執行「修復」或重新執行 install.bat 重裝 AI 元件；"
+                     "如果仍然失敗，到「設定」按「檢查並修復 AI 模型…」")
+        super().__init__(f"AI 模型的檔案是完整的，但載入失敗（{type(cause).__name__}: {cause}）。"
+                         f"程式沒有連網重試。{hint}。")
+
+
+def local_model_config(open_clip, preset: str, config_dir: Path | None = None) -> tuple[str, str]:
+    """讓 open_clip 只用「核對過的本機檔案」：回傳 (模型設定名稱, 權重檔路徑)。
+
+    open_clip 內建的設定用名稱（例如 xlm-roberta-base）指定文字模型與斷詞器，transformers 會拿這個名稱去查
+    Hugging Face 的快取（或連網）。這裡複製一份內建設定，把名稱換成固定版本的本機資料夾，登記成另一個設定名稱。
+    """
+    info = MODEL_PRESETS[preset]
+    tokenizer_dir = str(netpolicy.snapshot_dir(info["tokenizer_repo"], info["tokenizer_revision"]))
+    cfg = copy.deepcopy(open_clip.get_model_config(info["arch"]))
+    cfg["text_cfg"]["hf_model_name"] = tokenizer_dir
+    cfg["text_cfg"]["hf_tokenizer_name"] = tokenizer_dir
+    name = f"media-sorter-{info['arch']}"
+    folder = Path(config_dir) if config_dir is not None else MODEL_CONFIG_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{name}.json").write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+    open_clip.add_model_config(folder)
+    weights = netpolicy.snapshot_dir(info["hf_repo"], info["hf_revision"]) / WEIGHTS_FILE
+    return name, str(weights)
+
+
 class Classifier:
     def __init__(self, preset: str = "auto", *, arch: str | None = None, pretrained: str | None = None,
                  device: str | None = None):
@@ -136,28 +173,32 @@ class Classifier:
             self.preset = arch
         self.model_name = arch
 
-        # 模型已經在這台電腦上 → 離線載入，完全不連網；還沒下載才連網（見 netpolicy）
-        self.loaded_offline = netpolicy.prepare_for(self.preset) if self.preset in MODEL_PRESETS else False
+        # 嚴格離線：先核對模型檔（固定版本、大小、雜湊），有問題就回報，絕不自己連網（見 netpolicy）。
+        # 這裡的任何例外都直接往上丟——記憶體不足、套件版本不合都不是「少下載了檔案」，重試連網沒有幫助。
+        known = self.preset in MODEL_PRESETS
+        if known:
+            netpolicy.require_ready(self.preset)
+        else:
+            netpolicy.set_offline(True)
+        self.loaded_offline = True
         import open_clip
 
         # 顯示卡上用半精度（fp16）：記憶體減半、速度更快，辨識結果幾乎相同。
         precision = "pure_fp16" if device == "cuda" else "fp32"
-
-        def load():
-            model, _, preprocess = open_clip.create_model_and_transforms(
-                arch, pretrained=pretrained, device=device, precision=precision
-            )
-            return model, preprocess, open_clip.get_tokenizer(arch)
-
+        if known:
+            # 直接把核對過的本機檔案路徑交給 open_clip：載入的一定是剛才核對的那幾個檔案，不經過「查詢最新版本」
+            load_arch, weights = local_model_config(open_clip, self.preset)
+        else:
+            load_arch, weights = arch, pretrained
         try:
-            model, preprocess, tokenizer = load()
-        except Exception:
-            if not self.loaded_offline:
+            model, _, preprocess = open_clip.create_model_and_transforms(
+                load_arch, pretrained=weights, device=device, precision=precision
+            )
+            tokenizer = open_clip.get_tokenizer(load_arch)
+        except Exception as exc:
+            if not known:
                 raise
-            # 快取不完整（例如上次下載中斷）：改為連網下載補齊
-            self.loaded_offline = False
-            netpolicy.set_offline(False)
-            model, preprocess, tokenizer = load()
+            raise ModelLoadError(self.preset, exc) from exc
         model.eval()
         self.model = model
         self.preprocess = preprocess
@@ -258,34 +299,60 @@ class Classifier:
         return self._vocab_embeddings
 
 
-def model_status(choice: str = "auto") -> tuple[str, bool | None] | None:
-    """給介面顯示用：(模型名稱, 是否已下載)。已下載＝這台電腦的 Hugging Face 快取裡已有模型與斷詞器。
+def resolve_choice(choice: str = "auto") -> str:
+    """設定裡的選擇（auto／standard／accurate）→ 這台電腦實際會用的模型。"""
+    device, _, vram_gb = detect_device()
+    return resolve_preset(choice, device, vram_gb, total_ram_gb())
 
-    不載入 huggingface_hub（也就不會連網）；判斷不出來就回傳 None，介面就不顯示這一行。
+
+def model_status(choice: str = "auto") -> tuple[str, bool | None] | None:
+    """給介面顯示用：(模型名稱, 是否已下載)。已下載＝這台電腦上有固定版本的每一個檔案而且大小正確。
+
+    不連網；判斷不出來就回傳 None，介面就不顯示這一行。
     """
     try:
-        device, _, vram_gb = detect_device()
-        preset = resolve_preset(choice, device, vram_gb, total_ram_gb())
+        preset = resolve_choice(choice)
         return MODEL_PRESETS[preset]["label"], netpolicy.preset_cached(preset)
     except Exception:  # noqa: BLE001 - 只是提示資訊，任何原因失敗都不影響使用
         return None
 
 
-def download_model(choice: str = "auto") -> None:
-    """安裝時預先下載模型並做一次辨識測試，確認顯示卡可以正常運作。"""
+def self_test(preset: str) -> "Classifier":
+    """離線載入模型並做一次辨識測試，確認顯示卡可以正常運作。"""
     from PIL import Image
 
-    device, description, vram_gb = detect_device()
-    preset = resolve_preset(choice, device, vram_gb, total_ram_gb())
-    print(f"運算裝置：{description}")
-    print(f"模型：{MODEL_PRESETS[preset]['label']}")
-    print("下載並載入模型中（第一次需要一些時間）⋯")
     clf = Classifier(preset)
     image_vec = clf.encode_images([Image.new("RGB", (224, 224), (200, 120, 40))])
     text_vec = clf.encode_texts(["測試", "test"])
     assert image_vec.shape[1] == text_vec.shape[1]
     if not (np.isfinite(image_vec).all() and np.isfinite(text_vec).all()):
         raise RuntimeError("模型計算結果異常（NaN），請回報你的顯示卡型號")
+    return clf
+
+
+def download_model(choice: str = "auto") -> None:
+    """【使用者明確要求下載時】下載模型（固定版本、核對雜湊），再離線載入做一次測試。
+
+    安裝程式的最後一步、以及 `python -m media_sorter --download-model` 會呼叫；執行這個指令就是同意下載。
+    """
+    device, description, vram_gb = detect_device()
+    preset = resolve_preset(choice, device, vram_gb, total_ram_gb())
+    info = MODEL_PRESETS[preset]
+    print(f"運算裝置：{description}")
+    print(f"模型：{info['label']}")
+    need = netpolicy.download_bytes(preset)
+    if need:
+        print(f"從 huggingface.co 下載模型檔（約 {need / 1024**3:.1f} GB，固定版本 {info['hf_revision'][:12]}）⋯")
+    netpolicy.download_preset(preset, on_progress=lambda name, i, n: print(f"  [{i}/{n}] {name}", flush=True))
+    print("核對完成，離線載入並測試⋯")
+    clf = self_test(preset)
     if clf.fell_back_to_fp32:
         print("注意：這張顯示卡的半精度計算不穩定，已自動改用 fp32（速度較慢但結果正確）。")
     print("模型測試成功！")
+
+
+def repair_model(choice: str = "auto", allow_download: bool = True) -> tuple[str, list[str], list[str]]:
+    """【使用者明確要求修復時】重新核對每個模型檔的雜湊，壞的重新下載。回傳 (模型名稱, 發現的問題, 重新下載的檔案)。"""
+    preset = resolve_choice(choice)
+    problems, fetched = netpolicy.repair_preset(preset, allow_download=allow_download)
+    return MODEL_PRESETS[preset]["label"], problems, fetched

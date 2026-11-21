@@ -24,7 +24,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 import numpy as np
 from PIL import Image, ImageTk
 
-from . import APP_NAME, __version__
+from . import APP_NAME, __version__, netpolicy
 from .analysis import CONFIRMED, ERROR, PENDING, SKIPPED, Item, analyze, rescore, suggest_categories
 from .classifier import covered_tags
 from .config import (
@@ -87,7 +87,7 @@ UNSORTED_NAME = "未分類"  # AI 沒把握的檔案可以選擇放到這個資�
 BUCKET_ALL, BUCKET_LOW, BUCKET_SKIPPED, BUCKET_ERROR, BUCKET_CATEGORY = "all", "low", "skipped", "error", "cat:"
 MAX_PLAN_ROWS = 300
 KIND_TEXT = {"image": "圖片", "video": "影片"}
-NO_RUN_ID = {"preview", "folder", "model", "viewer"}  # 這幾種訊息不屬於某一輪工作
+NO_RUN_ID = {"preview", "folder", "model", "viewer", "model_downloaded", "model_repaired"}  # 這幾種訊息不屬於某一輪工作
 KEY_IGNORE = {"Entry", "TEntry", "TCombobox", "Text", "Spinbox", "TSpinbox"}
 RETURN_IGNORE = KEY_IGNORE | {"TButton", "TCheckbutton", "TRadiobutton"}  # Enter／空白鍵在按鈕上是「按下那個按鈕」
 
@@ -166,11 +166,29 @@ def _default_model_status(choice: str):
     return model_status(choice)
 
 
+def _default_model_download(preset: str, on_progress=None):
+    """使用者按下「下載」之後才會被呼叫（見 App._ask_model_download）。"""
+    from . import netpolicy
+
+    return netpolicy.download_preset(preset, on_progress=on_progress)
+
+
+def _default_model_repair(choice: str):
+    """使用者在「設定」按下「檢查並修復 AI 模型…」並確認之後才會被呼叫。"""
+    from .classifier import repair_model
+
+    return repair_model(choice)
+
+
 class App:
-    def __init__(self, root: tk.Tk, classifier_factory=_default_classifier_factory, model_status_func=None):
+    def __init__(self, root: tk.Tk, classifier_factory=_default_classifier_factory, model_status_func=None,
+                 model_download_func=None, model_repair_func=None):
         self.root = root
         self.classifier_factory = classifier_factory
         self.model_status_func = model_status_func or _default_model_status
+        self.model_download_func = model_download_func or _default_model_download
+        self.model_repair_func = model_repair_func or _default_model_repair
+        self.model_task_running = False  # 正在下載或修復模型（使用者要求的）
         self.settings = load_settings()
         self.categories = load_categories()
         self.items: list[Item] = []
@@ -548,9 +566,10 @@ class App:
         else:
             label, cached = self.model_note
             if cached:
-                p.model_var.set(f"AI 模型已經在這台電腦上，不需要再下載。（{label}）")
+                p.model_var.set(f"AI 模型已經在這台電腦上，辨識時不會連網。（{label}）")
             elif cached is False:
-                p.model_var.set(f"第一次辨識會先下載 AI 模型，需要網路連線，可能要幾分鐘；下載一次之後就不必再下載。（{label}）")
+                p.model_var.set(f"這台電腦上還沒有 AI 模型。按「開始辨識」時會先問你要不要下載；"
+                                f"你同意之前程式不會連網。（{label}）")
             else:
                 p.model_var.set(label)
 
@@ -1181,7 +1200,7 @@ class App:
         CategoryDialog(self.root, self.categories, self.set_categories)
 
     def open_settings_dialog(self) -> None:
-        SettingsDialog(self.root, self.settings, self.on_settings_saved)
+        SettingsDialog(self.root, self.settings, self.on_settings_saved, on_repair_model=self.repair_model)
 
     def on_settings_saved(self, settings: dict) -> None:
         model_changed = settings["model"] != self.settings["model"]
@@ -1321,7 +1340,7 @@ class App:
             self.page2.stop_btn.state(["disabled"])
 
     def start_analysis(self) -> None:
-        if self.analysis_running() or self.organizing:
+        if self.analysis_running() or self.organizing or self.model_task_running:
             return
         text = self.folder_var.get().strip()
         folder = self.source_dir()
@@ -1388,7 +1407,7 @@ class App:
                 post(("done", "這個資料夾裡沒有找到支援的圖片或影片。"))
                 return
             if self.classifier is None or self.classifier_key != settings["model"]:
-                post(("status", "正在載入 AI 模型⋯（第一次使用需下載模型，可能要幾分鐘）"))
+                post(("status", "正在載入 AI 模型⋯（離線載入，不會連網）"))
                 self.classifier = None
                 self.classifier = self.classifier_factory(settings["model"])
                 self.classifier_key = settings["model"]
@@ -1406,6 +1425,8 @@ class App:
                 post(("done", "已停止。已辨識的檔案可以先檢查與整理。"))
             else:
                 post(("done", f"辨識完成！共 {len(paths)} 個檔案，使用：{device}。請檢查分類。"))
+        except netpolicy.ModelNotReady as exc:  # 離線模式下模型不能用：不連網，交給使用者決定
+            post(("model_needed", exc.preset, exc.problems, exc.download_bytes))
         except ImportError as exc:
             from .config import INSTALLED
 
@@ -1413,6 +1434,96 @@ class App:
             post(("error", f"AI 元件沒有安裝完整（{exc}），{fix}。", traceback.format_exc()))
         except Exception as exc:  # noqa: BLE001 - 背景錯誤要回報到介面
             post(("error", f"{type(exc).__name__}: {exc}", traceback.format_exc()))
+
+    # ------------------------------------------------------------------ 模型：只有使用者同意才連網
+    def _ask_model_download(self, preset: str, problems: list[str], size: int) -> None:
+        """離線模式下模型不能用。說明原因、要下載什麼、從哪裡，使用者按「是」才連網。"""
+        from .config import MODEL_PRESETS
+
+        info = MODEL_PRESETS[preset]
+        text = (f"AI 模型「{info['label']}」還不能使用：\n　" + "\n　".join(problems[:6]) + "\n\n"
+                "程式目前是離線模式，沒有連網。要現在下載嗎？\n\n"
+                f"・下載來源：huggingface.co（{info['hf_repo']}、{info['tokenizer_repo']}）\n"
+                f"・大小：{_fmt_size(size)}，固定版本，下載後會核對檔案的雜湊\n"
+                "・只會下載模型檔；你的照片與影片不會上傳\n\n"
+                "按「否」不會連網。你也可以稍後再按「開始辨識」。")
+        if not messagebox.askyesno(APP_NAME, text):
+            self.status_var.set("沒有下載 AI 模型，所以沒有辨識。")
+            return
+        self._start_model_task(
+            "正在下載 AI 模型⋯（下載完成後會自動開始辨識）",
+            lambda progress: self.model_download_func(preset, progress), "model_downloaded", retry=True)
+
+    def _start_model_task(self, status: str, func, done_kind: str, **extra) -> None:
+        if self.model_task_running:
+            return
+        self.model_task_running = True
+        self.status_var.set(status)
+        self.status_bar.show_progress(True)
+        self._progress_indeterminate()
+        self._refresh_nav()
+
+        def work() -> None:
+            def progress(name: str, number: int, total: int) -> None:
+                self.queue.put(("status", self._run_id, f"{status}　{number}/{total}：{name}"))
+
+            try:
+                result, error = func(progress), None
+            except Exception as exc:  # noqa: BLE001 - 回報到介面
+                result, error = None, f"{type(exc).__name__}: {exc}"
+                self.log_error(traceback.format_exc())
+            self.queue.put((done_kind, result, error, extra))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _model_task_finished(self) -> None:
+        self.model_task_running = False
+        self.status_bar.show_progress(self.organizing or self._analysis_active)
+        self.progress.stop()
+        self._start_model_status()
+        self._refresh_nav()
+
+    def _model_task_done(self, result, error, extra) -> None:
+        self._model_task_finished()
+        if error:
+            self.status_var.set("AI 模型下載失敗。")
+            show_problem(self.root, "AI 模型下載失敗",
+                         "沒有下載成功，所以還不能辨識。請確認網路連線後，再按一次「開始辨識」。", error)
+            return
+        self.status_var.set("AI 模型下載完成，已回到離線模式。")
+        if extra.get("retry"):
+            self.start_analysis()
+
+    def repair_model(self) -> None:
+        """「設定」裡的「檢查並修復 AI 模型…」：使用者確認後才執行，可能會連網。"""
+        if self.analysis_running() or self.organizing or self.model_task_running:
+            messagebox.showinfo(APP_NAME, "請等目前的工作結束後再試。")
+            return
+        if not messagebox.askyesno(
+                APP_NAME,
+                "要檢查並修復 AI 模型嗎？\n\n"
+                "・程式會重新計算每個模型檔的雜湊（幾秒到一分鐘）\n"
+                "・發現缺少或損壞的檔案時，會連到 huggingface.co 重新下載那些檔案（最多數 GB）\n"
+                "・檔案都正確的話不會連網\n・你的照片與影片不會上傳"):
+            return
+        self.classifier = None  # 放開模型檔，才換得掉
+        choice = self.settings["model"]
+        self._start_model_task("正在檢查 AI 模型⋯", lambda progress: self.model_repair_func(choice), "model_repaired")
+
+    def _model_repair_done(self, result, error, extra) -> None:
+        self._model_task_finished()
+        if error:
+            self.status_var.set("AI 模型修復失敗。")
+            show_problem(self.root, "AI 模型修復失敗", "沒有修復成功。請確認網路連線後再試一次。", error)
+            return
+        label, problems, fetched = result
+        if not problems:
+            text = f"AI 模型「{label}」的每個檔案都正確，沒有連網，也不需要修復。"
+        else:
+            text = (f"AI 模型「{label}」發現 {len(problems)} 個問題：\n　" + "\n　".join(problems[:6])
+                    + f"\n\n已重新下載並核對：{'、'.join(fetched)}")
+        self.status_var.set("AI 模型檢查完成。")
+        messagebox.showinfo(APP_NAME, text)
 
     def _progress_indeterminate(self) -> None:
         self.progress.configure(mode="indeterminate")
@@ -1503,6 +1614,14 @@ class App:
             if token == self._folder_token:
                 self.stats, self.stats_error = stats, error
                 self._update_page1()
+        elif kind == "model_needed":
+            preset, problems, size = args
+            self._finish_worker("還沒有可用的 AI 模型，沒有開始辨識。")
+            self.root.after(0, lambda: self._ask_model_download(preset, problems, size))
+        elif kind == "model_downloaded":
+            self._model_task_done(*args)
+        elif kind == "model_repaired":
+            self._model_repair_done(*args)
         elif kind == "model":
             choice, status = args
             if choice == self.settings["model"]:

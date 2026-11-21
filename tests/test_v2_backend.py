@@ -192,7 +192,10 @@ def test_new_settings_are_validated(tmp_path):
 
 # ---------------------------------------------------------------------------- 模型狀態
 def test_model_status_detects_cache(tmp_path, monkeypatch):
+    """「已下載」＝固定版本的每一個檔案都在而且大小正確。
+    （以前只要 snapshots 底下任何版本有任何檔案就算；審查指出那不是完整性檢查，所以這個測試的前提改了。）"""
     pytest.importorskip("torch")
+    from media_sorter import netpolicy
     from media_sorter.classifier import model_status
 
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
@@ -200,8 +203,18 @@ def test_model_status_detects_cache(tmp_path, monkeypatch):
     assert "標準" in label and cached is False
     folder = tmp_path / "models--laion--CLIP-ViT-B-32-xlm-roberta-base-laion5B-s13B-b90k" / "snapshots" / "abc"
     touch(folder / "open_clip_model.safetensors", "x")
-    assert model_status("standard")[1] is False  # 斷詞器還沒下載，仍然算「需要下載」
     touch(tmp_path / "models--xlm-roberta-base" / "snapshots" / "def" / "tokenizer.json", "x")
+    assert model_status("standard")[1] is False  # 別的版本、不完整的檔案：不算已下載
+    files = netpolicy.preset_files("standard")
+    for file in files[1:]:
+        touch(file.path(tmp_path), "x")
+        with open(file.path(tmp_path), "r+b") as f:
+            f.truncate(file.size)
+    assert model_status("standard")[1] is False  # 權重檔還沒有
+    touch(files[0].path(tmp_path), "x")
+    assert model_status("standard")[1] is False  # 有檔案但大小不對（下載中斷）
+    with open(files[0].path(tmp_path), "r+b") as f:
+        f.truncate(files[0].size)  # 稀疏檔：不會真的占 1.5 GB
     assert model_status("standard")[1] is True
 
 

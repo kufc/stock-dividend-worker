@@ -49,7 +49,7 @@ def test_folder_step_shows_counts_and_model_notice(monkeypatch, tmp_path):
         instance._start_model_status()
         instance.folder_var.set(str(src))
         page = instance.page1
-        pump(instance.root, lambda: page.count_vars["images"].get() == "4" and "第一次辨識會先下載" in page.model_var.get())
+        pump(instance.root, lambda: page.count_vars["images"].get() == "4" and "會先問你要不要下載" in page.model_var.get())
         assert page.count_vars["other"].get() == "1"
         assert page.start_btn.cget("text") == "開始辨識 4 個檔案"
         instance.subfolders_var.set(False)

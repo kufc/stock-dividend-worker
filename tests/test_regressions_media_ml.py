@@ -202,5 +202,6 @@ def test_nan_from_fp16_falls_back_to_fp32():
     clf = Classifier.__new__(Classifier)
     clf._torch, clf.device, clf.dtype, clf.model = torch, "cpu", torch.float16, Model()
     clf._max_batch, clf.fell_back_to_fp32, clf._vocab_embeddings = None, False, None
+    clf._other_embedding, clf._category_cache = None, {}  # _use_fp32 會清掉這些快取
     out = clf.encode_prepared([torch.zeros(3, 2, 2)] * 2)
     assert np.isfinite(out).all() and clf.fell_back_to_fp32

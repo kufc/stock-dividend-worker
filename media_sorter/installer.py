@@ -3,7 +3,7 @@
 1. 用 nvidia-smi 偵測 NVIDIA 顯示卡，選擇對應的 PyTorch CUDA 版本（已裝對的版本就不重裝）
 2. 安裝 requirements.txt 中的套件（鎖定剛裝好的 PyTorch，避免被換成 CPU 版）
 3. 檢查視窗元件（tkinter），寫入「安裝完成」標記
-4. 預先下載 AI 模型並做一次測試（失敗也沒關係，第一次辨識時會再下載）
+4. 下載 AI 模型（固定版本、核對雜湊）並做一次測試（失敗也沒關係：第一次辨識時程式會問要不要下載）
 """
 
 from __future__ import annotations
@@ -272,7 +272,7 @@ def main() -> int:
     print("\n[4/4] 下載 AI 模型並測試⋯", flush=True)
     code = subprocess.call([sys.executable, "-m", "media_sorter", "--download-model", "auto"], cwd=ROOT)
     if code != 0:
-        print("\n⚠ 模型下載或測試失敗。程式仍可開啟，第一次辨識時會再嘗試下載。")
+        print("\n⚠ 模型下載或測試失敗。程式仍可開啟；第一次辨識時會先問你要不要下載（你同意之前不會連網）。")
 
     check = (
         "import torch\n"

@@ -38,28 +38,61 @@ APP_DIR = default_data_dir()
 CATEGORIES_FILE = APP_DIR / "categories.json"
 SETTINGS_FILE = APP_DIR / "settings.json"
 LOG_DIR = APP_DIR / "logs"
+MODEL_STAMP_FILE = APP_DIR / "model-verified.json"  # 哪些模型檔已經核對過雜湊（見 netpolicy）
+MODEL_CONFIG_DIR = APP_DIR / "model-config"          # 給 open_clip 的本機模型設定（指向核對過的檔案）
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".heic", ".heif"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".m4v", ".webm", ".flv", ".3gp", ".mts", ".m2ts", ".mpg", ".mpeg"}
 
 # 多語言 CLIP 模型，分類名稱可以直接用中文。
+#
+# 版本是固定的：每個模型記著 Hugging Face 上的 commit（*_revision）與每個檔案的大小、SHA-256（*_files）。
+# 程式只下載、只載入這些檔案，載入前會核對（見 netpolicy）；上游就算更新了 main，這裡的結果也不會變。
+# 要換版本：改 revision → 執行 python tools/update_model_pins.py 重新產生檔案清單 → 重跑
+# tests/manual/dump_embeddings.py 與評測（docs/evaluation.md），因為向量與門檻都跟著模型走。
+_XLMR_TOKENIZER_FILES = {
+    "sentencepiece.bpe.model": (5069051, "cfc8146abe2a0488e9e2a0c56de7952f7c11ab059eca145a0a727afce0db2865"),
+    "tokenizer.json": (9096718, "a898ea75433890f6610f4e470b8ebeb0c21dce5c8dd61f892eb09eb5919d2e2c"),
+    "tokenizer_config.json": (25, "994f46754c5bf4014f1aa92d34b1374319c3a6b3f702105cd5b742beaecd18ce"),
+}
 MODEL_PRESETS = {
     "standard": {
         "label": "標準（速度快，首次下載約 1.5 GB）",
         "arch": "xlm-roberta-base-ViT-B-32",
         "pretrained": "laion5b_s13b_b90k",
-        # 在 Hugging Face 上的位置（判斷「已下載」與解除安裝時使用；要跟 open_clip 的設定一致，見 tests）
+        # 在 Hugging Face 上的位置（下載、判斷「已下載」與解除安裝時使用；要跟 open_clip 的設定一致，見 tests）
         "hf_repo": "laion/CLIP-ViT-B-32-xlm-roberta-base-laion5B-s13B-b90k",
+        "hf_revision": "506d40eb551f4801a1c27fc20a31c7b8f590deda",
+        "hf_files": {
+            "open_clip_pytorch_model.bin":
+                (1464635263, "a5412f19cca70db8d434f68361f7254bd322a553455a63dbb709bd6a650cf378"),
+        },
         "tokenizer_repo": "xlm-roberta-base",
+        "tokenizer_revision": "e73636d4f797dec63c3081bb6ed5c7b0bb3f2089",
+        "tokenizer_files": {
+            "config.json": (615, "d66ed8cd4f2a93b358c245e50736fa389ed4f35c0bae7aad0b32abb20c62b579"),
+            **_XLMR_TOKENIZER_FILES,
+        },
     },
     "accurate": {
         "label": "高精準（首次下載約 5 GB，建議顯示卡記憶體 6 GB 以上）",
         "arch": "xlm-roberta-large-ViT-H-14",
         "pretrained": "frozen_laion5b_s13b_b90k",
         "hf_repo": "laion/CLIP-ViT-H-14-frozen-xlm-roberta-large-laion5B-s13B-b90k",
+        "hf_revision": "f9ab955287d06ac45c7654f26fecd29301c70a1f",
+        "hf_files": {
+            "open_clip_pytorch_model.bin":
+                (4772387963, "ee81ce53c8591d48ee5e7b390b2f10d502c721df5920c3096c6bdb54d1459881"),
+        },
         "tokenizer_repo": "xlm-roberta-large",
+        "tokenizer_revision": "c23d21b0620b635a76227c604d44e43a9f0ee389",
+        "tokenizer_files": {
+            "config.json": (616, "ec7c3a99c58a38ebb702a2297f1c4586944e841b5eb29d201ff87e0f9c9abe0e"),
+            **_XLMR_TOKENIZER_FILES,
+        },
     },
 }
+WEIGHTS_FILE = "open_clip_pytorch_model.bin"
 MODEL_CHOICES = {
     "auto": "自動（依顯示卡記憶體選擇）",
     **{key: preset["label"] for key, preset in MODEL_PRESETS.items()},

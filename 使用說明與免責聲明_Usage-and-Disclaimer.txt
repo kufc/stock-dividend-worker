@@ -466,13 +466,26 @@ counterpart.
    and the AI model (Hugging Face). Those sites may see your IP address
    and download requests, and their own privacy policies apply.
 
-・AI 模型下載完成後，程式載入模型時不會再連網（不檢查更新，也不回報
-　使用統計）。只有換用另一個還沒下載過的模型，或模型檔案不完整時，
-　才會再連網下載。
-   Once the AI model has been downloaded, loading it no longer uses the
-   internet (no update checks and no usage statistics). The program only
-   goes online again to download a model you have not used before, or
-   to repair incomplete model files.
+・辨識時程式是「嚴格離線」的：載入模型與辨識都不連網（不檢查更新，
+　也不回報使用統計），而且不論發生什麼錯誤，都不會自己改成連網。
+   Recognition runs strictly offline: loading the model and recognizing
+   files do not use the internet (no update checks and no usage
+   statistics), and no error makes the program go online by itself.
+
+・模型還沒下載、檔案不完整或損壞時，程式會說明原因並問你要不要下載；
+　你按「是」之後才會連到 Hugging Face，只下載固定版本的模型檔，下載完
+　會核對檔案的雜湊，然後回到離線。
+   If the model has not been downloaded, or its files are incomplete or
+   damaged, the program explains why and asks whether to download it.
+   Only after you answer yes does it connect to Hugging Face, download
+   the pinned version of the model files, verify their hashes and go
+   back offline.
+
+・「設定」裡的「檢查並修復 AI 模型…」會重新核對模型檔；只有發現缺少
+　或損壞的檔案時，才會（在你確認之後）連網重新下載那些檔案。
+   "檢查並修復 AI 模型…" (check and repair the AI model) in Settings
+   re-verifies the model files; it goes online, after you confirm, only
+   when a file is missing or damaged, and only to download those files.
 
 ・防毒軟體（例如卡巴斯基）若跳出「無法檢查 huggingface.co 等網站的
 　加密連線」，這是防毒軟體的加密連線檢查與下載元件不相容，不是病毒。

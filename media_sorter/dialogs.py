@@ -556,14 +556,18 @@ class CategoryDialog(tk.Toplevel):
 
 # ---------------------------------------------------------------------------- 設定
 class SettingsDialog(tk.Toplevel):
-    def __init__(self, master, settings: dict, on_save):
+    def __init__(self, master, settings: dict, on_save, on_repair_model=None):
         super().__init__(master)
         self.title("設定")
         self.transient(master)
         self.settings = dict(settings)
         self.on_save = on_save
+        self.on_repair_model = on_repair_model
         buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
         buttons.pack(side="bottom", fill="x")
+        if on_repair_model is not None:
+            self.repair_btn = ttk.Button(buttons, text="檢查並修復 AI 模型…", command=self.repair_model)
+            self.repair_btn.pack(side="left")
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
         ttk.Button(buttons, text="儲存", style="Accent.TButton", command=self.save).pack(side="right", padx=8)
         body = ttk.Frame(self, padding=12)
@@ -598,6 +602,10 @@ class SettingsDialog(tk.Toplevel):
         self.update_idletasks()  # 高度依內容決定，下面不留一大片空白
         fit_to_screen(self, 720, round(self.winfo_reqheight() / ui_scale(self)) + 24, 560, 300)
         self.grab_set()
+
+    def repair_model(self) -> None:
+        self.destroy()
+        self.on_repair_model()
 
     def save(self) -> None:
         try:
