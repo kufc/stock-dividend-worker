@@ -26,10 +26,11 @@ ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(HERE))
 
-APP_FILES = ["requirements.txt", "README.md", "使用說明與免責聲明_Usage-and-Disclaimer.txt"]
+APP_FILES = ["requirements.txt", "requirements.lock", "README.md", "使用說明與免責聲明_Usage-and-Disclaimer.txt"]
 # 內建 Python 執行環境裡用不到、可以刪掉以縮小安裝檔的東西
 RUNTIME_TRIM_DIRS = ["conda-meta", "include", "libs", "Tools", "Lib/test", "Library/include", "Library/lib/pkgconfig",
                      "Library/lib/cmake", "Library/share", "etc", "share", "Lib/idlelib/idle_test"]
+# 內建 Python 固定在 3.12：requirements.lock 與 TORCH_PINS 的雜湊都是替它產生的
 RUNTIME_PACKAGES = ["python 3.12.*", "tk", "pip", "vc14_runtime"]
 
 

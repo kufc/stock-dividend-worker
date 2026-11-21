@@ -1,10 +1,11 @@
-# torch 與 torchvision 由 install.bat 依你的顯示卡自動安裝對應的 CUDA 版本，這裡不列出
-# （安裝時會鎖定已裝好的版本，避免被換成 CPU 版）。
-# 上限是測試過的主要版本，避免未來的大改版讓安裝壞掉。
-open_clip_torch>=2.24,<4
-transformers>=4.40,<6
-numpy>=1.24,<3
-Pillow>=10.0,<13
-pillow-heif>=0.16,<2
-av>=12.0,<19
-send2trash>=1.8,<2
+# 直接用到的套件，全部固定版本（跟產生 docs/evaluation.md 的向量時用的是同一組）。
+# torch 與 torchvision 不在這裡：安裝程式依顯示卡選 CUDA 版本，版本固定在 media_sorter/installer.py 的 TORCH_PINS。
+# 連同所有間接相依套件、每個檔案的 SHA-256：requirements.lock（由這個檔案產生）。
+# 更新版本的步驟見 README「更新相依套件與模型的版本」。
+open_clip_torch==4.2.2
+transformers==5.23.0
+numpy==2.5.4
+Pillow==13.0.0
+pillow-heif==1.8.1
+av==19.0.2
+send2trash==1.8.3

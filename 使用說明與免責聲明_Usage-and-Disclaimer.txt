@@ -104,13 +104,20 @@ counterpart.
 --------------------------------------------------------------------
 
 ・建議用安裝程式：雙擊 AI-Media-Sorter-Setup-版本.exe，跟著精靈操作。
-　如果出現「Windows 已保護您的電腦」，按「其他資訊」再按「仍要執行」。
+　安裝程式目前沒有數位簽章，所以 Windows 會顯示「Windows 已保護您的電腦」，
+　也無法替你確認檔案的發行者與是否被更改過；這個警告是正確的。請只從你
+　信任的來源取得安裝檔，再自行決定是否按「其他資訊」繼續執行；不放心
+　的話請改用免安裝版。
 　安裝程式需要你先閱讀並接受本文件（授權頁），然後選擇資料夾與是否建立
 　桌面捷徑。不需要系統管理員權限，程式只會安裝給目前的使用者。
    Recommended: use the installer. Double-click
-   AI-Media-Sorter-Setup-version.exe and follow the wizard. If Windows
-   shows "Windows protected your PC", click "More info" and then "Run
-   anyway". The installer asks you to read and accept this document (the
+   AI-Media-Sorter-Setup-version.exe and follow the wizard. The
+   installer is currently not digitally signed, so Windows shows
+   "Windows protected your PC" and cannot confirm who published the file
+   or whether it was altered; that warning is accurate. Only use an
+   installer from a source you trust, then decide for yourself whether
+   to continue via "More info"; if in doubt, use the portable version
+   instead. The installer asks you to read and accept this document (the
    license page), then lets you choose the folder and whether to create
    a desktop shortcut. It does not need administrator rights and
    installs for the current user only.

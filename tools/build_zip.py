@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CRLF_SUFFIXES = {".bat", ".cmd", ".txt"}  # 跟 .gitattributes 的 eol=crlf 相同
 REQUIRED = [  # 少了任何一個就不是完整的交付（tests/test_build_zip.py 也會檢查）
-    "README.md", "install.bat", "start.bat", "uninstall.bat", "requirements.txt",
+    "README.md", "install.bat", "start.bat", "uninstall.bat", "requirements.txt", "requirements.lock",
     "media_sorter/__init__.py", "docs/evaluation.md", "tools/evaluate.py", "tools/build_zip.py",
     "tests/test_real_embeddings.py", "tests/manual/embeddings_standard.npz", "tests/manual/embeddings_accurate.npz",
     "tests/manual/embeddings_holdout_standard.npz", "tests/manual/embeddings_holdout_accurate.npz",

@@ -1,7 +1,7 @@
 """安裝程式（由 install.bat 以虛擬環境中的 Python 執行，只用標準函式庫）。
 
-1. 用 nvidia-smi 偵測 NVIDIA 顯示卡，選擇對應的 PyTorch CUDA 版本（已裝對的版本就不重裝）
-2. 安裝 requirements.txt 中的套件（鎖定剛裝好的 PyTorch，避免被換成 CPU 版）
+1. 用 nvidia-smi 偵測 NVIDIA 顯示卡，安裝對應 CUDA 版本的「固定版本」PyTorch（TORCH_PINS；已裝好同一版就不重裝）
+2. 依 requirements.lock 安裝其他套件（固定版本＋核對 SHA-256；不是 Windows x64＋Python 3.12 時只固定版本）
 3. 檢查視窗元件（tkinter），寫入「安裝完成」標記
 4. 下載 AI 模型（固定版本、核對雜湊）並做一次測試（失敗也沒關係：第一次辨識時程式會問要不要下載）
 """
@@ -28,6 +28,49 @@ TORCH_INDEX = "https://download.pytorch.org/whl/{}"
 CUDA_NEW, CUDA_NEW_VERSION = "cu128", "12.8"
 CUDA_OLD, CUDA_OLD_VERSION = "cu126", "12.6"
 MIN_DRIVER_MAJOR = 528  # CUDA 12.x 需要的最低驅動程式版本
+# 固定的 PyTorch 版本。PyTorch 的每個下載站（CUDA 版本）提供的最新版不一樣，所以依下載站各自固定；
+# 雜湊是「Windows x64、Python 3.12」那個檔案的 SHA-256（取自下載站的索引頁），安裝版內建的就是這個 Python。
+# 更新方式見 README「更新相依套件與模型的版本」。key：CUDA 版本代號，或 "cpu"。
+TORCH_PINS = {
+    "cu128": {"torch": ("2.11.0", "7c78215c3af4f62e63f2b2e360f1722fc719b0853c7ac22666483d9810613a4c"),
+              "torchvision": ("0.26.0", "8c0d1c4fbb2c9a4d5d41d0aaa87da20e525bcb2a154ce405725b0be59456804b")},
+    "cu126": {"torch": ("2.14.1", "97e3bc87ea74367518b740d912a7f5259c25a3c8115bf5916abee1d53ff115a4"),
+              "torchvision": ("0.29.1", "ab045bfb0ac014b80afb478190d14c6f7d3b57ade0d1fcd6ffc07414a0266b96")},
+    "cpu": {"torch": ("2.15.0", "5af9fb357790db09e62484b12032304f046c22c4b1895ca88c4cf5987ea369ca"),
+            "torchvision": ("0.29.1", "361f943872f7763807912cc51d621f0172e8d481792f8c6f3fe1f63838a29e0c")},
+}
+LOCK_FILE = ROOT / "requirements.lock"
+
+
+def hashes_apply() -> bool:
+    """雜湊鎖定檔是替「Windows x64、Python 3.12」產生的；其他環境（免安裝版配別的 Python）只固定版本、不核對雜湊。"""
+    return sys.platform == "win32" and sys.version_info[:2] == (3, 12) and struct.calcsize("P") == 8
+
+
+def torch_requirements(build: str, with_hashes: bool) -> str:
+    """給 pip 的需求檔內容：這個下載站固定的 torch／torchvision（with_hashes：連同 SHA-256）。"""
+    lines = []
+    for name in ("torch", "torchvision"):
+        version, digest = TORCH_PINS[build][name]
+        lines.append(f"{name}=={version}+{build}" + (f" --hash=sha256:{digest}" if with_hashes else ""))
+    return "\n".join(lines) + "\n"
+
+
+def torch_is_pinned_build(current: tuple[str, str | None] | None, build: str, cuda_version: str | None) -> bool:
+    """已安裝的 PyTorch 就是我們固定的那一版（版本與 CUDA 都相同）→ 不用重裝。"""
+    return (current is not None and current[1] == cuda_version
+            and public_version(current[0]) == TORCH_PINS[build]["torch"][0])
+
+
+def install_torch(build: str) -> bool:
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as req:
+        req.write(torch_requirements(build, hashes_apply()))
+    try:
+        extra = ["--require-hashes"] if hashes_apply() else []
+        # --no-deps：torch 需要的其他套件（sympy、networkx⋯）由下一步依鎖定檔安裝
+        return pip(*extra, "--no-deps", "-r", req.name, "--index-url", TORCH_INDEX.format(build))
+    finally:
+        Path(req.name).unlink(missing_ok=True)
 
 
 def detect_nvidia() -> tuple[list[tuple[str, float, float]], str | None]:
@@ -228,14 +271,16 @@ def main() -> int:
     print("\n[1/4] 安裝 PyTorch（CUDA 版本約 2~3 GB，請耐心等候）⋯", flush=True)
     current = installed_torch()
     wanted_cuda = build[1] if build else None
-    if current and current[1] == wanted_cuda:
-        print(f"已安裝相符的 PyTorch {current[0]}，略過。")
+    torch_build = build[0] if build else "cpu"
+    if torch_is_pinned_build(current, torch_build, wanted_cuda):
+        print(f"已安裝固定版本的 PyTorch {current[0]}，略過。")
     else:
-        index_args = ["--index-url", TORCH_INDEX.format(build[0])] if build else []
-        ok = pip("--upgrade", "torch", "torchvision", *index_args)
+        print(f"安裝固定版本：torch {TORCH_PINS[torch_build]['torch'][0]}（{torch_build}）"
+              + ("，並核對檔案雜湊" if hashes_apply() else ""), flush=True)
+        ok = install_torch(torch_build)
         if not ok and build:
             print("\n⚠ CUDA 版 PyTorch 安裝失敗，改裝 CPU 版本（之後仍可重新執行 install.bat）。")
-            ok = pip("--upgrade", "torch", "torchvision")
+            ok = install_torch("cpu")
         if not ok:
             print(f"\n✘ PyTorch 安裝失敗。請確認網路連線後重試（{FIX_HINT}）。"
                   + ("" if INSTALLED else "若你的 Python 版本太新，請改裝 Python 3.12。"))
@@ -252,7 +297,14 @@ def main() -> int:
             torch_v, vision_v = versions.splitlines()[-2:]
             constraints.write(torch_constraints(torch_v, vision_v))
     try:
-        if not pip("-r", str(ROOT / "requirements.txt"), "-c", constraints.name):
+        if hashes_apply() and LOCK_FILE.is_file():
+            # 每個套件（含間接相依）都固定版本，並核對每個下載檔的 SHA-256；跟鎖定檔不符就拒絕安裝
+            print("依 requirements.lock 安裝（固定版本並核對雜湊）", flush=True)
+            ok = pip("--require-hashes", "--no-deps", "-r", str(LOCK_FILE))
+        else:
+            print("這個環境不是 Windows x64 + Python 3.12：只固定 requirements.txt 的版本，不核對雜湊。", flush=True)
+            ok = pip("-r", str(ROOT / "requirements.txt"), "-c", constraints.name)
+        if not ok:
             print("\n✘ 套件安裝失敗。可能是網路連線中斷，也可能是套件版本衝突；")
             print("  請把上面的錯誤訊息（特別是 ERROR 開頭的幾行）截圖回報，網路問題可直接重新執行 install.bat。")
             return 1

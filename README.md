@@ -45,7 +45,12 @@
 ## 安裝（建議：安裝程式）
 
 1. 雙擊 **`AI-Media-Sorter-Setup-版本.exe`**，跟著精靈操作
-   - 若出現「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」（安裝程式目前沒有數位簽章）
+   - **現況：安裝程式沒有數位簽章**（專案目前沒有程式碼簽章憑證）。所以 Windows SmartScreen 會顯示
+     「Windows 已保護您的電腦」，而且 Windows 無法替你確認這個檔案是誰發行的、有沒有被改過。
+     這個警告是正確的，不是誤報。要不要執行請自己判斷：只從你信任的來源取得安裝檔；
+     可以向提供者索取檔案的 SHA-256，用 `certutil -hashfile 檔名 SHA256` 核對；
+     不放心的話，改用下面的免安裝版（看得到全部原始碼，由你自己的 Python 執行）。
+     確定要執行時，SmartScreen 的畫面上按「其他資訊」會出現執行的按鈕
    - 先閱讀並接受使用說明與免責聲明，再選擇資料夾與是否建立桌面捷徑
    - **不需要系統管理員權限**，只安裝給目前的使用者；預設裝在 `%LOCALAPPDATA%\Programs\AI Media Sorter`。
      不論選哪個位置，程式一定會放在名為「AI Media Sorter」的子資料夾裡
@@ -357,7 +362,25 @@ python installer/build_installer.py --publisher "你的公司名稱"
 - 在 Linux 上可以用 Wine 實際跑一次「安裝 → 使用 → 解除安裝」驗證：`installer/test_in_wine.sh dist/AI-Media-Sorter-Setup-版本.exe`
 - 程式圖示與安裝精靈圖片由 `python installer/make_icon.py` 產生（原創圖形，無第三方素材）
 
-**數位簽章（正式販售前必做）**：沒有簽章時，Windows SmartScreen 會顯示「已保護您的電腦」。取得程式碼簽章憑證
+### 更新相依套件與模型的版本
+
+所有版本都是固定的，升級是刻意的動作：
+
+| 東西 | 固定在哪裡 | 怎麼更新 |
+| --- | --- | --- |
+| 直接用到的套件 | `requirements.txt`（`==`） | 改版本號 → `python tools/update_lock.py` |
+| 所有間接相依套件＋每個檔案的 SHA-256 | `requirements.lock`（Windows x64、Python 3.12） | `python tools/update_lock.py`（需要 `uv`）自動產生，不要手改 |
+| PyTorch／torchvision | `media_sorter/installer.py` 的 `TORCH_PINS`：每個下載站（cu128／cu126／cpu）各一組版本與 SHA-256 | 到 `https://download.pytorch.org/whl/<代號>/torch/` 找 `cp312-win_amd64` 的檔案，版本與網址後面的 `sha256` 一起更新；torchvision 要選跟 torch 相容的版本 |
+| AI 模型與斷詞器 | `media_sorter/config.py` 的 `MODEL_PRESETS`：Hugging Face commit、每個檔案的大小與 SHA-256 | `python tools/update_model_pins.py --latest` 印出新的內容 |
+| 內建的 Python | `installer/build_installer.py`（3.12） | 換版本時鎖定檔與 `TORCH_PINS` 的雜湊都要重新產生 |
+
+更新任何一項之後：跑完整的測試；換 PyTorch、open_clip、transformers 或模型時，還要重跑
+`tests/manual/dump_embeddings.py` 與 `python tools/evaluate.py --update-doc`，確認 `docs/evaluation.md` 的數字。
+安裝時的行為：安裝版（內建 Python 3.12）用 `pip --require-hashes` 核對每個下載檔；
+免安裝版如果用的是別的 Python 版本，只固定 `requirements.txt` 的版本、不核對雜湊（安裝時會講）。
+目前**沒有**的：相依成分清單（SBOM）、有回復能力的自動更新、已簽章的發行檔（見 `docs/roadmap.md`）。
+
+**數位簽章（目前沒有；公開發行前應該要有）**：沒有簽章時，Windows SmartScreen 會顯示「已保護您的電腦」。取得程式碼簽章憑證
 （.pfx）後，用環境變數提供憑證，再加 `--sign` 建置，`setup.exe` 與安裝後的 `uninstall.exe` 都會被簽章：
 
 ```bash
