@@ -188,6 +188,8 @@ class Classifier:
         else:
             self.preset = arch
         self.model_name = arch
+        # 模型檔的固定版本：保存的辨識結果只在同一個版本下沿用（見 analysis.model_key）
+        self.model_revision = MODEL_PRESETS[self.preset]["hf_revision"][:12] if self.preset in MODEL_PRESETS else ""
 
         # 嚴格離線：先核對模型檔（固定版本、大小、雜湊），有問題就回報，絕不自己連網（見 netpolicy）。
         # 這裡的任何例外都直接往上丟——記憶體不足、套件版本不合都不是「少下載了檔案」，重試連網沒有幫助。

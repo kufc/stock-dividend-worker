@@ -119,6 +119,7 @@ class FolderStats:
     images: int = 0
     videos: int = 0
     other: int = 0  # 不支援而會被略過的檔案
+    cached: int = 0  # 之前辨識過、結果還存著的（由介面填入，見 workdb）
 
     @property
     def supported(self) -> int:

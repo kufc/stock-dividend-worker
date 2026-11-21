@@ -39,6 +39,7 @@ def _make_app(monkeypatch, tmp_path, scaling=None, geometry=None):
     monkeypatch.setattr(messagebox, "showwarning", lambda *a, **k: pytest.fail(f"warning: {a}"))
     monkeypatch.setattr(messagebox, "showerror", lambda *a, **k: pytest.fail(f"error: {a}"))
     monkeypatch.setattr(app_module, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(app_module, "WORK_DIR", tmp_path / "analysis-cache")  # 每個測試自己的工作資料庫
     monkeypatch.setattr(app_module, "show_problem", lambda *a, **k: pytest.fail(f"problem: {a}"))
 
     from media_sorter import config

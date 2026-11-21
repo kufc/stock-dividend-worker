@@ -82,6 +82,26 @@ print("copies:", len(copies))
 assert len(copies) == 6 and all(c.startswith("綠/") for c in copies), copies
 assert all((src / f"IMG_{i}.jpg").exists() for i in range(6)), "原檔要還在"
 print("logs:", len(list(config.LOG_DIR.glob("*.csv"))))
+# 工作資料庫（SQLite＋縮圖檔）在 Windows 的檔案系統語意下也要能用：結果與修改都已經落地，重開後不用重算
+files, decisions = app.store.stats()
+print("saved analyses:", files, "saved decisions:", decisions)
+assert files == 6 and decisions == 6, (files, decisions)
+assert all(it.thumbnail is None and it.thumb_file.is_file() for it in app.items), "thumbnails should be on disk"
+assert (config.WORK_DIR / "work.sqlite3").is_file()
+app.shutdown()
+root.destroy()
+
+root = tk.Tk()  # 「重開程式」
+app = app_module.App(root, classifier_factory=FakeClassifier, model_status_func=lambda c: None)
+app.set_categories([Category("紅"), Category("綠"), Category("藍")])
+app.folder_var.set(str(src))
+app.output_var.set(str(src / "已分類"))
+pump(lambda: app.stats is not None)
+app.start_analysis()
+pump(lambda: app.items and all(i.analyzed for i in app.items) and not app.analysis_running())
+print("after restart: encoded", app.classifier.encoded_images, "reused", sum(i.cached for i in app.items))
+assert app.classifier.encoded_images == 0 and all(i.cached for i in app.items)
+assert all(i.status == "confirmed" and i.chosen == "綠" for i in app.items), "decisions should survive a restart"
 print("SMOKE-OK")
 app.shutdown()
 root.destroy()

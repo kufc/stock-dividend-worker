@@ -2,6 +2,7 @@
 # 在 Linux 上用 Wine 實際跑一次「安裝 → 使用 → 解除安裝」，驗證安裝程式的行為（不需要 Windows 電腦）。
 # 用法：installer/test_in_wine.sh path/to/AI-Media-Sorter-Setup-x.y.z.exe
 # 需要：wine64、xvfb（apt install wine64 xvfb）。安裝時用 /SKIPDEPS 略過 PyTorch 與模型的下載。
+#   Ubuntu 的 Wine 9 在沒有 /run/user/<uid> 時會一啟動就當掉（free(): invalid pointer）：先 mkdir -p /run/user/$(id -u)。
 # 選用：WHEELS=資料夾（放 pillow、numpy、av、send2trash 的 win_amd64 wheel），會再用安裝好的 Python 實際開啟視窗程式跑一遍。
 #   注意：Wine 9 缺少 ucrtbase 的 crealf，numpy 2.x 在 Wine 裡無法載入，請用 numpy==1.26.4（真正的 Windows 沒有這個問題）。
 set -u
@@ -10,6 +11,7 @@ SETUP="$(realpath "$1")"
 export PATH="$PATH:/usr/lib/wine" WINEDEBUG=-all WINEARCH=win64 LC_ALL=C.UTF-8 LANG=C.UTF-8
 export WINEPREFIX="${WINEPREFIX:-/tmp/wine-media-sorter-test}"
 rm -rf "$WINEPREFIX"
+mkdir -p "/run/user/$(id -u)" 2>/dev/null && chmod 700 "/run/user/$(id -u)" 2>/dev/null
 Xvfb :77 -screen 0 1280x1024x24 >/dev/null 2>&1 &
 XVFB=$!
 trap 'kill $XVFB 2>/dev/null' EXIT
@@ -54,6 +56,9 @@ echo "== 準備使用者資料（設定、整理紀錄、復原移除裡的檔�
 mkdir -p "$DATA/logs/復原移除/x"; echo '{}' > "$DATA/settings.json"; echo '{}' > "$DATA/categories.json"
 echo l > "$DATA/logs/整理紀錄_20240101_000000.csv"; echo e > "$DATA/logs/error.log"; echo 你的檔案 > "$DATA/logs/復原移除/x/複本.jpg"
 mkdir -p "$LOCAL/../../Documents/照片" && echo 原檔 > "$LOCAL/../../Documents/照片/IMG_1.jpg"
+# 工作資料庫與縮圖快取（真的程式會建立這些；這裡放最小的樣子：標記檔＋資料庫＋一張縮圖）
+make_work() { mkdir -p "$DATA/analysis-cache/thumbs/ab"; echo m > "$DATA/analysis-cache/.media-sorter-work"; echo db > "$DATA/analysis-cache/work.sqlite3"; echo t > "$DATA/analysis-cache/thumbs/ab/x.jpg"; echo '{}' > "$DATA/model-verified.json"; }
+make_work
 
 echo "== 程式開著時，解除安裝要拒絕"
 rm -f /tmp/wine-locked.flag
@@ -77,6 +82,7 @@ check "程式與 Python 已移除（含下載的套件）" '[ ! -d "$PROG/python
 check "開始功能表捷徑已移除" '[ "$(find "$START" -name "*.lnk" | wc -l)" -eq 0 ]'
 check "登錄項目已移除" '! W reg query "$UNKEY" | grep -q "DisplayName"'
 check "設定與整理紀錄都還在" '[ -f "$DATA/settings.json" ] && [ -f "$DATA/logs/整理紀錄_20240101_000000.csv" ]'
+check "保存的辨識結果與縮圖快取也還在（預設保留）" '[ -f "$DATA/analysis-cache/work.sqlite3" ] && [ -f "$DATA/analysis-cache/thumbs/ab/x.jpg" ]'
 check "使用者的照片沒被動到" '[ -f "$LOCAL/../../Documents/照片/IMG_1.jpg" ]'
 check "安裝資料夾本身也移除了（裡面沒有別的東西）" '[ ! -e "$PROG" ]'
 
@@ -85,6 +91,7 @@ W "$SETUP" /S /SKIPDEPS >/dev/null
 W "$PROG/uninstall.exe" /S /REMOVE_SETTINGS /REMOVE_LOGS >/dev/null; echo "  結束代碼 $?"
 check "設定已移除" '[ ! -f "$DATA/settings.json" ] && [ ! -f "$DATA/categories.json" ]'
 check "整理紀錄已移除" '[ ! -f "$DATA/logs/整理紀錄_20240101_000000.csv" ] && [ ! -f "$DATA/logs/error.log" ]'
+check "保存的辨識結果、縮圖快取與模型核對紀錄已移除" '[ ! -e "$DATA/analysis-cache" ] && [ ! -f "$DATA/model-verified.json" ]'
 check "「復原移除」裡的檔案（使用者的）仍然保留" '[ -f "$DATA/logs/復原移除/x/複本.jpg" ]'
 check "使用者的照片沒被動到" '[ -f "$LOCAL/../../Documents/照片/IMG_1.jpg" ]'
 [ $fail -eq 0 ] && echo "全部通過" || echo "有項目失敗"

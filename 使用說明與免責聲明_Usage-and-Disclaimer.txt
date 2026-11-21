@@ -125,6 +125,22 @@ counterpart.
    %LOCALAPPDATA%\AI Media Sorter, separate from the program files, so
    reinstalling or upgrading does not overwrite them.
 
+・同一個地方還有 analysis-cache 資料夾：程式會把每個檔案的辨識結果、你
+　指定的分類與略過，以及照片的縮小圖存在裡面，所以關掉程式、甚至程式
+　被強制結束之後，再按「開始辨識」可以接續——沒變過的檔案不會重算，你
+　改過的分類也會套回來，只辨識新增或變更的檔案。這些是從你的照片算
+　出來的資料，不會離開你的電腦；可以在「設定」按「清除保存的辨識結果…」
+　清掉。
+   The same place also holds an analysis-cache folder: the program
+   stores each file's recognition result, the categories you assigned or
+   skipped, and small thumbnails of your photos there. After closing the
+   program, or even after it was killed, clicking "開始辨識" continues
+   where you left off: unchanged files are not recomputed, your choices
+   are applied again, and only new or changed files are recognized. This
+   data is derived from your photos and never leaves your computer; you
+   can erase it with "清除保存的辨識結果…" (clear saved results) in
+   Settings.
+
 ・安裝程式最後會下載 PyTorch 與 AI 模型（數 GB，需要網路，可能要幾分鐘到
 　幾十分鐘），進度會顯示在另一個黑色視窗，請不要關閉它。失敗時可以按
 　「重試」，或先完成安裝，之後從開始功能表執行「修復」補裝；補裝完成前
@@ -138,13 +154,17 @@ counterpart.
 ・解除安裝：到 Windows「設定 → 應用程式 → 已安裝的應用程式」選「AI 媒體
 　分類器」按解除安裝，或用開始功能表裡的「解除安裝」。精靈會問你要不要
 　一併移除「設定與分類清單」、「整理紀錄與錯誤紀錄」、「AI 模型檔案」；
-　三項預設都保留，要各自勾選才會移除。
+　三項預設都保留，要各自勾選才會移除。勾選前兩項的任何一項時，保存的
+　辨識結果與縮圖快取（analysis-cache）也會一併移除；都不勾的話它會留在
+　電腦上。
    Uninstall: open Windows "Settings, Apps, Installed apps", choose "AI
    媒體分類器" and click Uninstall, or use "解除安裝" (Uninstall) in the
    Start menu. The wizard asks whether to also remove your settings and
    category list, the organize records and error logs, and the AI model
    files; all three are kept by default and are removed only if you
-   tick them.
+   tick them. Ticking either of the first two also removes the saved
+   analysis results and thumbnail cache (analysis-cache); if you tick
+   neither, that cache stays on the computer.
 
 ・解除安裝只會移除安裝程式放進去的程式檔案與內建 Python（安裝資料夾裡的
 　python 與 app 兩個資料夾）、捷徑和登錄項目；最後只有在安裝資料夾已經空了

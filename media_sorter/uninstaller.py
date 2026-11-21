@@ -3,12 +3,13 @@
 安全原則
 - 只會刪除下面「清單」裡的項目，而且每一項在刪除前都會再檢查一次「確實是程式資料夾底下、
   名稱完全符合」；找不到就不動。不接受任何自訂的刪除路徑。
+- 「保存的辨識結果與縮圖快取」（analysis-cache）是從你的照片算出來的：預設保留；選擇移除設定或整理紀錄時一併移除。
 - 絕對不會動：你的照片與影片、整理輸出的資料夾、資源回收筒、`logs\\復原移除` 裡的檔案，
   以及程式資料夾以外的任何東西（AI 模型快取除外，而且只刪本程式用的那兩個模型、需要你另外同意）。
 - 是「連結」（符號連結／目錄連接點）的項目只移除連結本身，不會跟著刪到連結指向的內容。
 - 程式還開著的時候拒絕執行；要刪的東西無法確認是這個程式的資料夾時拒絕執行。
 - 會列出每一項會做什麼、多大，最後要你輸入 Y 才會開始；預設只移除「程式運作環境」（.venv），
-  設定、整理紀錄、AI 模型都要你各自同意。
+  設定、整理紀錄、辨識結果快取、AI 模型都要你各自同意。
 - 任何一項失敗都會如實報告並以非 0 結束，不會假裝成功。
 """
 
@@ -32,7 +33,11 @@ EXIT_REMOVE_VENV_LATER = 10  # 正在用 .venv 裡的 Python 執行：請呼叫�
 
 # 程式資料夾裡「有可能是這個程式」的標記檔案：缺任何一個就拒絕執行（避免在錯的資料夾裡刪東西）
 MARKER_FILES = ("media_sorter/__init__.py", "media_sorter/uninstaller.py", "install.bat", "start.bat")
-SETTINGS_FILES = ("settings.json", "categories.json")
+SETTINGS_FILES = ("settings.json", "categories.json", "model-verified.json")
+SETTINGS_DIRS = ("model-config",)  # 程式自己產生的本機模型設定（跟 config.MODEL_CONFIG_DIR 相同）
+# 工作資料庫與縮圖快取（跟 config.WORK_DIR、workdb.MARKER 相同）：辨識結果、你改過的分類、照片的縮小圖
+WORK_DIR_NAME = "analysis-cache"
+WORK_MARKER = ".media-sorter-work"
 # logs 資料夾裡這個程式產生的檔案；`復原移除`（沒有資源回收筒時被搬開的複本）是你的檔案，永遠不刪
 LOG_FILE_PATTERNS = ("整理紀錄_*.csv", "已復原_*.csv", "已完成_*.csv", "無法讀取_*.csv", "error.log", "console.log",
                      "app.lock")
@@ -208,10 +213,18 @@ def collect(root: Path, cache_dir: Path | None = None, data_dir: Path | None = N
                               "解除安裝的主體；之後要再用，重新執行 install.bat 即可。", [venv], root,
                               0 if _is_link(venv) else dir_size(venv), default=True))
     settings = [data / name for name in SETTINGS_FILES if (data / name).is_file()]
+    settings += [data / name for name in SETTINGS_DIRS if (data / name).is_dir() and not _is_link(data / name)]
     if settings:
         targets.append(Target("settings", "你的設定與分類清單（" + "、".join(p.name for p in settings) + "）",
                               "刪除後，重新安裝會回到預設分類與設定。", settings, data,
-                              sum(p.stat().st_size for p in settings)))
+                              sum(dir_size(p) if p.is_dir() else p.stat().st_size for p in settings)))
+    work = data / WORK_DIR_NAME
+    # 只認有本程式標記檔的資料夾（名稱一樣但不是本程式建立的就不碰）
+    if (work / WORK_MARKER).is_file() or (_is_link(work) and (work / WORK_MARKER).is_file()):
+        targets.append(Target("work", f"保存的辨識結果與縮圖快取（{WORK_DIR_NAME} 資料夾）",
+                              "內含每個檔案的辨識結果、你改過的分類，以及你照片的「縮小圖」（不是原始照片）。\n"
+                              "    刪除後不影響任何照片；下次辨識要全部重新計算，之前改過的分類不會再套用。",
+                              [work], data, 0 if _is_link(work) else dir_size(work)))
     logs = data / "logs"
     log_files = sorted({p for pattern in LOG_FILE_PATTERNS for p in logs.glob(pattern) if p.is_file()}) \
         if logs.is_dir() else []
@@ -307,6 +320,13 @@ def _print_plan(root: Path, targets: list[Target], say: Callable[[str], None], d
         say(f"    {t.note}")
 
 
+def _wanted(args) -> dict[str, bool]:
+    """指令列參數 → 要移除哪些項目。辨識結果與縮圖快取是從你的照片算出來的個人資料：
+    要求移除設定或整理紀錄（＝要把個人資料清乾淨）時一併移除，也可以用 --remove-work 單獨指定。"""
+    return {"settings": args.remove_settings, "logs": args.remove_logs, "model": args.remove_model,
+            "work": args.remove_work or args.remove_settings or args.remove_logs}
+
+
 def run(argv: list[str] | None = None, *, root: Path | None = None, cache_dir: Path | None = None,
         prefix: str | None = None, input_func: Callable[[str], str] = input,
         say: Callable[[str], None] = print) -> int:
@@ -316,6 +336,8 @@ def run(argv: list[str] | None = None, *, root: Path | None = None, cache_dir: P
     parser.add_argument("--remove-settings", action="store_true", help="一併移除設定與分類清單")
     parser.add_argument("--remove-logs", action="store_true", help="一併移除整理紀錄與錯誤紀錄")
     parser.add_argument("--remove-model", action="store_true", help="一併移除本程式使用的 AI 模型檔案")
+    parser.add_argument("--remove-work", action="store_true",
+                        help="一併移除保存的辨識結果與縮圖快取（加了 --remove-settings 或 --remove-logs 時也會移除）")
     parser.add_argument("--data-only", action="store_true",
                         help="只處理使用者資料（設定、整理紀錄、AI 模型）；給安裝程式的解除安裝流程使用，需搭配 --data-dir")
     parser.add_argument("--data-dir", help="使用者資料夾（安裝版：%%LOCALAPPDATA%%\\AI Media Sorter）")
@@ -348,7 +370,7 @@ def run(argv: list[str] | None = None, *, root: Path | None = None, cache_dir: P
         say("\n沒有找到需要移除的項目（可能已經解除安裝過了）。")
         return EXIT_OK
     _print_plan(root, targets, say)
-    wanted = {"settings": args.remove_settings, "logs": args.remove_logs, "model": args.remove_model}
+    wanted = _wanted(args)
     chosen: list[Target] = []
     interactive = not args.yes and not args.dry_run
     say("")
@@ -438,7 +460,7 @@ def _run_data_mode(args, root, cache_dir, input_func, say) -> int:
     if not targets:
         say("\n沒有找到需要移除的使用者資料。")
         return EXIT_OK
-    wanted = {"settings": args.remove_settings, "logs": args.remove_logs, "model": args.remove_model}
+    wanted = _wanted(args)
     chosen = [t for t in targets if wanted.get(t.key)]
     if args.dry_run:
         say("這是試跑，會移除：" + ("、".join(t.label for t in chosen) or "（無）"))

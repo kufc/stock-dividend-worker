@@ -29,6 +29,7 @@ from .analysis import CONFIRMED, ERROR, PENDING, SKIPPED, Item, analyze, rescore
 from .classifier import covered_tags
 from .config import (
     LOG_DIR,
+    WORK_DIR,
     RENAME_MODES,
     Category,
     acquire_app_lock,
@@ -206,13 +207,15 @@ def _default_model_repair(choice: str):
 
 class App:
     def __init__(self, root: tk.Tk, classifier_factory=_default_classifier_factory, model_status_func=None,
-                 model_download_func=None, model_repair_func=None):
+                 model_download_func=None, model_repair_func=None, work_store=None):
         self.root = root
         self.classifier_factory = classifier_factory
         self.model_status_func = model_status_func or _default_model_status
         self.model_download_func = model_download_func or _default_model_download
         self.model_repair_func = model_repair_func or _default_model_repair
         self.model_task_running = False  # 正在下載或修復模型（使用者要求的）
+        # 工作資料庫：辨識結果與你的修改都存在磁碟上，程式關掉、當掉後可以接續（見 workdb）
+        self.store = work_store if work_store is not None else self._open_store()
         self.settings = load_settings()
         self.categories = load_categories()
         self.items: list[Item] = []
@@ -527,7 +530,57 @@ class App:
             stats, error = folder_stats(folder, recursive, exclude), ""
         except OSError as exc:
             stats, error = None, str(exc)
+        if stats is not None and self.store is not None:
+            try:
+                stats.cached = self.store.count_cached(folder)  # 上次辨識過、存在工作資料庫裡的
+            except Exception:  # noqa: BLE001 - 只是提示
+                pass
         self.queue.put(("folder", token, stats, error))
+
+    def _open_store(self):
+        """開啟工作資料庫。開不起來（磁碟唯讀⋯）就不用它：程式照常運作，只是不能接續。"""
+        try:
+            from .workdb import WorkStore
+
+            store = WorkStore(WORK_DIR)
+        except Exception:  # noqa: BLE001
+            self._store_problem = traceback.format_exc()
+            return None
+        try:
+            store.prune()
+        except Exception:  # noqa: BLE001 - 清理失敗不影響使用
+            pass
+        return store
+
+    def _decision_changed(self, item: Item) -> None:
+        """你指定分類、略過、撤回的那一刻就寫進工作資料庫（Item.__setattr__ 會呼叫這裡）。"""
+        if self.store is None or item.status == ERROR:
+            return
+        try:
+            self.store.save_decision(item.path, item.status, item.chosen, item.fingerprint)
+        except Exception:  # noqa: BLE001 - 存不進去不能讓介面的操作失敗
+            if not getattr(self, "_decision_save_failed", False):
+                self._decision_save_failed = True
+                self.log_error("無法保存你的修改到工作資料庫（之後的修改也可能沒有保存）：\n" + traceback.format_exc())
+
+    def clear_saved_work(self) -> None:
+        """「設定」裡的「清除保存的辨識結果…」。只清快取，不動任何照片、複本與整理紀錄。"""
+        if self.analysis_running() or self.organizing:
+            messagebox.showinfo(APP_NAME, "請等目前的工作結束後再試。")
+            return
+        if self.store is None:
+            messagebox.showinfo(APP_NAME, "目前沒有使用工作資料庫（無法建立），所以沒有保存的結果可以清除。")
+            return
+        files, decisions = self.store.stats()
+        if not messagebox.askyesno(
+                APP_NAME,
+                f"要清除保存的辨識結果嗎？\n\n目前保存了 {files:,} 個檔案的辨識結果與縮圖、{decisions:,} 個你指定的分類或略過。\n"
+                "清除後，下次辨識要全部重新計算，你之前改過的分類也不會再套用。\n\n"
+                "不會動到：你的照片與影片、已經複製好的檔案、整理紀錄。"):
+            return
+        self.store.clear()
+        self.refresh_folder_stats()
+        messagebox.showinfo(APP_NAME, "已清除保存的辨識結果。")
 
     def _start_model_status(self) -> None:
         def work(choice: str) -> None:
@@ -582,6 +635,9 @@ class App:
             hint = f"將辨識 {supported:,} 個檔案（圖片 {self.stats.images:,}、影片 {self.stats.videos:,}）。"
             if self.items:
                 hint += "　要繼續上次的結果，請按上方的「2　檢查分類」。"
+            elif self.stats.cached:
+                hint += (f"　這個資料夾有 {self.stats.cached:,} 個檔案之前辨識過：沒變過的會直接沿用結果與你改過的分類，"
+                         "只辨識新增或變更的檔案。")
             p.hint_var.set(hint)
         else:
             p.hint_var.set("沒有可以辨識的檔案。")
@@ -832,11 +888,12 @@ class App:
         if photo is not None:
             self.thumbs.move_to_end(item.uid)
             return photo
-        if not item.thumbnail:
+        data = item.thumbnail_data()  # 記憶體裡的，或磁碟快取（只讀看得到的那幾格）
+        if not data:
             return None
         try:
             size = self.thumb_px()
-            img = open_thumbnail(item.thumbnail, draft_size=size * 2)
+            img = open_thumbnail(data, draft_size=size * 2)
             img.thumbnail((size, size))
             photo = ImageTk.PhotoImage(img)
         except Exception:  # noqa: BLE001 - 縮圖失敗只是不顯示
@@ -928,9 +985,10 @@ class App:
         if item.uid in self.preview_cache:
             self.preview_cache.move_to_end(item.uid)
             return self.preview_cache[item.uid]
-        if item.thumbnail:
+        data = item.thumbnail_data()
+        if data:
             try:
-                img = load_preview(item.path, item.kind, item.thumbnail)
+                img = load_preview(item.path, item.kind, data)
             except Exception:  # noqa: BLE001
                 return None
             self._cache_preview(item.uid, img)
@@ -1224,7 +1282,8 @@ class App:
         CategoryDialog(self.root, self.categories, self.set_categories)
 
     def open_settings_dialog(self) -> None:
-        SettingsDialog(self.root, self.settings, self.on_settings_saved, on_repair_model=self.repair_model)
+        SettingsDialog(self.root, self.settings, self.on_settings_saved, on_repair_model=self.repair_model,
+                       on_clear_work=self.clear_saved_work)
 
     def on_settings_saved(self, settings: dict) -> None:
         model_changed = settings["model"] != self.settings["model"]
@@ -1382,7 +1441,9 @@ class App:
             "把你資料夾裡常見的東西也設成分類（建議至少 3 個）會準很多。要繼續嗎？",
         ):
             return
-        if any(item.status in (CONFIRMED, SKIPPED) for item in self.items):
+        # 以前這裡要先問「重新辨識會清除你改過的分類」；現在你的修改都存在工作資料庫裡，重新辨識後會自動套回來
+        # （檔案內容變了、或那個分類已經刪掉的除外），沒變過的檔案也直接沿用上次的結果，所以不用問了。
+        if self.store is None and any(item.status in (CONFIRMED, SKIPPED) for item in self.items):
             if not messagebox.askyesno(APP_NAME, "重新辨識會清除目前清單裡你改過的分類，確定要繼續嗎？"):
                 return
         self.settings["last_folder"] = str(folder)
@@ -1439,18 +1500,22 @@ class App:
                 self.classifier_key = settings["model"]
             device = getattr(self.classifier, "device_description", "")
             post(("status", f"辨識中⋯　使用：{device}"))
-            analyze(
+            results = analyze(
                 paths, self.classifier, categories,
                 video_frames=int(settings["video_frames"]),
                 batch_size=int(settings["batch_size"]),
                 on_item=lambda i, item: post(("item", i, item)),
                 on_progress=lambda done, total: post(("progress", done, total)),
                 stop_event=stop_event,
+                store=self.store,
             )
+            reused = sum(1 for item in results if item.cached)
+            note = f"其中 {reused:,} 個沿用上次保存的結果，沒有重算。" if reused else ""
             if stop_event.is_set():
-                post(("done", "已停止。已辨識的檔案可以先檢查與整理。"))
+                post(("done", "已停止。已辨識的檔案可以先檢查與整理；結果已保存，下次會從這裡接續。" if self.store
+                      else "已停止。已辨識的檔案可以先檢查與整理。"))
             else:
-                post(("done", f"辨識完成！共 {len(paths)} 個檔案，使用：{device}。請檢查分類。"))
+                post(("done", f"辨識完成！共 {len(paths)} 個檔案，使用：{device}。{note}請檢查分類。"))
         except netpolicy.ModelNotReady as exc:  # 離線模式下模型不能用：不連網，交給使用者決定
             post(("model_needed", exc.preset, exc.problems, exc.download_bytes))
         except ImportError as exc:
@@ -1608,6 +1673,8 @@ class App:
                 self._progress_indeterminate()
         elif kind == "scanned":
             self._set_items([Item(p, media_kind(p) or "image") for p in args[0]])
+            for item in self.items:
+                item.watcher = self._decision_changed  # 之後你的每個決定都立刻寫進工作資料庫
             self.refresh_tree()
             self._refresh_nav()
         elif kind == "item":
@@ -2218,6 +2285,11 @@ class App:
     def shutdown(self) -> None:
         """關閉前取消所有排程中的工作（避免視窗銷毀後還有計時器在跑）。"""
         self.stop_event.set()
+        if self.store is not None:
+            worker = getattr(self, "worker", None)
+            if worker is not None and worker.is_alive():
+                worker.join(timeout=5)  # 讓辨識中的那一批寫完再關資料庫
+            self.store.close()
         try:
             for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
                 self.root.after_cancel(job)

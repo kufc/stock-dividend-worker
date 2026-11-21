@@ -7,6 +7,8 @@
 - categories.json：分類清單（可在程式內「分類設定」編輯）
 - settings.json：其他設定（模型、影片取樣張數、上次使用的資料夾⋯）
 - logs/：每次整理的紀錄（可用來復原）與錯誤紀錄
+- analysis-cache/：辨識結果、你改過的分類與縮圖（程式關掉後可以接續；刪掉只是要重新辨識）
+- model-verified.json、model-config/：模型檔的核對紀錄與給 AI 元件的本機設定（可以刪，會自動重建）
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ APP_DIR = default_data_dir()
 CATEGORIES_FILE = APP_DIR / "categories.json"
 SETTINGS_FILE = APP_DIR / "settings.json"
 LOG_DIR = APP_DIR / "logs"
+WORK_DIR = APP_DIR / "analysis-cache"  # 工作資料庫與縮圖快取（見 workdb）：辨識結果與你的修改，可以接續
 MODEL_STAMP_FILE = APP_DIR / "model-verified.json"  # 哪些模型檔已經核對過雜湊（見 netpolicy）
 MODEL_CONFIG_DIR = APP_DIR / "model-config"          # 給 open_clip 的本機模型設定（指向核對過的檔案）
 

@@ -21,7 +21,7 @@ from PIL import Image
 
 from .classifier import combine_frames, score, score_frames
 from .config import Category
-from .media import load_media, media_kind
+from .media import ANALYSIS_SIZE, THUMB_SIZE, load_media, media_kind
 from .vocabulary import VOCABULARY
 
 PENDING = "pending"      # AI 已判斷，等待使用者確認
@@ -31,6 +31,16 @@ ERROR = "error"          # 檔案讀取失敗
 
 TAG_COUNT = 5
 LONG_ASPECT = 1.6  # 長寬比超過這個值（例如手機截圖）就切成多塊正方形分別判斷再平均
+# 前處理的版本：讀圖尺寸、切塊方式、影片取樣方式、向量怎麼合併⋯⋯只要改了會讓「同一個檔案算出不同向量」的東西，
+# 就把這個數字加一，保存的辨識結果（workdb）就會全部重算，不會新舊混用。
+PREPROCESS_VERSION = 1
+
+
+def model_key(classifier) -> str:
+    """辨識結果是用哪個模型、哪個版本、哪一版前處理算出來的。保存的結果只有這個字串相同時才沿用。"""
+    name = getattr(classifier, "model_name", None) or type(classifier).__name__
+    revision = getattr(classifier, "model_revision", "") or ""
+    return f"{name}@{revision}|prep{PREPROCESS_VERSION}|{ANALYSIS_SIZE}px|thumb{THUMB_SIZE}|crop{LONG_ASPECT}"
 _next_uid = itertools.count(1)
 
 
@@ -41,7 +51,10 @@ class Item:
     embedding: np.ndarray | None = None
     frames: np.ndarray | None = None  # 影片：每張取樣畫面各自的向量（逐張比對後平均機率，見 score_frames）
     date: datetime | None = None
-    thumbnail: bytes | None = None
+    thumbnail: bytes | None = None    # 縮圖的 JPEG 位元組：只有「沒有工作資料庫」時才留在記憶體（例如測試、指令列工具）
+    thumb_file: Path | None = None    # 有工作資料庫時縮圖放在磁碟上，這裡只記檔名（十萬張也不占記憶體）
+    fingerprint: tuple[int, int] | None = None  # 辨識當時檔案的（大小, 修改時間）
+    cached: bool = False              # 這次是沿用保存的結果，沒有重新讀檔與計算
     probs: np.ndarray | None = None
     prob_names: tuple[str, ...] = ()  # probs 每個位置對應的分類名稱（分類清單改變時不會對錯位置）
     top_similarity: float = 1.0       # 與最像分類的原始相似度
@@ -53,9 +66,32 @@ class Item:
     uid: int = field(default_factory=lambda: next(_next_uid), compare=False)  # 清單中穩定的識別碼
     _ranking: tuple = field(default=(None, ()), repr=False, compare=False)
 
+    def __setattr__(self, name, value):
+        """你的決定（status／chosen）一改變就通知 watcher（App 用它立刻寫進工作資料庫）。"""
+        object.__setattr__(self, name, value)
+        if name in ("status", "chosen"):
+            watcher = self.__dict__.get("watcher")
+            if watcher is not None:
+                watcher(self)
+
     @property
     def analyzed(self) -> bool:
         return self.probs is not None
+
+    def thumbnail_data(self) -> bytes | None:
+        """縮圖的 JPEG 位元組：記憶體裡有就用，否則從磁碟快取讀（讀不到回傳 None，呼叫端會改讀原檔）。"""
+        if self.thumbnail:
+            return self.thumbnail
+        if self.thumb_file is not None:
+            try:
+                return self.thumb_file.read_bytes()
+            except OSError:
+                return None
+        return None
+
+    @property
+    def has_thumbnail(self) -> bool:
+        return bool(self.thumbnail) or self.thumb_file is not None
 
     def suggestions(self, categories: list[Category], k: int = 3) -> list[tuple[str, float]]:
         """AI 認為最像的前 k 個分類（只列出目前還存在的分類）。"""
@@ -75,11 +111,15 @@ class Item:
 
     def merge_analysis(self, other: "Item") -> None:
         """把背景辨識的結果併入這個項目，保留使用者已經做的確認／略過。"""
-        for attr in ("embedding", "frames", "date", "thumbnail", "probs", "prob_names", "top_similarity",
-                     "other_similarity", "tags", "error"):
+        for attr in ("embedding", "frames", "date", "thumbnail", "thumb_file", "fingerprint", "cached", "probs",
+                     "prob_names", "top_similarity", "other_similarity", "tags", "error"):
             setattr(self, attr, getattr(other, attr))
-        if other.status == ERROR and self.status == PENDING:
-            self.status = ERROR
+        if self.status == PENDING:
+            if other.status == ERROR:
+                self.status = ERROR
+            elif other.status in (CONFIRMED, SKIPPED):  # 上次保存的決定；這一次已經動過的以這一次為準
+                self.chosen = other.chosen
+                self.status = other.status
 
     def best(self, categories: list[Category]) -> tuple[str | None, float]:
         top = self.suggestions(categories, 1)
@@ -165,7 +205,13 @@ def analyze(
     on_progress: Callable[[int, int], None] | None = None,
     stop_event: threading.Event | None = None,
     workers: int | None = None,
+    store=None,
 ) -> list[Item]:
+    """store：工作資料庫（workdb.WorkStore）。有給的話：
+    - 沒變過的檔案（路徑、大小、修改時間、模型與前處理版本都相同）直接沿用保存的向量，不讀檔也不進模型
+    - 每一批算完就寫入並 commit；縮圖存到磁碟，不留在記憶體
+    - 上次保存的「你指定的分類／略過」會套回來（分類已經不存在的除外）
+    """
     # 保險：設定檔的值萬一是 0 或負數（例如壞掉的 batch_size=0），批次大小至少是 1，避免辨識迴圈空轉不前進
     batch_size = max(1, int(batch_size))
     video_frames = max(1, int(video_frames))
@@ -177,6 +223,48 @@ def analyze(
     total = len(items)
     done = 0
     stop_event = stop_event or threading.Event()
+    key = model_key(classifier) if store is not None else ""
+
+    def frames_of(item: Item) -> int:
+        return video_frames if item.kind == "video" else 0
+
+    def restore(item: Item) -> bool:
+        """沿用保存的辨識結果。回傳 True 表示這個檔案不用重新辨識。"""
+        if store is None:
+            return False
+        from .workdb import file_fingerprint
+
+        item.fingerprint = file_fingerprint(item.path)
+        try:
+            cached = store.lookup(item.path, key, frames_of(item), item.fingerprint) if item.fingerprint else None
+            decision = store.load_decision(item.path, item.fingerprint) if cached is not None else None
+        except Exception:  # noqa: BLE001 - 資料庫讀不出來就當作沒有保存過，照常辨識
+            return False
+        if cached is None:
+            return False
+        item.embedding, item.frames, item.date, item.thumb_file = cached.embedding, cached.frames, cached.date, cached.thumb_file
+        item.cached = True
+        _apply_scores(item, class_emb, names, vocab_emb, classifier.logit_scale, other_emb)
+        if decision and item.status == PENDING and (decision[0] == SKIPPED or decision[1] in names):
+            item.chosen = decision[1] if decision[0] == CONFIRMED else None
+            item.status = decision[0]
+        return True
+
+    def checkpoint(item: Item) -> None:
+        """剛算完的檔案寫進工作資料庫；縮圖改放磁碟。"""
+        if store is None or item.embedding is None or item.status == ERROR or item.fingerprint is None:
+            return
+        from .workdb import file_fingerprint
+
+        if file_fingerprint(item.path) != item.fingerprint:
+            return  # 辨識途中檔案被改過：這次的結果照用，但不保存（下次會重新辨識）
+        try:
+            thumb_file = store.save_analysis(item.path, item.kind, key, frames_of(item), item.fingerprint,
+                                             item.embedding, item.frames, item.date, item.thumbnail)
+        except Exception:  # noqa: BLE001 - 存不進去（磁碟滿了⋯）不影響這次辨識，只是下次要重算
+            return
+        if thumb_file is not None:
+            item.thumb_file, item.thumbnail = thumb_file, None
     workers = workers or max(2, min(8, (os.cpu_count() or 4)))
     # 預先讀取的量以「畫面數」計算（一支影片 = 多張畫面），避免大量影片時吃光記憶體
     frame_budget = max(batch_size * 2, workers * 2)
@@ -209,6 +297,11 @@ def analyze(
             nxt = next(source, None)
             if nxt is None:
                 return
+            if stop_event.is_set():
+                return
+            if restore(nxt[1]):  # 沿用保存的結果：不讀檔、不進模型
+                finish(nxt[0], nxt[1])
+                continue
             queue.append((nxt[0], nxt[1], pool.submit(load, nxt[1])))
             in_flight += cost(nxt[1])
 
@@ -250,8 +343,17 @@ def analyze(
                     item.frames = embeddings[start:start + len(tensors)].copy()
                 start += len(tensors)
                 _apply_scores(item, class_emb, names, vocab_emb, classifier.logit_scale, other_emb)
+                checkpoint(item)
+            if store is not None:
+                store.commit()  # 這一批的每個檔案都已經落地；之後程式被強制結束也不用重算
+            for index, item, _tensors in batch:
                 finish(index, item)
     finally:
+        if store is not None:
+            try:
+                store.commit()
+            except Exception:  # noqa: BLE001
+                pass
         pool.shutdown(wait=False, cancel_futures=True)
     return items
 

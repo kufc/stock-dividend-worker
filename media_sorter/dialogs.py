@@ -556,7 +556,7 @@ class CategoryDialog(tk.Toplevel):
 
 # ---------------------------------------------------------------------------- 設定
 class SettingsDialog(tk.Toplevel):
-    def __init__(self, master, settings: dict, on_save, on_repair_model=None):
+    def __init__(self, master, settings: dict, on_save, on_repair_model=None, on_clear_work=None):
         super().__init__(master)
         self.title("設定")
         self.transient(master)
@@ -568,6 +568,10 @@ class SettingsDialog(tk.Toplevel):
         if on_repair_model is not None:
             self.repair_btn = ttk.Button(buttons, text="檢查並修復 AI 模型…", command=self.repair_model)
             self.repair_btn.pack(side="left")
+        if on_clear_work is not None:
+            self.clear_btn = ttk.Button(buttons, text="清除保存的辨識結果…",
+                                        command=lambda: (self.destroy(), on_clear_work()))
+            self.clear_btn.pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
         ttk.Button(buttons, text="儲存", style="Accent.TButton", command=self.save).pack(side="right", padx=8)
         body = ttk.Frame(self, padding=12)

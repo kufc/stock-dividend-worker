@@ -384,3 +384,78 @@ def test_bat_uninstaller_refuses_an_installed_version(env):
     code, out = run(env, "--yes")
     assert code == U.EXIT_FAILED and "安裝程式安裝的版本" in out
     assert (env["root"] / ".venv" / "install-ok.txt").exists() and user_files_intact(env)
+
+
+# ---------------------------------------------------------------------------- 工作資料庫與縮圖快取（第九輪）
+def make_work_cache(data: Path) -> Path:
+    """用真的 WorkStore 建立工作資料庫（確保解除安裝程式認得的名稱、標記檔跟程式實際產生的一致）。"""
+    from media_sorter import config
+    from media_sorter.workdb import MARKER, WorkStore
+
+    assert U.WORK_DIR_NAME == config.WORK_DIR.name and U.WORK_MARKER == MARKER
+    assert "model-verified.json" in U.SETTINGS_FILES and config.MODEL_STAMP_FILE.name in U.SETTINGS_FILES
+    assert config.MODEL_CONFIG_DIR.name in U.SETTINGS_DIRS
+    store = WorkStore(data / U.WORK_DIR_NAME)
+    store.save_decision(data / "settings.json", "skipped", None)
+    store.close()
+    thumb = data / U.WORK_DIR_NAME / "thumbs" / "ab" / "abcdef.jpg"
+    thumb.parent.mkdir(parents=True, exist_ok=True)
+    thumb.write_bytes(b"\xff\xd8 thumbnail of a private photo")
+    return data / U.WORK_DIR_NAME
+
+
+def test_work_cache_is_kept_by_default_and_listed(env, tmp_path):
+    data = make_data_dir(tmp_path)
+    work = make_work_cache(data)
+    code, out = run_data(env, data, "--dry-run", "--remove-work")
+    assert code == U.EXIT_OK and "保存的辨識結果與縮圖快取" in out
+    code, _ = run_data(env, data, "--yes")  # 什麼都沒勾
+    assert code == U.EXIT_OK and (work / "work.sqlite3").exists() and (work / "thumbs" / "ab" / "abcdef.jpg").exists()
+    code, _ = run_data(env, data, "--yes", "--remove-model")  # 只勾模型：跟個人資料無關，不動
+    assert (work / "work.sqlite3").exists()
+
+
+@pytest.mark.parametrize("flag", ["--remove-settings", "--remove-logs", "--remove-work"])
+def test_work_cache_is_removed_with_settings_or_records(env, tmp_path, flag):
+    data = make_data_dir(tmp_path)
+    work = make_work_cache(data)
+    (data / "model-verified.json").write_text("{}")
+    (data / "model-config").mkdir()
+    (data / "model-config" / "media-sorter-x.json").write_text("{}")
+    code, out = run_data(env, data, "--yes", flag)
+    assert code == U.EXIT_OK, out
+    assert not work.exists()  # 資料庫、WAL 檔、縮圖全部移除
+    assert (data / "logs" / U.QUARANTINE_DIR / "x" / "複本.jpg").read_text() == "你的檔案"
+    if flag == "--remove-settings":
+        assert not (data / "model-verified.json").exists() and not (data / "model-config").exists()
+    else:
+        assert (data / "settings.json").exists()
+    assert user_files_intact(env)
+
+
+def test_folder_with_the_same_name_but_no_marker_is_not_touched(env, tmp_path):
+    data = make_data_dir(tmp_path)
+    mine = data / U.WORK_DIR_NAME
+    mine.mkdir()
+    (mine / "我的東西.txt").write_text("不是程式建立的")
+    code, out = run_data(env, data, "--yes", "--remove-settings", "--remove-logs", "--remove-work")
+    assert code == U.EXIT_OK and (mine / "我的東西.txt").read_text() == "不是程式建立的"
+    assert "保存的辨識結果" not in out
+
+
+def test_portable_uninstall_asks_about_the_work_cache_separately(env):
+    root = env["root"]
+    work = make_work_cache(root)
+    asked = []
+
+    def answer(prompt):
+        asked.append(prompt)
+        return "y" if ("辨識結果" in prompt or "確定要開始" in prompt) else "n"
+
+    lines = []
+    code = U.run([], root=root, cache_dir=root.parent / "hf-empty", prefix="/nonexistent-python", input_func=answer,
+                 say=lines.append)
+    assert code == U.EXIT_OK, "\n".join(lines)
+    assert any("保存的辨識結果與縮圖快取" in p for p in asked)
+    assert not work.exists() and (root / "settings.json").exists()  # 只答應了這一項
+    assert user_files_intact(env)
