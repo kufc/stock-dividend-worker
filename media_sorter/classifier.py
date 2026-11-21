@@ -77,12 +77,13 @@ def detect_device() -> tuple[str, str, float | None]:
 
 
 def resolve_preset(choice: str, device: str, vram_gb: float | None, ram_gb: float | None = None) -> str:
-    if choice in MODEL_PRESETS:
-        return choice
-    enough_ram = ram_gb is None or ram_gb >= ACCURATE_MIN_RAM_GB
-    if device == "cuda" and vram_gb and vram_gb >= ACCURATE_MIN_VRAM_GB and enough_ram:
-        return "accurate"
-    return "standard"
+    """設定裡的選擇 → 實際使用的模型。沒有明確選「高精準」時一律用標準模型。
+
+    以前「自動」會在顯示卡記憶體夠大時選高精準模型；獨立測試集上它沒有比標準模型準（96.8% 對 97.5%），
+    卻要多下載約 3.5 GB、也比較慢，所以不再自動選它。使用者仍然可以在「設定」明確選擇高精準。
+    device／vram_gb／ram_gb 保留在參數裡（呼叫端不用改），目前不影響結果。
+    """
+    return choice if choice in MODEL_PRESETS else "standard"
 
 
 def _is_oom(exc: BaseException) -> bool:

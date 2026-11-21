@@ -156,10 +156,14 @@ def test_stop_is_responsive_with_slow_loads(tmp_path, monkeypatch):
     assert time.time() - start < 2.0
 
 
-def test_auto_model_needs_enough_ram():
-    assert resolve_preset("auto", "cuda", 12, ram_gb=32) == "accurate"
+def test_auto_model_is_always_the_standard_model():
+    """以前：顯示卡與系統記憶體夠大時「自動」會選高精準模型。獨立測試集上它沒有比較準（docs/evaluation.md），
+    所以上市版的預設一律是標準模型；高精準只有使用者明確選擇時才用。"""
+    assert resolve_preset("auto", "cuda", 12, ram_gb=32) == "standard"
     assert resolve_preset("auto", "cuda", 12, ram_gb=8) == "standard"
     assert resolve_preset("auto", "cpu", None, ram_gb=64) == "standard"
+    assert resolve_preset("accurate", "cpu", None, ram_gb=4) == "accurate"  # 明確選擇仍然照做
+    assert resolve_preset("standard", "cuda", 24, ram_gb=64) == "standard"
 
 
 def test_encode_learns_batch_size_after_oom():

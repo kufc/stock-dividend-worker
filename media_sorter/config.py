@@ -97,7 +97,8 @@ MODEL_PRESETS = {
 }
 WEIGHTS_FILE = "open_clip_pytorch_model.bin"
 MODEL_CHOICES = {
-    "auto": "自動（依顯示卡記憶體選擇）",
+    # 「auto」這個值保留給舊的設定檔；現在一律是標準模型（高精準模型在獨立測試集上沒有比較準，見 docs/evaluation.md）
+    "auto": "建議：標準模型（速度快，約 1.5 GB）",
     **{key: preset["label"] for key, preset in MODEL_PRESETS.items()},
 }
 
@@ -121,7 +122,10 @@ DEFAULT_SETTINGS = {
     "model": "auto",
     "video_frames": 8,
     "batch_size": 16,
-    "confidence_threshold": 0.5,
+    # 「需檢查」門檻。0.7：依開發集的門檻表選的（docs/evaluation.md）——比 0.5 多攔下約四分之一「不屬於任何分類」的檔案，
+    # 代價是分對的檔案約 4% 會被多標一次。使用者可以在「設定」調整。
+    "confidence_threshold": 0.7,
+    "defaults_version": 2,  # 預設值改版時用來升級舊設定檔（見 load_settings）
     "include_subfolders": True,
     "rename_mode": "keep",
     "rename_pattern": RENAME_PATTERN_PRESETS[0],
@@ -219,6 +223,11 @@ def load_settings(path: Path = SETTINGS_FILE) -> dict:
     data = _read_json(path)
     if isinstance(data, dict):
         settings.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
+        # 舊版的預設門檻是 0.5。設定檔裡的 0.5 分不出是「沒改過」還是「特地選的」；因為新預設比較保守
+        # （多一些檔案進「需檢查」，不會讓任何檔案被分錯），所以舊設定檔的 0.5 一律升級成新預設，只做這一次。
+        if data.get("defaults_version", 1) < 2 and settings.get("confidence_threshold") == 0.5:
+            settings["confidence_threshold"] = DEFAULT_SETTINGS["confidence_threshold"]
+    settings["defaults_version"] = DEFAULT_SETTINGS["defaults_version"]
     settings["batch_size"] = _clamped_int(settings.get("batch_size"), 1, 256, DEFAULT_SETTINGS["batch_size"])
     settings["video_frames"] = _clamped_int(settings.get("video_frames"), 1, 32, DEFAULT_SETTINGS["video_frames"])
     settings["confidence_threshold"] = _clamped_float(

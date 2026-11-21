@@ -459,3 +459,69 @@ def test_portable_uninstall_asks_about_the_work_cache_separately(env):
     assert any("保存的辨識結果與縮圖快取" in p for p in asked)
     assert not work.exists() and (root / "settings.json").exists()  # 只答應了這一項
     assert user_files_intact(env)
+
+
+# ---------------------------------------------------------------------------- 模型：共用的檔案倉庫（新版 huggingface_hub）
+MODEL_A = U.MODEL_CACHE_DIRS[1]
+def make_shared_cache(base: Path):
+    """重現實際看到的配置：大檔案在 <快取>/blobs/xx/<雜湊>，模型資料夾裡是一層層的連結。"""
+    cache = base / "hub"
+    store = cache / "blobs"
+
+    def blob(name: str, text: str) -> Path:
+        path = store / name[:2] / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def link_into(repo: str, filename: str, target: Path) -> None:
+        inner = cache / repo / "blobs" / target.name
+        inner.parent.mkdir(parents=True, exist_ok=True)
+        if not inner.is_symlink():
+            inner.symlink_to(os.path.relpath(target, inner.parent))
+        snap = cache / repo / "snapshots" / "rev" / filename
+        snap.parent.mkdir(parents=True, exist_ok=True)
+        snap.symlink_to(os.path.relpath(inner, snap.parent))
+
+    weights_a = blob("aa11", "W" * 5000)       # 只有本程式的模型在用
+    weights_b = blob("bb22", "W" * 7000)
+    shared = blob("cc33", "tokenizer")          # 另一個程式的模型也在用同一個檔案
+    theirs = blob("dd44", "someone else")
+    link_into(MODEL_A, "open_clip_pytorch_model.bin", weights_a)
+    link_into(MODEL_B, "open_clip_pytorch_model.bin", weights_b)
+    link_into(MODEL_A, "extra.json", shared)
+    link_into("models--other--program", "tokenizer.json", shared)
+    link_into("datasets--other--data", "data.bin", theirs)
+    return cache, weights_a, weights_b, shared, theirs
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="需要建立符號連結")
+def test_removing_models_also_removes_their_files_in_the_shared_store(env, tmp_path):
+    cache, weights_a, weights_b, shared, theirs = make_shared_cache(tmp_path)
+    targets = {t.key: t for t in U.collect(env["root"], cache)}
+    assert sorted(targets["model"].shared_files) == sorted([weights_a, weights_b])
+    assert targets["model"].size >= 12000 and "共用倉庫" in targets["model"].note  # 大小算的是實際檔案，不是連結
+    code, out = run(env, "--yes", "--remove-model", cache=cache)
+    assert code == U.EXIT_OK, out
+    assert not (cache / MODEL_A).exists() and not (cache / MODEL_B).exists()
+    assert not weights_a.exists() and not weights_b.exists()   # 數 GB 的實際檔案不會留下
+    assert shared.read_text() == "tokenizer"                   # 別的程式還在用：保留
+    assert theirs.read_text() == "someone else" and (cache / "models--other--program").exists()
+    assert user_files_intact(env)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="需要建立符號連結")
+def test_shared_store_files_are_kept_when_models_are_kept(env, tmp_path):
+    cache, weights_a, weights_b, shared, theirs = make_shared_cache(tmp_path)
+    code, _ = run(env, "--yes", cache=cache)
+    assert code == U.EXIT_OK and weights_a.exists() and weights_b.exists() and (cache / MODEL_A).exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="需要建立符號連結")
+def test_links_pointing_outside_the_store_are_never_followed(env, tmp_path):
+    cache, weights_a, *_ = make_shared_cache(tmp_path)
+    outside = tmp_path / "我的檔案.bin"
+    outside.write_text("mine")
+    (cache / MODEL_A / "snapshots" / "rev" / "evil.bin").symlink_to(outside)
+    code, _ = run(env, "--yes", "--remove-model", cache=cache)
+    assert code == U.EXIT_OK and outside.read_text() == "mine" and not weights_a.exists()

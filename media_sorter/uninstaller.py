@@ -20,7 +20,7 @@ import os
 import shutil
 import stat
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -60,6 +60,7 @@ class Target:
     size: int = 0
     default: bool = False  # 沒有明確指定時是否移除
     only_files: bool = False  # True：只刪檔案（logs），不遞迴刪資料夾
+    shared_files: list = field(default_factory=list)  # 模型在共用倉庫（<快取>/blobs）裡、沒有別人在用的實際檔案
 
 
 # ---------------------------------------------------------------------------- 檢查
@@ -195,6 +196,61 @@ def running_inside_venv(root: Path, prefix: str | None = None) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------- 模型快取：共用的檔案倉庫
+SHARED_BLOBS = "blobs"  # 新版 huggingface_hub：大檔案放在 <快取>/blobs/，各模型資料夾裡只有指向它的連結
+
+
+def _link_target(path: Path) -> Path | None:
+    """連結最後指到的實際檔案（一路跟到底）；不是連結或解析不出來回傳 None。"""
+    try:
+        return Path(os.path.realpath(path)) if path.is_symlink() else None
+    except OSError:
+        return None
+
+
+def _links_into_store(folder: Path, store: Path) -> set[Path]:
+    """folder 底下所有連結裡，最後指到共用倉庫 store 內的實際檔案。"""
+    found: set[Path] = set()
+    try:
+        store = Path(os.path.realpath(store))
+    except OSError:
+        return found
+    for current, dirs, files in os.walk(folder, followlinks=False):
+        for name in files + dirs:
+            target = _link_target(Path(current) / name)
+            if target is not None and store in target.parents and target.is_file():
+                found.add(target)
+    return found
+
+
+def shared_model_files(cache: Path, models: list[Path]) -> list[Path]:
+    """要移除的模型在共用倉庫裡的實際檔案——但只包含「快取裡沒有其他模型或資料集還在用」的那些。
+
+    只刪模型資料夾的話，裡面只是連結，數 GB 的實際檔案會留在 <快取>/blobs/ 沒人用。
+    同一個檔案可能被別的模型共用（內容相同就只存一份），所以先掃過快取裡其他所有資料夾的連結，還有人指著的就不刪。
+    """
+    store = cache / SHARED_BLOBS
+    if not store.is_dir() or _is_link(store):
+        return []
+    mine: set[Path] = set()
+    for model in models:
+        if not _is_link(model):
+            mine |= _links_into_store(model, store)
+    if not mine:
+        return []
+    removing = {os.path.normcase(str(m)) for m in models}
+    try:
+        others = [p for p in cache.iterdir() if p.is_dir() and not _is_link(p) and p.name != SHARED_BLOBS
+                  and os.path.normcase(str(p)) not in removing]
+    except OSError:
+        return []  # 看不清楚別人有沒有在用：一個都不刪
+    for other in others:
+        mine -= _links_into_store(other, store)
+        if not mine:
+            break
+    return sorted(mine)
+
+
 # ---------------------------------------------------------------------------- 清單
 def count_active_logs(data: Path) -> int:
     logs = Path(data) / "logs"
@@ -239,10 +295,20 @@ def collect(root: Path, cache_dir: Path | None = None, data_dir: Path | None = N
     cache = Path(cache_dir) if cache_dir is not None else hf_cache_dir()
     models = [cache / name for name in MODEL_CACHE_DIRS if (cache / name).exists() or _is_link(cache / name)]
     if models:
-        targets.append(Target("model", "本程式使用的 AI 模型檔案（Hugging Face 快取）",
-                              f"位置：{cache}\n    ⚠ 這個快取可能跟其他程式共用；刪除後下次使用要重新下載。只會刪本程式的 "
-                              f"{len(models)} 個模型資料夾，不會動快取裡的其他東西。", models, cache,
-                              sum(0 if _is_link(p) else dir_size(p) for p in models)))
+        shared = shared_model_files(cache, models)
+        size = sum(0 if _is_link(p) else dir_size(p) for p in models)
+        for blob in shared:
+            try:
+                size += blob.stat().st_size
+            except OSError:
+                pass
+        target = Target("model", "本程式使用的 AI 模型檔案（Hugging Face 快取）",
+                        f"位置：{cache}\n    ⚠ 這個快取可能跟其他程式共用；刪除後下次使用要重新下載。只會刪本程式的 "
+                        f"{len(models)} 個模型資料夾"
+                        + (f"，以及共用倉庫裡只有這些模型在用的 {len(shared)} 個檔案" if shared else "")
+                        + "，不會動快取裡的其他東西。", models, cache, size)
+        target.shared_files = shared
+        targets.append(target)
     return targets
 
 
@@ -295,6 +361,30 @@ def remove_target(target: Target) -> list[str]:
             continue
         if path.exists() or _is_link(path):
             problems.append(f"{path}：仍然存在（可能被其他程式使用中）")
+    if target.key == "model" and target.shared_files:
+        store = Path(os.path.realpath(target.base / SHARED_BLOBS))
+        # 模型資料夾刪掉之後再確認一次：仍然沒有任何連結指著它，才刪（期間有別的程式開始用的話就留著）
+        still_used: set[Path] = set()
+        try:
+            for other in target.base.iterdir():
+                if other.is_dir() and not _is_link(other) and other.name != SHARED_BLOBS:
+                    still_used |= _links_into_store(other, store)
+        except OSError:
+            still_used = set(target.shared_files)
+        for blob in target.shared_files:
+            blob = Path(blob)
+            if blob in still_used or store not in blob.parents or _is_link(blob) or not blob.is_file():
+                continue
+            try:
+                blob.unlink()
+            except PermissionError:
+                try:
+                    os.chmod(blob, stat.S_IWRITE)
+                    blob.unlink()
+                except OSError as exc:
+                    problems.append(f"{blob}：{exc}")
+            except OSError as exc:
+                problems.append(f"{blob}：{exc}")
     if target.key == "logs":  # 只有空的 logs 資料夾才會一起移除；有「復原移除」等東西就留著
         try:
             target.base.rmdir()
