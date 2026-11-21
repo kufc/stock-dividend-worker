@@ -8,6 +8,7 @@ import re
 import stat
 import sys
 import threading
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,9 +25,12 @@ try:  # iPhone 的 HEIC 照片
 except ImportError:  # pragma: no cover - 選用功能
     pass
 
-# 都是使用者自己的照片：放寬 Pillow 的「解壓縮炸彈」限制到 3 億像素（仍涵蓋 200MP 手機照片、全景照），
-# 但不是無限制：超過的話 Pillow 會丟 DecompressionBombError，避免單一張圖就把記憶體吃光
-Image.MAX_IMAGE_PIXELS = 300_000_000
+# 單一張圖的像素上限：3 億（涵蓋 200MP 手機照片、全景照）。這是「硬上限」：超過就不解碼。
+# 注意 Pillow 自己的 MAX_IMAGE_PIXELS 不是硬上限——超過只是警告，要超過「兩倍」（6 億）才丟錯誤；
+# 6 億像素的 RGB 圖解開要 1.8 GB。所以每一條讀圖的路徑都在解碼前自己檢查寬×高（check_pixels），
+# Pillow 的設定只當第二道防線（open_checked 開檔時把它的警告當成錯誤）。
+MAX_PIXELS = 300_000_000
+Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 # 傳輸中斷而不完整的 JPEG 仍讀出可用的部分（缺的部分補灰色），而不是整張當成讀取失敗
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -181,25 +185,56 @@ def to_rgb(img: Image.Image) -> Image.Image:
     return img if img.mode == "RGB" else img.convert("RGB")
 
 
+class TooLargeError(ValueError):
+    """畫面的像素數超過上限：沒有解碼，直接拒絕。"""
+
+
+def pixel_limit() -> int:
+    return int(Image.MAX_IMAGE_PIXELS or MAX_PIXELS)
+
+
+def too_large_message(pixels: int | None, what: str = "圖片") -> str:
+    limit = f"上限是 {pixel_limit() / 1_000_000:.0f} 百萬像素"
+    if pixels:
+        return f"{what}太大（約 {pixels / 1_000_000:.0f} 百萬像素，{limit}），為避免記憶體不足沒有讀取"
+    return f"{what}太大（{limit}），為避免記憶體不足沒有讀取"
+
+
+def check_pixels(width: int, height: int, what: str = "圖片") -> None:
+    """解碼前的硬上限：寬×高超過上限就拒絕（只需要檔頭的尺寸，不用解開任何像素）。"""
+    pixels = int(width) * int(height)
+    if pixels > pixel_limit():
+        raise TooLargeError(too_large_message(pixels, what))
+
+
 def _bomb_message(exc: Exception) -> str:
-    match = re.search(r"(\d+) pixels", str(exc))
-    if match:
-        megapixels = int(match.group(1)) / 1_000_000
-        return f"圖片太大（約 {megapixels:.0f} 百萬像素），為避免記憶體不足已略過"
-    return "圖片太大，為避免記憶體不足已略過"
+    match = re.search(r"\((\d+) pixels\)", str(exc)) or re.search(r"(\d+) pixels", str(exc))
+    return too_large_message(int(match.group(1)) if match else None)
+
+
+def open_checked(source) -> Image.Image:
+    """Image.open，加上像素硬上限。所有讀圖的地方（原檔、縮圖快取）都從這裡開。"""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            img = Image.open(source)
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        raise TooLargeError(_bomb_message(exc)) from exc
+    try:
+        check_pixels(*img.size)
+    except TooLargeError:
+        img.close()
+        raise
+    return img
 
 
 def load_image(path: Path, max_side: int | None = None) -> tuple[Image.Image, datetime | None]:
     """載入圖片並依 EXIF 轉正，回傳 (RGB 圖片, EXIF 拍攝日期)。
 
     先縮小再轉正與轉色彩，避免在全尺寸影像上做多次複製（省記憶體也快很多）。
-    超過解壓縮炸彈上限的圖片會顯示成易懂的中文錯誤，而不是整包 Pillow 的例外訊息。
+    超過像素上限的圖片在解碼前就拒絕（open_checked），訊息是易懂的中文，而不是整包 Pillow 的例外訊息。
     """
-    try:
-        opened = Image.open(path)
-    except Image.DecompressionBombError as exc:
-        raise ValueError(_bomb_message(exc)) from exc
-    with opened as img:
+    with open_checked(path) as img:
         # 很大張又不是 JPEG／MPO（draft 對它們無效，只能整張解碼）：同一時間只讓一張在解碼，避免併發時記憶體暴增。
         # 尺寸只需要讀檔頭就知道，所以在做任何可能解碼的事之前就先上鎖——
         # 讀 EXIF 也可能觸發解碼（例如 eXIf 區塊放在影像資料之後的 PNG），轉正、轉色彩也會複製整張圖。
@@ -214,8 +249,8 @@ def load_image(path: Path, max_side: int | None = None) -> tuple[Image.Image, da
             else:
                 img.load()
             img = to_rgb(ImageOps.exif_transpose(img))
-        except Image.DecompressionBombError as exc:
-            raise ValueError(_bomb_message(exc)) from exc
+        except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+            raise TooLargeError(_bomb_message(exc)) from exc  # 例如動圖／多頁圖裡比第一頁大的畫格
         finally:
             if needs_lock:
                 _decode_semaphore.release()
@@ -256,6 +291,7 @@ def _stream_sar(stream):
 
 def _frame_to_image(frame, max_side: int, sar=None) -> Image.Image:
     """依像素長寬比（SAR）與旋轉資訊，把影片畫面轉成正確方向、比例的縮小圖片。"""
+    check_pixels(frame.width, frame.height, "影片畫面")  # 檔頭沒寫或中途變大的畫格
     width = frame.width
     if sar and sar.numerator and sar.denominator and sar != 1:
         width = round(width * sar.numerator / sar.denominator)
@@ -279,6 +315,8 @@ def sample_video_frames(path: Path, count: int = 8, max_side: int = ANALYSIS_SIZ
     with av.open(str(path)) as container:
         date = _video_date(container)
         stream = _video_stream(container)
+        context = stream.codec_context
+        check_pixels(context.width or 0, context.height or 0, "影片畫面")  # 解碼前先看檔頭宣告的尺寸
         stream.thread_type = "AUTO"
         sar = _stream_sar(stream)
         time_base = stream.time_base
@@ -360,9 +398,17 @@ def load_media(path: Path, kind: str, video_frames: int = 8) -> LoadedMedia:
     return LoadedMedia([img], date or file_date(path), thumbnail_bytes(img))
 
 
+def open_thumbnail(data: bytes, draft_size: int | None = None) -> Image.Image:
+    """打開縮圖快取（我們自己存的小 JPEG）。一樣走像素檢查：快取檔萬一被換成別的東西也不會整張解開。"""
+    with open_checked(io.BytesIO(data)) as img:
+        if draft_size:
+            img.draft("RGB", (draft_size, draft_size))
+        return img.convert("RGB")
+
+
 def load_preview(path: Path, kind: str, cached: bytes | None, size: int = THUMB_SIZE) -> Image.Image:
     if cached:
-        return Image.open(io.BytesIO(cached)).convert("RGB")
+        return open_thumbnail(cached)
     if kind == "video":
         frames, _ = sample_video_frames(path, 1, max_side=size)
         return frames[0]

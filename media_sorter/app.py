@@ -47,7 +47,7 @@ from .dialogs import (
     reveal_in_file_manager,
     show_problem,
 )
-from .media import FolderStats, file_date, folder_stats, load_preview, media_kind, scan_folder
+from .media import FolderStats, file_date, folder_stats, load_preview, media_kind, open_thumbnail, scan_folder
 from .organizer import (
     PlannedOp,
     classify_rows,
@@ -793,9 +793,7 @@ class App:
             return None
         try:
             size = self.thumb_px()
-            img = Image.open(io.BytesIO(item.thumbnail))
-            img.draft("RGB", (size * 2, size * 2))
-            img = img.convert("RGB")
+            img = open_thumbnail(item.thumbnail, draft_size=size * 2)
             img.thumbnail((size, size))
             photo = ImageTk.PhotoImage(img)
         except Exception:  # noqa: BLE001 - 縮圖失敗只是不顯示

@@ -189,6 +189,8 @@ def show_problem(master, what: str, todo: str = "", details: str = "", title: st
 
 
 # ---------------------------------------------------------------------------- 圖片放大檢視
+ZOOM_MAX_PIXELS = 40_000_000  # 放大檢視時實際畫出來的像素上限（約 120 MB）
+
 class ImageViewer(tk.Toplevel):
     """放大檢視：符合視窗／100%／放大／縮小。影片只顯示代表畫面（沒有播放功能，所以不放播放鈕）。"""
 
@@ -252,6 +254,9 @@ class ImageViewer(tk.Toplevel):
         w, h = self.image.size
         scale = min(cw / w, ch / h, 1.0) if self.mode == "fit" else self.zoom
         if self.mode == "fit":
+            self.zoom = scale
+        if w * h * scale * scale > ZOOM_MAX_PIXELS:  # 放大後的畫面也有上限（8 倍放大 2400px 的圖會是 3.7 億像素）
+            scale = (ZOOM_MAX_PIXELS / (w * h)) ** 0.5
             self.zoom = scale
         size = (max(1, round(w * scale)), max(1, round(h * scale)))
         shown = self.image if size == self.image.size else self.image.resize(size, Image.LANCZOS)
