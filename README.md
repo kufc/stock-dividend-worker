@@ -318,7 +318,8 @@ install.bat              安裝（雙擊）
 start.bat                開啟程式（雙擊）
 uninstall.bat            解除安裝（免安裝版，雙擊）
 installer/               Windows 安裝程式（NSIS）：setup.nsi、build_installer.py、test_in_wine.sh
-requirements.txt         Python 套件清單
+requirements.txt         直接用到的套件（固定版本）
+requirements.lock        所有相依套件＋SHA-256（Windows x64、Python 3.12；由 tools/update_lock.py 產生）
 media_sorter/
   app.py                 視窗程式：步驟流程、辨識與複製的背景工作、狀態管理
   views.py               四個步驟與外框的版面（可捲動區域、左右分割／分頁）
@@ -332,10 +333,22 @@ media_sorter/
   vocabulary.py          「AI 還看到這些」的內建詞彙
   installer.py           偵測顯示卡並安裝對應的 PyTorch
   uninstaller.py         安全的解除安裝程式（只刪清單內的項目）
+  netpolicy.py           連網政策：嚴格離線、同意後下載、要求修復；模型檔的核對
+  workdb.py              工作資料庫（SQLite）與縮圖磁碟快取：辨識結果與你的修改可以接續
 tests/                   自動化測試
+tests/manual/            評測資料：真模型算好的向量（開發集與獨立測試集）、來源清單、產生向量的腳本
+tools/
+  evaluate.py            用向量檔重算 docs/evaluation.md 的所有數字（不需要模型）
+  build_zip.py           打包免安裝版 ZIP（＝git 追蹤的所有檔案，含評測資料）
+  update_lock.py         重新產生 requirements.lock
+  update_model_pins.py   查出模型檔的版本、大小與 SHA-256
+docs/
+  evaluation.md          評測：資料、方法、結果、限制
+  roadmap.md             還沒做、留待決定的事（影片場景取樣、多標籤、重複檔、搜尋、OCR、英文介面、ONNX…）
 ```
 
-使用者資料（不會上傳到 git）：`categories.json`、`settings.json`、`logs\`（整理紀錄 CSV、錯誤紀錄、主控台輸出）。
+使用者資料（不會上傳到 git）：`categories.json`、`settings.json`、`logs\`（整理紀錄 CSV、錯誤紀錄、主控台輸出）、
+`analysis-cache\`（工作資料庫與縮圖）、`model-verified.json`、`model-config\`。
 
 ## 開發
 
@@ -343,7 +356,13 @@ tests/                   自動化測試
 python -m venv .venv
 .venv\Scripts\pip install torch torchvision -r requirements.txt pytest
 .venv\Scripts\python -m pytest
+python tools/evaluate.py          # 重算評測數字
+python tools/build_zip.py         # 打包 ZIP（含 tests/manual 的評測資料）
 ```
+
+沒有安裝 torch 時，需要真模型的測試會自動略過；Windows 專屬的測試（檔案鎖、磁碟種類）在其他系統略過，
+可以用 Wine 加安裝版內建的 Windows Python 執行（`installer/test_in_wine.sh` 的開頭有做法）。
+還沒做的功能與待決定的事項見 [`docs/roadmap.md`](docs/roadmap.md)。
 
 測試使用假的模型（依顏色分類），不需要下載 AI 模型或顯示卡；`tests/test_app.py` 會實際開啟視窗跑完整流程，
 `tests/test_regressions_*.py` 是對抗測試找到的問題所對應的回歸測試。
