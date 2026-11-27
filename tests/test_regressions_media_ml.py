@@ -210,3 +210,42 @@ def test_nan_from_fp16_falls_back_to_fp32():
     clf._other_embedding, clf._category_cache = None, {}  # _use_fp32 會清掉這些快取
     out = clf.encode_prepared([torch.zeros(3, 2, 2)] * 2)
     assert np.isfinite(out).all() and clf.fell_back_to_fp32
+
+
+@pytest.mark.parametrize("matrix,size,red_side", [
+    ((0, 1, -1, 0), (64, 96), "top"),      # 手機直拍：顯示時要順時針轉 90 度
+    ((0, -1, 1, 0), (64, 96), "bottom"),   # 另一個方向的直拍（270 度）
+    ((-1, 0, 0, -1), (96, 64), "right"),   # 上下顛倒（180 度）
+])
+def test_video_rotation_flag_is_applied(tmp_path, matrix, size, red_side):
+    """外部審查 A10：手機直式影片存的是橫的畫面加一個「顯示時旋轉」的旗標（MP4 的 tkhd 矩陣）。
+    沒照著轉的話，AI 看到的是躺著的畫面。第二份獨立測試集找不到帶旗標的真實影片，所以用合成的驗：
+    先寫一支左紅右藍的橫影片，再把檔頭的矩陣改成旋轉（這一版的 ffmpeg 不讓我們在寫檔時指定）。"""
+    import struct
+
+    av = pytest.importorskip("av")
+    path = tmp_path / "phone.mp4"
+    picture = np.zeros((64, 96, 3), np.uint8)
+    picture[:, :48], picture[:, 48:] = (250, 0, 0), (0, 0, 250)
+    with av.open(str(path), "w") as c:
+        s = c.add_stream("mpeg4", rate=24)
+        s.width, s.height, s.pix_fmt = 96, 64, "yuv420p"
+        for _ in range(24):
+            for p in s.encode(av.VideoFrame.from_ndarray(picture, format="rgb24")):
+                c.mux(p)
+        for p in s.encode():
+            c.mux(p)
+    data = bytearray(path.read_bytes())
+    identity = struct.pack(">9i", 0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000)
+    at = data.index(identity, data.index(b"tkhd"))
+    a, b, c_, d = (v * 0x10000 for v in matrix)
+    data[at:at + 36] = struct.pack(">9i", a, b, 0, c_, d, 0, 0, 0, 0x40000000)
+    path.write_bytes(data)
+
+    frames, _ = media.sample_video_frames(path, 2)
+    assert frames[0].size == size
+    pixels = np.asarray(frames[0]).astype(int)
+    h, w = pixels.shape[:2]
+    spot = {"top": pixels[3, w // 2], "bottom": pixels[h - 4, w // 2], "right": pixels[h // 2, w - 4]}[red_side]
+    opposite = {"top": pixels[h - 4, w // 2], "bottom": pixels[3, w // 2], "right": pixels[h // 2, 3]}[red_side]
+    assert spot[0] > 150 > spot[2] and opposite[2] > 150 > opposite[0]
