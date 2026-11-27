@@ -347,6 +347,7 @@ tools/
   update_model_pins.py   查出模型檔的版本、大小與 SHA-256
 docs/
   evaluation.md          評測：資料、方法、結果、限制
+  handoff.md             交接說明：第一次接手先讀這份
   release-checklist.md   上市前檢查清單：只有發行者能做的事（真機驗證、簽章、授權）
   roadmap.md             還沒做、留待決定的事（影片場景取樣、多標籤、重複檔、搜尋、OCR、英文介面、ONNX…）
 ```
