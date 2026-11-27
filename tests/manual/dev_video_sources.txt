@@ -1,0 +1,196 @@
+DEVELOPMENT SET OF VIDEOS ("devvideo") - THIS IS A DEV SET, NOT A TEST SET.
+It may be looked at and used freely to compare and tune video handling (frame sampling, how the frame results are
+combined into one answer, video-specific thresholds). Because it is used for tuning, numbers measured on it are NOT
+test accuracy and must never be reported as such. The test set for videos is holdout2 (holdout2_sources.txt); this set
+shares no source with it, so that dev and test stay independent.
+Collected on 2026-11-27. The classifier / any CLIP model was never run on any file while collecting; labels come from
+dataset metadata (captions, category labels) plus looking at contact sheets by eye. Nothing under /opt/holdout2 was
+opened while collecting.
+
+Files
+    <dir>/videos/<group>/<file>      343 videos in 34 folders, 1.9 GB (not committed; licences differ)
+    <dir>/videos/manifest.tsv        final group, file, the group the file was picked for, source key, kept/moved/removed
+    <dir>/sheets/<group>.jpg         contact sheets: 4 frames per clip (at 1/8, 3/8, 5/8, 7/8 of its length)
+rebuilt by
+    python tests/manual/collect_dev_video.py --out <dir> [--sheets <dir>/sheets] [--cache <scratch dir>]
+which pins the three dataset repos to commit hashes (REV in the script) and uses fixed seeds. The script downloads the
+two YouTube-clip zips whole (1.8 + 2.2 GB, into the Hugging Face cache) and fetches the Pexels files one by one with
+HTTP range requests out of the tar shards (about 2 GB; the 134 GB repo is not downloaded).
+Folder convention (same as holdout2): folder name == a default category -> that is the expected label; "A+B" -> the
+clip genuinely fits two default categories, either answer is correct; none_xxx -> fits no default category.
+Files are stored with the ORIGINAL BYTES and extension the dataset gives them (no re-encoding).
+
+== Independence from the other sets (how it was checked) ==
+- The three repos used here are not keys of REV in collect_holdout2.py (checked by intersecting the two REV dicts:
+  empty), and neither their names nor "msvd" / "msr-vtt" / "msrvtt" / "open-sora" occur in holdout_sources.txt,
+  photo_sources.txt or collect_holdout.py (string search). "Pexels" occurs in holdout2_sources.txt only in the list of
+  sources that were tried and REJECTED there (URL lists; no Pexels file is in holdout2).
+- Underlying data: holdout2's videos are Mixkit stock clips, a TikTok set (Shofo), UCF101 and Kinetics. Here: Pexels
+  stock clips (a different stock site), MSVD and MSR-VTT (YouTube clips of two captioning corpora). None of these is a
+  repackaging of the holdout2 sources. All image sources of the three earlier sets are still-image datasets.
+- MSVD / MSR-VTT / UCF101 / Kinetics are all cut from YouTube, so one YouTube video could in principle be in two of
+  them. Checked from metadata only: the YouTube ids of all 100 files of nateraw/kinetics-mini (file names) intersect
+  neither the 7,180 ids of MSR-VTT nor the 1,491 ids of MSVD. UCF101 file names carry no YouTube id, so that pair
+  could NOT be checked (UCF101 clips were collected by action class in 2012; an overlap is unlikely but not excluded).
+
+== Sources ==
+"License" is what the dataset card's license tag states; "not stated" = the card has no license tag.
+- zengxianyu/open-sora-pexels-subset ("Pexels" below): 9,750 Pexels stock videos (the Pexels part of Open-Sora-Plan
+  v1.1.0) with machine-written English captions (annotations/captions.parquet; 1-N captions per video, each for a
+  frame range). manifest.parquet lists the members of every tar shard in archive order, which gives the byte offset of
+  each file. Rules look at the FIRST sentence of the first caption ("what is the subject") and at all captions joined
+  (exclusions); files up to 30 MB. License: apache-2.0 (card tag; the footage itself is under the Pexels licence).
+  Original files as Pexels serves them: H.264 .mp4, mostly 1920x1080 or 1080x1920, many shot on phones.
+- friedrichor/MSR-VTT ("MSR-VTT"): 10,000 YouTube clips of 10-30 s with 20 human captions each and one of 20 category
+  labels (raw_data/MSRVTT_data.json, MSRVTT_Videos.zip). A clip qualifies by the SHARE of its 20 captions that match a
+  word list (e.g. >= 60 % mention a cat) and, where given, its category; the categories gaming, animation and
+  advertisement are never used. License: not stated (research corpus of YouTube clips). Small H.264 .mp4 (mostly
+  298x224 / 320x240), with cuts, logos, subtitles, letterboxing.
+- friedrichor/MSVD ("MSVD"): 1,970 YouTube clips of a few seconds with ~40 human captions each
+  (raw_data/AllVideoDescriptions.txt, MSVD_Videos.zip); same share-of-captions rules. License: not stated. Files are
+  .avi containers (H.264 inside), 320x240 to 1280x720.
+For all three: captions with words for drawings / games / screen content / toys are excluded (DRAWN in the script;
+MSR-VTT, MSVD: at most 10 % of the captions); duration 2-60 s as PyAV reports it; file <= 40 MB.
+
+== Selection discipline ==
+- Every pick is random with a fixed seed, random.Random("20261127:<group>:<source>"): the candidates of a rule are
+  sorted, shuffled, and the first n that pass the size / duration check and that no earlier group took are used.
+  Groups are built in the order of GROUPS in the script; a clip belongs to one group only.
+- Then every group was looked at on contact sheets (4 frames per clip, 200-px cells; one reviewer). The label follows
+  what the clip SHOWS in most of those frames:
+    * kept    - the caption-based label is right;
+    * moved   - it is wrong or incomplete: the file goes to the folder it belongs to (a default category, an "A+B"
+                pair or a none_ group) and is called <picked-for group>_<NNN><ext>;
+    * removed - unrecognisable (dark, blurred), drawn / title-card / abstract content, body parts or hands only, or
+                sitting between "no default category" and a default category (a person with a horse, a woman at a
+                ticket machine, an espresso machine filling a cup ...), or between three categories.
+  Nothing was removed for looking hard. All decisions are the REMOVED / MOVED lists in collect_dev_video.py.
+- 人像 vs 合照 (the distinction that matters most): 人像 = ONE person is the subject in most frames (a second person
+  seen only from behind / as a shoulder does not count); 合照 = two or more people are the subject (couples, families,
+  interviews with two people, candid groups). A clip that cuts between a group shot and close-ups of single faces is
+  filed by the majority of the 4 sheet frames. People doing sport / playing music / dancing are in none_sports /
+  none_music / none_dance whatever their number (as in holdout2).
+- "A+B" rules of thumb: a pet AND a person whose face or body is clearly in the picture (a hand alone does not make
+  it 人像+貓); people AND food on the table / a vehicle / scenery / a street where neither clearly dominates; scenery
+  with prominent vehicles or plants; a street scene where vehicles are as prominent as the buildings.
+- Changes made after seeing the contact sheets (metadata rules only, no model was run):
+  * 交通工具 fell to 12 after the review (the MSR-VTT "vehicles" category is mostly people presenting cars), so it was
+    topped up by 7 Pexels + 7 MSR-VTT clips with stricter no-people rules (build_top_up in the script; built after all
+    groups so that no earlier pick changes; numbered 028-041). 10 of the 14 kept.
+  * No other group was topped up. none_machine (7) and none_underwater (9) are small.
+
+== Groups (343 videos) ==
+Default categories (215)
+  人像 33     picked: Pexels 15 (first sentence "a / an / one ... woman | man | girl | boy | person ...", no word for
+              several people or animals anywhere, no food / vehicle / sport / music / scenery word in the first
+              sentence), MSR-VTT 10 (>= 70 % of the captions start with "a man / woman / girl ...", <= 10 % mention
+              several people), MSVD 5 (same). 20 kept, 2 moved (合照: a woman painting a man's face; 人像+風景: a tiny
+              figure raking in front of a forest), 8 removed (hands washing a cloth, tying a shoe, a handgun, a
+              laptop; legs only; a blurred torso; a man with a donkey; an unrecognisable film scene).
+              Moved in 13: 3 from 合照, 2 from 美食, 1 from 交通工具, 7 from none_ groups (see there).
+  合照 28     picked: Pexels 18 (first sentence "two ... six | a group of | several" + people word, or couple / family
+              / friends), MSR-VTT 12 and MSVD 5 (>= 50 % of the captions have "group of / two men / friends / family
+              / couple / people are sitting ..."). 23 kept, 8 moved (3 人像, none_dance, 人像+風景, 合照+美食,
+              合照+城市建築, 合照+花草植物), 4 removed (a library with two tiny figures; torsos and hands without
+              faces (2); a dark bedroom scene). Moved in 5: 1 from 人像, 4 from none_ groups.
+  貓 28       picked: MSVD 9 (>= 60 % cat captions, <= 15 % mention a person), MSR-VTT 9, Pexels 9 (cat in the first
+              sentence, no people word). 22 kept, 5 moved (4 人像+貓: babies / a woman with a cat; 1 合照+貓).
+              Moved in 6 from the 人像+貓 pick (only a hand, or no person at all).
+  狗 25       same rules with dog words. 23 kept, 4 moved (3 人像+狗: a musher with a sled-dog team, a man in a bath
+              tub with a beagle, a TV host with puppies; 1 合照+狗). Moved in 2 from the 人像+狗 pick.
+  風景 23     picked: Pexels 22 (landscape word in the first sentence; no people / animal / building / vehicle word
+              anywhere), MSR-VTT 4. 22 kept, 3 moved (風景+花草植物, 花草植物, 人像+風景: a hiker from behind),
+              1 removed (a travel montage: beach umbrellas, trees, a hut). Moved in 1 (an aerial beach from
+              none_sports).
+  城市建築 19 picked: Pexels 22 (building / city word in the first sentence), MSR-VTT 4. 18 kept, 5 moved
+              (2 風景+城市建築, 2 城市建築+交通工具, 合照+城市建築), 3 removed (a wall base and pavement; a stop sign in
+              front of trees; title cards with numbers). Moved in 1 (a modern courtyard house from 花草植物).
+  美食 17     picked: Pexels 12 (food word in the first sentence, no people word there), MSR-VTT 10 (categories
+              food/drink and cooking, >= 70 % food captions), MSVD 6 (>= 80 %). 17 kept (dishes, fruit, close-ups of
+              cutting / stirring where only hands are seen), 10 moved (3 人像+美食 and 2 合照+美食: cooking shows where
+              the cook(s) are in the picture; 2 人像; 2 花草植物: flowers floating in a bowl; 1 美食+花草植物),
+              1 removed (a shelf of oil jars).
+  花草植物 20 picked: Pexels 24 (flower / plant / leaf word in the first sentence, no people word anywhere).
+              17 kept, 3 moved (城市建築, 風景+花草植物, 城市建築+花草植物), 4 removed (a metal flower-shaped object;
+              essential-oil bottles (2); a thatched beach umbrella). Moved in 3. No YouTube-style plant clips.
+  交通工具 22 picked: Pexels 12, MSR-VTT 12 (category vehicles/autos, >= 70 % vehicle captions), MSVD 4, + top-up
+              Pexels 7 and MSR-VTT 7. 22 kept, 13 moved (4 人像+交通工具, 4 合照+交通工具, 2 風景+交通工具,
+              2 城市建築+交通工具, 1 人像), 7 removed (a fairground carousel; an aerial view of a camp site; two
+              nearly black night clips; a truck bed with cables; a blurred tilt-shift shot; an end card).
+"A+B" folders (53): 人像+狗 10, 人像+貓 6, 人像+交通工具 4, 合照+交通工具 4, 城市建築+交通工具 4, 人像+美食 3,
+  人像+風景 3, 合照+美食 3, 合照+城市建築 2, 美食+花草植物 2, 風景+交通工具 2, 風景+城市建築 2, 風景+花草植物 2, and one
+  each: 人像+城市建築, 合照+狗, 合照+貓, 合照+花草植物, 合照+風景, 城市建築+花草植物.
+  Only 人像+貓 (Pexels 5: a cat in the first sentence and a people word in the captions; MSVD 4: cat captions of which
+  >= 50 % mention a person) and 人像+狗 (Pexels 5, MSVD 4) were picked directly; of those 18, 9 stayed, 8 went to
+  貓 / 狗 and 1 was removed (dark). All other "+" files were moved in by eye.
+Unknown groups (75)
+  none_sports 17    with people. MSR-VTT 14 (category sports/actions, >= 70 % sport captions), Pexels 6. 13 kept
+                    (wrestling, table tennis, soccer, athletics, horse racing, basketball tricks, stadium flares,
+                    canyoning), 5 moved (2 人像: a woman meditating, a man doing martial-arts moves in a wood; 合照:
+                    two children doing push-ups; 風景; 合照+風景: two hikers), 2 removed. Moved in 4 (3 riders on
+                    horses from none_wildlife, a fitness clip from none_dance).
+  none_music 16     with people. MSR-VTT 9 (category music), MSVD 5, Pexels 4: singers, bands, guitar, piano, cello.
+                    16 kept, 1 moved to 人像 (no instrument or microphone visible), 1 removed.
+  none_dance 14     with people. MSR-VTT 6, MSVD 4, Pexels 6. 12 kept (classes, stage, film dance scenes, one solo
+                    dancer), 3 moved, 1 removed (abstract paint swirls). Moved in 2.
+  none_machine 7    mostly without people. Pexels 14, MSR-VTT 4. 7 kept (an angle grinder, pumps, a pallet jack, a
+                    mixing desk (2 near-duplicates), an engine on a hoist, a tracked robot), 5 moved (the word list
+                    also matched people near "machines"), 6 removed.
+  none_underwater 9 Pexels 10, MSR-VTT 6. 9 kept (jellyfish, fish, a manta ray, an aquarium tank, two clips of a
+                    freediver), 3 moved, 4 removed (paint swirls, caught fish in a box, graphics, anglers).
+  none_wildlife 12  MSVD 7, MSR-VTT 5, Pexels 6 (animals other than cats / dogs / sea animals). 11 kept (polar bear,
+                    elephant, zebras, penguins, turtles, seals, a duck, wolves and a bison), 4 moved, 3 removed
+                    (a woman with a chimpanzee, one holding a kangaroo, a girl with a pony). Moved in 1 (whales).
+  47 of the 75 are people doing sport / music / dance; 2 more show a freediver and three machine clips show hands
+  or workers; the rest (machines, sea animals, wildlife) is essentially without people (not counted exactly).
+
+== Technical properties (measured on the final files with PyAV 19) ==
+- 285 .mp4 and 58 .avi; ALL are H.264 / yuv420p (the MSVD .avi files hold H.264 too). By source: Pexels 181,
+  MSR-VTT 104, MSVD 58.
+- Duration 3.0 - 48.0 s (median 12 s). Largest file 29 MB.
+- 72 are portrait (taller than wide), all from Pexels (1080x1920, four 1080x2048): 人像 14, 合照 13, 貓 9, 狗 9,
+  交通工具 7, 花草植物 4, 城市建築 4, 風景 3, 美食 2, and 7 in other folders. All are ENCODED upright.
+- NO file carries a rotation flag / display matrix (frame.rotation is 0 for every file), there is NO .mov and NO HEVC.
+  A search of about 15 minutes on the Hub (dataset-name search for iphone / mov / hevc / ugc / "mobile video" / vlog
+  ..., and file listings of the hits) found no usable source of real phone recordings: the hits were robotics
+  recordings, gated sets, raw .yuv test sequences, URL lists, or re-encoded clips (Evave7/Cat_Videos: all 448x448
+  libx264). These three paths (.mov container, HEVC, rotation flag) are therefore NOT covered by this set either.
+
+== Known limits and debatable labels ==
+- 343 videos is more than the 200-260 that were aimed at (the review moved many clips instead of removing them, and
+  "+" folders came out at 53 instead of 25-40). manifest.tsv allows taking a subset.
+- One reviewer, 4 frames per clip at 200 px. Clips were not watched in full: something that happens between the
+  sampled frames (a second person entering, a cut to another scene) was not seen. MSR-VTT clips in particular are cut
+  from edited YouTube videos and often contain 2-3 shots.
+- The caption rules were corrected by eye in a large share of cases (46 removed, 82 moved of 389 picks), so for the
+  moved files the expected label is the reviewer's judgement.
+- 人像 debatable: 人像/022 (a girl with social-media overlays), 人像/023 (a girl showing shoes; two frames show the
+  shoes), 人像/026 (a small figure at a cage in a film set), 人像/美食_008 (a man sitting small in an empty hall),
+  人像/none_machine_011 (a woman at a table, a man's back in the foreground), 人像/合照_025 (first frame shows two
+  faces), 人像/none_sports_016 and _019, 人像/none_dance_014, 人像/交通工具_014 (a vlogger next to cars),
+  人像/none_underwater_015 (a man talking in front of fishing boats).
+- 合照 debatable: 合照/018 and 合照/029 (group shots mixed with single close-ups), 合照/020 (blurred children on a
+  sofa), 合照/016 (a couple at a table full of food - could be 合照+美食), 合照/none_machine_010 (a man pouring wine
+  for a woman), 合照/none_wildlife_007 (two girls, one with a parrot on her shoulder).
+- 貓 / 狗 vs "人像+": a hand stroking the animal stays 貓 / 狗; a visible body without a face (人像+貓/005, /008, 貓_017)
+  is in the "+" folder. 狗/010 shows an arm in pink next to the dog. 貓/006, 貓/007, 貓/015 show a cat watching or
+  shown on a screen. 人像+狗/006 is a child crawling into a kennel (the dog is small).
+- none groups that can be argued about: none_sports / none_music / none_dance show people (a user might accept 人像 /
+  合照; none_dance/none_machine_000 and none_dance/013 are one woman dancing alone); none_underwater/003, /004 are a
+  freediver; none_sports has three clips of riders on horses; none_machine/014 shows mechanics around an engine;
+  none_wildlife has zoo animals behind fences.
+- 交通工具 debatable: 005 (ferries in front of a city), 006 (a sailing boat with a person lying on it), 007 / 029 / 031
+  (three near-duplicate views along the outside of a moving train), 030 (an aircraft wing through the window),
+  021 and 027 (car interiors), 024 (a motorcyclist), 039 (cars at a meeting with people walking by).
+- 風景/024 and 風景/025 carry credits / a "4K" title frame; 城市建築/005 is a dark night waterfront; 花草植物/013 has
+  a millipede among the plants; 美食/009 (seeds in a jar) and 美食/023 (water poured into a pot) show little food.
+- Three very different kinds of footage: Pexels (clean stock clips, half of the set, the only portrait files),
+  MSR-VTT (tiny, edited, with overlays) and MSVD (tiny, short). Per-source results can differ a lot; the manifest
+  gives the source of every file. 花草植物 is Pexels only; 風景 and 城市建築 almost only Pexels (many drone shots).
+- No videos for 螢幕截圖 / 文件收據 / 動漫插畫 / 迷因梗圖 (drawn, game and screen content was excluded on purpose).
+- Small folders (7-33 files): per-folder numbers are noisy.
+- The contact sheets print the file names with PIL's default font, which has no CJK glyphs: the prefix of moved
+  files (<picked-for group>_NNN) shows as boxes when that group has a Chinese name.
+- Reproducibility: checked once - a second build (no --cache; the two zips came from the Hugging Face download
+  cache, every Pexels file was fetched again) reproduced all 343 files and manifest.tsv byte for byte. A build
+  from a completely empty Hugging Face cache was not repeated.

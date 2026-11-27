@@ -167,3 +167,20 @@ def test_judging_rules_keep_their_measured_results_on_the_dev_set(preset, unknow
     assert result["correct_flagged"] <= 0.05
     assert result["flagged"] <= 0.30
     assert result["closed_balanced"] >= 0.96
+
+
+def test_video_variant_comparison_can_be_rerun_without_a_model():
+    """審查 A4／A5 的結論（docs/evaluation.md）要能重現：影片開發資料的向量在 repo 裡，比較腳本跑得起來，
+    而且現行做法的數字就是文件寫的那幾個。這是開發資料，不是測試集。"""
+    import subprocess
+
+    out = subprocess.run([sys.executable, str(evaluate.MANUAL / "compare_video_variants.py"), "standard"],
+                         capture_output=True, text=True, encoding="utf-8", check=True,
+                         env={**__import__("os").environ, "PYTHONIOENCODING": "utf-8"}).stdout
+    assert "343 個影片，268 個有答案，75 個都不是" in out
+    current = next(line for line in out.splitlines() if line.startswith("現行（裁中間）"))
+    assert "第一名分對 86.9%" in current and "未知誤接受 34.7%" in current
+    doc = evaluate.DOC.read_text(encoding="utf-8")
+    for line in out.splitlines():
+        if line.startswith(("每格切方塊、每格取平均向量", "補邊成正方形")):
+            assert line.split("第一名分對 ")[1].split(" ")[0] in doc

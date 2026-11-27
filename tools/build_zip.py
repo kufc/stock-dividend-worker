@@ -31,6 +31,8 @@ REQUIRED = [  # 少了任何一個就不是完整的交付（tests/test_build_zi
     "tests/manual/embeddings_holdout2_standard.npz", "tests/manual/embeddings_holdout2_accurate.npz",
     "tests/manual/embeddings_holdout2_video_standard.npz", "tests/manual/embeddings_holdout2_video_accurate.npz",
     "tests/manual/holdout2_sources.txt", "tests/manual/collect_holdout2.py",
+    "tests/manual/embeddings_devvideo_standard.npz", "tests/manual/dev_video_sources.txt",
+    "tests/manual/collect_dev_video.py", "tests/manual/dump_video_variants.py", "tests/manual/compare_video_variants.py",
 ]
 
 

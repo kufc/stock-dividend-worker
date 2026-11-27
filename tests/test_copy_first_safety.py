@@ -246,7 +246,7 @@ def test_byte_truncation_anywhere_never_crashes_or_loses_data(tmp_path, trash):
         for dst in (o.dst for o in ops):  # 每次都從「複本都在」的狀態開始
             if not dst.exists():
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(a if dst == ops[0].dst else b, dst)
+                shutil.copyfile(a if dst == ops[0].dst else b, dst)
         result.log_path.write_bytes(raw[:cut])
         for func in (undo, remove_originals):
             try:
