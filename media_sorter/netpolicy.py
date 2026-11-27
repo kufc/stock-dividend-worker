@@ -75,14 +75,71 @@ def is_offline() -> bool:
 
 set_offline(True)  # 預設就是離線：沒有任何程式路徑會「順便」連網
 
+# ---------------------------------------------------------------------------- 第二道攔截：直接擋連線
+# 環境變數只對「會看它」的元件有效。視窗程式啟動時另外裝上這一道：本行程任何對外的 socket 連線都會被拒絕，
+# 只有 download_preset 執行期間（使用者同意下載）才放行。連到本機（127.0.0.1、::1、localhost）不擋。
+_guard = {"installed": False, "allowed": 0, "blocked": []}
+LOCAL_HOSTS = ("127.", "::1", "localhost", "0.0.0.0")
+
+
+class NetworkBlocked(OSError):
+    """離線模式下有程式碼想連網，被擋下來了。"""
+
+
+def _is_local(address) -> bool:
+    if not isinstance(address, tuple) or not address:
+        return True  # 不是 IP 連線（例如本機的 Unix socket）
+    host = str(address[0])
+    return host.startswith(LOCAL_HOSTS) or host == ""
+
+
+def install_network_guard() -> None:
+    """裝上「離線時擋掉所有對外連線」的保護（視窗程式啟動時呼叫一次；重複呼叫沒有作用）。"""
+    if _guard["installed"]:
+        return
+    import socket
+
+    real_connect, real_connect_ex = socket.socket.connect, socket.socket.connect_ex
+
+    def check(address) -> None:
+        if _guard["allowed"] <= 0 and not _is_local(address):
+            _guard["blocked"].append(str(address[0]))
+            raise NetworkBlocked(f"離線模式：已擋下對 {address[0]} 的連線（只有你同意下載或修復模型時才會連網）")
+
+    def connect(self, address):
+        check(address)
+        return real_connect(self, address)
+
+    def connect_ex(self, address):
+        check(address)
+        return real_connect_ex(self, address)
+
+    socket.socket.connect, socket.socket.connect_ex = connect, connect_ex
+    _guard.update(installed=True, real=(real_connect, real_connect_ex))
+
+
+def remove_network_guard() -> None:
+    """拿掉保護（測試用）。"""
+    if _guard["installed"]:
+        import socket
+
+        socket.socket.connect, socket.socket.connect_ex = _guard["real"]
+        _guard.update(installed=False, allowed=0)
+
+
+def blocked_connections() -> list[str]:
+    return list(_guard["blocked"])
+
 
 @contextmanager
 def _network_allowed():
     """只有 download_preset 會用：這段期間允許連網，離開時一定回到離線（就算下載失敗）。"""
     set_offline(False)
+    _guard["allowed"] += 1
     try:
         yield
     finally:
+        _guard["allowed"] -= 1
         set_offline(True)
 
 

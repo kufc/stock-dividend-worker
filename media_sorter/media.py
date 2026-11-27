@@ -50,6 +50,17 @@ SKIP_DIRS = {"$recycle.bin", "recycler", "system volume information", "@eadir", 
              ".@__thumb", "found.000"}
 FILE_ATTRIBUTE_SYSTEM = getattr(stat, "FILE_ATTRIBUTE_SYSTEM", 0x4)
 FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+# 雲端同步資料夾（OneDrive「檔案隨選」等）裡「只在雲端」的檔案：本機只有一個佔位項目，一讀內容 Windows 就會把整個檔案下載回來。
+# 屬性：OFFLINE、RECALL_ON_OPEN、RECALL_ON_DATA_ACCESS（Windows 文件記載的檔案屬性）。
+CLOUD_ONLY_ATTRIBUTES = 0x1000 | 0x40000 | 0x400000
+
+
+def is_cloud_only(path: Path) -> bool:
+    """這個檔案的內容是不是還在雲端（讀它會觸發下載）。只有 Windows 有這種屬性；其他系統一律 False。"""
+    try:
+        return bool(getattr(os.stat(path), "st_file_attributes", 0) & CLOUD_ONLY_ATTRIBUTES)
+    except OSError:
+        return False
 
 
 def media_kind(path: Path) -> str | None:
@@ -103,12 +114,20 @@ def _iter_files(folder: Path, recursive: bool, exclude: Path | None):
                 yield path
 
 
-def scan_folder(folder: Path, recursive: bool = True, exclude: Path | None = None) -> list[Path]:
+def scan_folder(folder: Path, recursive: bool = True, exclude: Path | None = None, *, skip_cloud_only: bool = False,
+                stop_event=None) -> list[Path]:
     """找出資料夾內所有支援的圖片與影片（依路徑排序）。
 
     exclude 資料夾（例如輸出資料夾）、系統資料夾（資源回收筒、NAS 縮圖）、隱藏與系統檔都會被跳過。
+    skip_cloud_only：跳過「只在雲端」的檔案（不然辨識會把它們全部下載回來）。
+    stop_event 被設定時提早結束（回傳目前找到的）。
     """
-    found = [path for path in _iter_files(folder, recursive, exclude) if media_kind(path)]
+    found = []
+    for path in _iter_files(folder, recursive, exclude):
+        if stop_event is not None and stop_event.is_set():
+            break
+        if media_kind(path) and not (skip_cloud_only and is_cloud_only(path)):
+            found.append(path)
     return sorted(found, key=lambda p: str(p).lower())
 
 
@@ -120,6 +139,7 @@ class FolderStats:
     videos: int = 0
     other: int = 0  # 不支援而會被略過的檔案
     cached: int = 0  # 之前辨識過、結果還存著的（由介面填入，見 workdb）
+    cloud_only: int = 0  # 支援的檔案裡「只在雲端」的（辨識會把它們下載回來）
 
     @property
     def supported(self) -> int:
@@ -136,6 +156,8 @@ def folder_stats(folder: Path, recursive: bool = True, exclude: Path | None = No
             stats.videos += 1
         else:
             stats.other += 1
+        if kind and is_cloud_only(path):
+            stats.cloud_only += 1
     return stats
 
 

@@ -143,6 +143,7 @@ class RunInfo:
         return [op for op in self.ops if str(op.src) not in self.done_sources]
 
 
+ERROR_LOG_LIMIT = 2 * 1024 * 1024  # error.log 超過這個大小就換一份新的
 DOUBLE_CLICK_GUARD = 0.7  # 秒。「開始」按下後這段時間內，同一顆按鈕的第二下不算（習慣連點兩下的人不會變成「開始又馬上停止」）
 
 
@@ -181,6 +182,14 @@ def score_note(suggestions: list[tuple[str, float]], category_count: int) -> str
         lead = "第一名領先不多"
     numbers = "／".join(f"{round(prob * 100)}" for _, prob in suggestions)
     return f"名次＝在目前的分類裡相對最像誰，不代表正確率。{lead}（相對分數 {numbers}，滿分 100）。"
+
+
+def format_remaining(seconds: float) -> str:
+    if seconds < 60:
+        return "剩不到 1 分鐘"
+    if seconds < 3600:
+        return f"大約還要 {round(seconds / 60)} 分鐘"
+    return f"大約還要 {seconds / 3600:.1f} 小時"
 
 
 def _default_classifier_factory(preset: str):
@@ -560,10 +569,14 @@ class App:
         if store.recreated_from is not None:
             self._startup_notices.append(
                 f"保存的辨識結果讀不出來（檔案損壞），已經重新建立；之前改過的分類需要重新指定。壞掉的那份保留在：{store.recreated_from}")
-        try:
-            store.prune()
-        except Exception:  # noqa: BLE001 - 清理失敗不影響使用
-            pass
+        def tidy() -> None:  # 可能要掃過幾萬個縮圖檔，放到背景做，不拖慢開啟
+            try:
+                store.prune()
+                store.enforce_thumb_limit()
+            except Exception:  # noqa: BLE001 - 清理失敗不影響使用
+                pass
+
+        threading.Thread(target=tidy, daemon=True).start()
         return store
 
     def show_startup_notices(self) -> None:
@@ -659,7 +672,9 @@ class App:
             hint = f"將辨識 {supported:,} 個檔案（圖片 {self.stats.images:,}、影片 {self.stats.videos:,}）。"
             if self.items:
                 hint += "　要繼續上次的結果，請按上方的「2　檢查分類」。"
-            elif self.stats.cached:
+            if self.stats.cloud_only:
+                hint += f"　其中 {self.stats.cloud_only:,} 個只存在雲端，辨識前會先問你要不要下載。"
+            if not self.items and self.stats.cached:
                 hint += (f"　這個資料夾有 {self.stats.cached:,} 個檔案之前辨識過：沒變過的會直接沿用結果與你改過的分類，"
                          "只辨識新增或變更的檔案。")
             p.hint_var.set(hint)
@@ -1243,6 +1258,9 @@ class App:
         elif self.classifier is not None and any(item.embedding is not None for item in self.items):
             reverted = self._rescore()
         else:
+            if any(item.embedding is not None for item in self.items):
+                # 模型目前沒有載入（例如剛修復過模型）：沒辦法馬上依新的分類重算，要講，不能讓使用者以為已經更新
+                self.status_var.set("分類已儲存。AI 的建議還是舊的：按「開始辨識」後會依新的分類重新計算（很快，沒變過的檔案不用重讀）。")
             names = {c.name for c in categories}
             for item in self.items:
                 if item.status == CONFIRMED and item.chosen not in names:
@@ -1452,7 +1470,8 @@ class App:
     def stop_analysis(self) -> None:
         if self.analysis_running():
             self.stop_event.set()
-            self.status_var.set("正在停止⋯")
+            started = self._progress[1] > 0
+            self.status_var.set("正在停止⋯" if started else "正在停止⋯（尋找檔案或載入模型的這一步結束後就會停）")
             self.page2.stop_btn.state(["disabled"])
 
     def start_analysis(self) -> None:
@@ -1479,6 +1498,17 @@ class App:
         if self.store is None and any(item.status in (CONFIRMED, SKIPPED) for item in self.items):
             if not messagebox.askyesno(APP_NAME, "重新辨識會清除目前清單裡你改過的分類，確定要繼續嗎？"):
                 return
+        skip_cloud = False
+        cloud = self.stats.cloud_only if self.stats is not None else 0
+        if cloud:
+            answer = messagebox.askyesnocancel(
+                APP_NAME,
+                f"這個資料夾裡有 {cloud:,} 個檔案只存在雲端（例如 OneDrive 的「只限線上」），電腦上沒有內容。\n\n"
+                "辨識要讀檔案內容，Windows 會把它們下載回這台電腦，可能占用很多空間與流量。\n\n"
+                "「是」＝全部辨識（會下載）\n「否」＝跳過只在雲端的檔案，只辨識已經在電腦上的\n「取消」＝先不辨識")
+            if answer is None:
+                return
+            skip_cloud = not answer
         self.settings["last_folder"] = str(folder)
         self.settings["include_subfolders"] = self.subfolders_var.get()
         save_settings(self.settings)
@@ -1491,13 +1521,19 @@ class App:
         self._set_items([])
         self.refresh_tree()
         self.stop_event = threading.Event()  # 每一輪用新的停止旗標，舊的背景工作不會影響新的一輪
-        while not self.queue.empty():  # 丟掉上一輪殘留的訊息
-            self.queue.get_nowait()
+        kept = []
+        while not self.queue.empty():  # 丟掉上一輪殘留的訊息；跟這一輪無關的（放大檢視、預覽、模型狀態）要留著
+            msg = self.queue.get_nowait()
+            if msg[0] in NO_RUN_ID:
+                kept.append(msg)
+        for msg in kept:
+            self.queue.put(msg)
         self._run_id += 1
         self._analysis_active = True
         self.needs_rescore = False
         self._auto_switch = False
         self._progress = (0, 0)
+        self._eta_start = None
         self.page1.show_notice("")
         self.page2.analysis_var.set("準備中⋯")
         self.page2.stop_btn.state(["!disabled"])
@@ -1509,19 +1545,23 @@ class App:
         self.worker = threading.Thread(
             target=self._analysis_worker,
             args=(self._run_id, self.stop_event, folder, self.subfolders_var.get(), self.output_dir(),
-                  list(self.categories), dict(self.settings)),
+                  list(self.categories), dict(self.settings), skip_cloud),
             daemon=True,
         )
         self.worker.start()
 
     def _analysis_worker(self, run_id: int, stop_event: threading.Event, folder: Path, recursive: bool,
-                         output: Path, categories, settings) -> None:
+                         output: Path, categories, settings, skip_cloud: bool = False) -> None:
         def post(msg: tuple) -> None:
             self.queue.put((msg[0], run_id, *msg[1:]))
 
         try:
             post(("status", "正在尋找圖片與影片⋯"))
-            paths = scan_folder(folder, recursive=recursive, exclude=output)
+            paths = scan_folder(folder, recursive=recursive, exclude=output, skip_cloud_only=skip_cloud,
+                                stop_event=stop_event)
+            if stop_event.is_set():
+                post(("done", "已停止（還沒開始辨識）。"))
+                return
             post(("scanned", paths))
             if not paths:
                 post(("done", "這個資料夾裡沒有找到支援的圖片或影片。"))
@@ -1531,6 +1571,9 @@ class App:
                 self.classifier = None
                 self.classifier = self.classifier_factory(settings["model"])
                 self.classifier_key = settings["model"]
+                if stop_event.is_set():  # 載入模型中途按了停止：載入本身中斷不了，載完就停
+                    post(("done", "已停止（還沒開始辨識）。"))
+                    return
             device = getattr(self.classifier, "device_description", "")
             post(("status", f"辨識中⋯　使用：{device}"))
             results = analyze(
@@ -1649,6 +1692,17 @@ class App:
         self.status_var.set("AI 模型檢查完成。")
         messagebox.showinfo(APP_NAME, text)
 
+    def _eta_text(self, done: int, total: int) -> str:
+        """估計剩餘時間。從第一個進度開始算；樣本太少或剛開始時不顯示（估不準比不顯示更糟）。"""
+        now = time.monotonic()
+        start = getattr(self, "_eta_start", None)
+        if start is None or done < start[1]:
+            self._eta_start = start = (now, done)
+        elapsed, processed = now - start[0], done - start[1]
+        if elapsed < 5 or processed < 5 or done >= total:
+            return ""
+        return "　" + format_remaining(elapsed / processed * (total - done))
+
     def _progress_indeterminate(self) -> None:
         self.progress.configure(mode="indeterminate")
         self.progress.start(14)
@@ -1728,7 +1782,7 @@ class App:
             if self.organizing:
                 self.status_var.set(f"正在複製檔案⋯（{done}／{total}）")
             elif self._analysis_active:
-                self.page2.analysis_var.set(f"辨識中：{done}／{total}")
+                self.page2.analysis_var.set(f"辨識中：{done}／{total}{self._eta_text(done, total)}")
         elif kind == "done":
             self._finish_worker(args[0])
         elif kind == "organized":
@@ -1855,12 +1909,17 @@ class App:
         except (OSError, RuntimeError) as exc:
             plan.problem = f"無法規劃整理方式：{exc}"
             return plan
+        # 檔案大小在辨識時就記下來了（fingerprint），預覽時不用每個檔案再問一次磁碟；沒有的才問
+        known = {os.path.normcase(str(it.path.absolute())): it.fingerprint[0] for it in self.items if it.fingerprint}
         for op in plan.ops:
-            try:
-                plan.total_bytes += op.src.stat().st_size
-            except OSError:
-                pass
-        plan.problem = free_space_problem(plan.ops)
+            size = known.get(os.path.normcase(str(op.src)))
+            if size is None:
+                try:
+                    size = op.src.stat().st_size
+                except OSError:
+                    size = 0
+            plan.total_bytes += size
+        plan.problem = free_space_problem(plan.ops, plan.total_bytes)
         return plan
 
     def refresh_plan(self) -> None:
@@ -2317,7 +2376,13 @@ class App:
     def log_error(self, text: str) -> None:
         try:
             LOG_DIR.mkdir(parents=True, exist_ok=True)
-            with open(LOG_DIR / "error.log", "a", encoding="utf-8") as f:
+            log = LOG_DIR / "error.log"
+            try:
+                if log.stat().st_size > ERROR_LOG_LIMIT:  # 不讓它無限長大：超過就把舊的留成一份 .1
+                    os.replace(log, log.with_name("error.log.1"))
+            except OSError:
+                pass
+            with open(log, "a", encoding="utf-8") as f:
                 f.write(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}]\n{text}\n")
         except OSError:
             pass
@@ -2330,7 +2395,7 @@ class App:
         self._error_dialog_open = True
         try:
             show_problem(self._dialog_parent(), f"發生問題：{message}",
-                         "詳細內容已記錄在 logs\\error.log。如果需要回報問題，請附上這個檔案。", details)
+                         f"詳細內容已記錄在：{LOG_DIR / 'error.log'}\n如果需要回報問題，請附上這個檔案。", details)
         finally:
             self._error_dialog_open = False
 
@@ -2345,7 +2410,7 @@ class App:
         if self.store is not None:
             worker = getattr(self, "worker", None)
             if worker is not None and worker.is_alive():
-                worker.join(timeout=5)  # 讓辨識中的那一批寫完再關資料庫
+                worker.join(timeout=2)  # 讓辨識中的那一批寫完再關資料庫（最多等 2 秒，不讓視窗卡著關不掉）
             self.store.close()
         try:
             for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
@@ -2356,6 +2421,9 @@ class App:
     def on_close(self) -> None:
         if self.organizing:
             messagebox.showinfo(APP_NAME, "正在處理檔案，請等待完成後再關閉程式。")
+            return
+        if self.model_task_running and not messagebox.askyesno(
+                APP_NAME, "正在下載或檢查 AI 模型。現在關閉的話這次的下載會中斷，下次要重新下載還沒完成的檔案。\n\n確定要關閉嗎？"):
             return
         self.stop_event.set()
         self.settings.update(
@@ -2391,6 +2459,7 @@ def main() -> None:
         messagebox.showinfo(APP_NAME, "AI 媒體分類器已經開著了（請看工作列）。")
         root.destroy()
         return
+    netpolicy.install_network_guard()  # 第二道保護：離線時本行程任何對外連線都會被擋下
     App(root)
     root.mainloop()
     lock.close()

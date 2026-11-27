@@ -34,6 +34,7 @@ DB_NAME = "work.sqlite3"
 THUMB_DIR = "thumbs"
 MARKER = ".media-sorter-work"  # 這個資料夾是本程式建立的（解除安裝程式只會清理有這個標記的資料夾）
 DECISION_STATUSES = ("confirmed", "skipped")
+MAX_THUMB_BYTES = 2 * 1024**3  # 縮圖快取的上限（約六萬張）；超過就從最久沒用到的開始清
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -312,6 +313,39 @@ class WorkStore:
                 self._drop_thumb(thumb)
             self._db.commit()
         return len(rows)
+
+    def thumb_bytes(self) -> int:
+        total = 0
+        for current, _dirs, files in os.walk(self.thumbs):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(current, name))
+                except OSError:
+                    pass
+        return total
+
+    def enforce_thumb_limit(self, max_bytes: int = MAX_THUMB_BYTES) -> int:
+        """縮圖快取超過上限時，從最久沒掃到的檔案開始移除（連同它的辨識結果，下次會重新辨識）。回傳移除的筆數。
+
+        你指定的分類不刪：那是你的決定，不是快取。"""
+        total = self.thumb_bytes()
+        if total <= max_bytes:
+            return 0
+        removed = 0
+        with self._lock:
+            rows = self._db.execute("SELECT path_key, thumb FROM files WHERE thumb IS NOT NULL ORDER BY seen_at, analyzed_at").fetchall()
+            for key, thumb in rows:
+                if total <= max_bytes * 0.8:  # 一次清到八成，不要每次開程式都在邊界上清
+                    break
+                try:
+                    total -= (self.thumbs / thumb).stat().st_size
+                except OSError:
+                    pass
+                self._db.execute("DELETE FROM files WHERE path_key=?", (key,))
+                self._drop_thumb(thumb)
+                removed += 1
+            self._db.commit()
+        return removed
 
     def clear(self) -> None:
         """清掉所有保存的辨識結果、你的修改與縮圖（使用者在「設定」裡要求時）。"""

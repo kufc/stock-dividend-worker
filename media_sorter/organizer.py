@@ -301,16 +301,18 @@ class ExecuteResult:
 
 
 # ---------------------------------------------------------------------------- 整理（只複製）
-def free_space_problem(ops: list[PlannedOp]) -> str | None:
-    """複製需要的空間超過目的地剩餘空間時，回傳給使用者看的說明；空間足夠回傳 None。"""
+def free_space_problem(ops: list[PlannedOp], need: int | None = None) -> str | None:
+    """複製需要的空間超過目的地剩餘空間時，回傳給使用者看的說明；空間足夠回傳 None。
+    need：呼叫端已經知道總大小時傳進來（省掉逐檔再問一次大小，檔案在 NAS 上時差很多）。"""
     if not ops:
         return None
-    need = 0
-    for op in ops:
-        try:
-            need += op.src.stat().st_size
-        except OSError:
-            pass
+    if need is None:
+        need = 0
+        for op in ops:
+            try:
+                need += op.src.stat().st_size
+            except OSError:
+                pass
     target = ops[0].dst
     while not target.exists() and target.parent != target:
         target = target.parent

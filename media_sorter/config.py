@@ -27,8 +27,10 @@ DATA_MARKER = ".media-sorter-data"  # 資料資料夾裡的標記檔；解除安
 
 
 def default_data_dir() -> Path:
+    # MEDIA_SORTER_HOME 只給開發與測試用。安裝版一律用固定位置：解除安裝程式只認得那裡，
+    # 讓環境變數把資料帶到別處的話，解除安裝時會找不到（也就清不掉）。
     override = os.environ.get("MEDIA_SORTER_HOME")
-    if override:
+    if override and not INSTALLED:
         return Path(override)
     if INSTALLED:
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")

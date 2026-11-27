@@ -477,6 +477,14 @@ counterpart.
    still recognizes the visible part but always puts it in "需檢查" and
    says why.
 
+・雲端同步資料夾裡「只在雲端」的檔案（例如 OneDrive 的「只限線上」），
+　辨識時會被 Windows 下載回電腦。開始辨識前程式會告訴你有幾個，並讓你
+　選擇全部辨識、跳過這些檔案，或取消。
+   Files in a cloud-synced folder that exist only in the cloud (for
+   example OneDrive "online-only") are downloaded by Windows when they
+   are recognized. Before recognition starts the program tells you how
+   many there are and lets you include them, skip them, or cancel.
+
 ・雲端同步的資料夾（例如 OneDrive）在複製與改名期間可能同時進行同步，
 　建議先暫停同步。
    Cloud-synced folders (for example OneDrive) may sync while files are
