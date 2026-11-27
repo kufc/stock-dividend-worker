@@ -12,12 +12,19 @@ ImageNette 裡的狗、教堂、垃圾車屬於預設分類；其他七類（魚
   image_names, image_labels（預期分類；「（都不像）」代表不屬於任何預設分類）, image_emb
   frame_owner, frame_emb（影片每張取樣畫面的向量；frame_owner 是它屬於哪個 image_names 的位置）
   texts, text_emb（每一句文字各自的向量，離線可以自己組合成分類）, logit_scale, model
+
+--extra-dir 加上 --keep-original（第二份獨立測試集 holdout2 的做法，見 holdout2_sources.txt）：
+  檔案原封不動複製、保留副檔名，所以 image_names 會是 x_<組名>_<編號>.heic／.png／.mp4⋯⋯，影片也在同一份清單裡
+  （影片的 image_emb 是各取樣畫面合併後的向量，逐張畫面的向量在 frame_owner／frame_emb）。
+  另外多存 image_sources（原始檔名）與 failed_names／failed_sources／failed_labels／failed_groups／failed_errors
+  （產品的讀取流程讀不出來的檔案——不會悄悄丟掉）。
 """
 
 from __future__ import annotations
 
 import argparse
 import io
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -33,7 +40,7 @@ from prompt_candidates import CANDIDATES  # noqa: E402
 from real_model_check import EXPECTED, NONE, build_images  # noqa: E402
 
 from media_sorter.analysis import analyze  # noqa: E402
-from media_sorter.config import DEFAULT_CATEGORIES  # noqa: E402
+from media_sorter.config import DEFAULT_CATEGORIES, IMAGE_EXTS, VIDEO_EXTS  # noqa: E402
 from media_sorter.vocabulary import COMMON_CATEGORIES, EXTRA_HINTS, VOCABULARY, category_hint  # noqa: E402
 
 # ImageNette 的 10 個類別（依 WordNet 編號排序，也就是資料集的 label 0～9）→ 預設分類裡的預期答案
@@ -99,29 +106,46 @@ def all_texts() -> list[str]:
     return list(dict.fromkeys(t for t in texts if t))
 
 
-def add_extra_dir(extra_dir: Path, folder: Path) -> tuple[dict[str, str], dict[str, str]]:
+def add_extra_dir(extra_dir: Path, folder: Path, keep_original: bool = False,
+                  sources: dict[str, str] | None = None) -> tuple[dict[str, str], dict[str, str]]:
     """extra_dir 底下每個子資料夾是一組圖片，資料夾名稱就是那一組的名稱：
-    名稱是預設分類（例如「美食」）→ 預期答案就是那個分類；其他名稱（例如 none_meme）→ 不屬於任何預設分類。
-    回傳 ({檔名: 預期分類}, {檔名: 組名})。"""
+    名稱是預設分類（例如「美食」）→ 預期答案就是那個分類；
+    名稱是用「+」連起來的幾個預設分類（例如「人像+美食」）→ 預期答案就是這個名稱本身，代表答哪一個都算對；
+    其他名稱（例如 none_meme）→ 不屬於任何預設分類。
+    回傳 ({檔名: 預期分類}, {檔名: 組名})。
+
+    keep_original=False（預設）：每張圖重新存成 JPEG（RGB、長邊最多 1024），檔名一律 .jpg——EXIF 方向、透明度都會消失。
+    keep_original=True：原檔逐位元組複製、保留原本的副檔名（小寫），圖片與影片（IMAGE_EXTS | VIDEO_EXTS）都收，
+    這樣 EXIF 轉向、透明底、HEIC、影片取樣這些路徑才會真的被量到。讀不讀得出來交給後面的正式讀取流程判斷，這裡不檢查。
+    sources（有給的話）會填入 {檔名: 「組名/原始檔名」}。"""
     defaults = {c.name for c in DEFAULT_CATEGORIES}
+    allowed = IMAGE_EXTS | VIDEO_EXTS if keep_original else {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
     expected, groups = {}, {}
     for sub in sorted(p for p in extra_dir.iterdir() if p.is_dir()):
         count = 0
         for source in sorted(sub.iterdir()):
-            if source.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"):
+            suffix = source.suffix.lower()
+            if suffix not in allowed or not source.is_file():
                 continue
-            name = f"x_{sub.name}_{count:03d}.jpg"
-            try:
-                image = Image.open(source).convert("RGB")
-                image.thumbnail((1024, 1024))
-                image.save(folder / name, quality=90)
-            except Exception as exc:  # noqa: BLE001 - 壞圖略過
-                print(f"（略過 {source}：{exc}）")
-                continue
-            expected[name] = sub.name if sub.name in defaults else NONE
+            if keep_original:
+                name = f"x_{sub.name}_{count:03d}{suffix}"
+                shutil.copyfile(source, folder / name)
+            else:
+                name = f"x_{sub.name}_{count:03d}.jpg"
+                try:
+                    image = Image.open(source).convert("RGB")
+                    image.thumbnail((1024, 1024))
+                    image.save(folder / name, quality=90)
+                except Exception as exc:  # noqa: BLE001 - 壞圖略過
+                    print(f"（略過 {source}：{exc}）")
+                    continue
+            parts = sub.name.split("+")
+            expected[name] = sub.name if all(part in defaults for part in parts) else NONE
             groups[name] = sub.name
+            if sources is not None:
+                sources[name] = f"{sub.name}/{source.name}"
             count += 1
-        print(f"額外圖片 {sub.name}：{count} 張")
+        print(f"額外{'檔案' if keep_original else '圖片'} {sub.name}：{count} {'個' if keep_original else '張'}")
     return expected, groups
 
 
@@ -133,17 +157,22 @@ def main() -> None:
     parser.add_argument("--extra-dir", default="", help="額外的圖片：每個子資料夾一組，資料夾名稱＝預期分類或 none_xxx")
     parser.add_argument("--only-extra", action="store_true",
                         help="只算 --extra-dir 的圖片：不產生內建的那一批（搭配 --per-class 0 就連 ImageNette 也不加）")
+    parser.add_argument("--keep-original", action="store_true",
+                        help="--extra-dir 的檔案原封不動複製（保留副檔名、EXIF、透明度；影片也收），不重新存成 JPEG")
     parser.add_argument("--fake", action="store_true", help="用測試的假模型跑（只檢查這支程式本身）")
     args = parser.parse_args()
     if args.only_extra and not args.extra_dir:
         parser.error("--only-extra 需要搭配 --extra-dir")
+    if args.keep_original and not args.extra_dir:
+        parser.error("--keep-original 需要搭配 --extra-dir")
 
     folder = Path(tempfile.mkdtemp(prefix="dump_embeddings_"))
     paths = [] if args.only_extra else build_images(folder)
     expected = {} if args.only_extra else dict(EXPECTED)
     groups: dict[str, str] = {}
+    sources: dict[str, str] = {}
     if args.extra_dir:
-        extra_expected, groups = add_extra_dir(Path(args.extra_dir), folder)
+        extra_expected, groups = add_extra_dir(Path(args.extra_dir), folder, args.keep_original, sources)
         expected.update(extra_expected)
         paths += [folder / name for name in sorted(extra_expected)]
     if args.per_class > 0:
@@ -165,7 +194,11 @@ def main() -> None:
         from media_sorter.classifier import Classifier
 
         clf = Classifier(args.preset)
-    items = [it for it in analyze(paths, clf, list(DEFAULT_CATEGORIES)) if it.embedding is not None]
+    analyzed = analyze(paths, clf, list(DEFAULT_CATEGORIES))
+    items = [it for it in analyzed if it.embedding is not None]
+    failed = [it for it in analyzed if it.embedding is None]
+    for it in failed:  # 產品讀不出來的檔案本身就是一項發現：印出來，--keep-original 時也記進 .npz
+        print(f"（讀取失敗 {sources.get(it.path.name, it.path.name)}：{it.error}）")
     texts = all_texts()
     text_emb = clf.encode_texts(texts)
     frame_owner, frame_emb = [], []
@@ -174,8 +207,21 @@ def main() -> None:
             frame_owner += [position] * len(item.frames)
             frame_emb.append(item.frames)
     dim = text_emb.shape[1]
+    extra_arrays = {}
+    if args.keep_original:
+        # 只有 --keep-original 才多存這幾個欄位（舊的向量檔格式不變）：
+        # image_sources：每個檔案在 --extra-dir 裡的「組名/原始檔名」；failed_*：讀取失敗、所以沒有向量的檔案
+        extra_arrays = {
+            "image_sources": np.array([sources.get(it.path.name, "") for it in items]),
+            "failed_names": np.array([it.path.name for it in failed], dtype=str),
+            "failed_sources": np.array([sources.get(it.path.name, "") for it in failed], dtype=str),
+            "failed_labels": np.array([expected.get(it.path.name, "?") for it in failed], dtype=str),
+            "failed_groups": np.array([groups.get(it.path.name, "") for it in failed], dtype=str),
+            "failed_errors": np.array([str(it.error or "") for it in failed], dtype=str),
+        }
     np.savez_compressed(
         args.out,
+        **extra_arrays,
         image_names=np.array([it.path.name for it in items]),
         image_labels=np.array([expected.get(it.path.name, "?") for it in items]),
         image_groups=np.array([groups.get(it.path.name, "") for it in items]),
@@ -187,7 +233,8 @@ def main() -> None:
         logit_scale=np.float32(clf.logit_scale),
         model=np.array(clf.model_name),
     )
-    print(f"已存 {args.out}：{len(items)} 個檔案、{len(texts)} 句文字、向量 {dim} 維")
+    print(f"已存 {args.out}：{len(items)} 個檔案、{len(texts)} 句文字、向量 {dim} 維"
+          + (f"；另有 {len(failed)} 個檔案讀取失敗" if failed else ""))
 
 
 if __name__ == "__main__":
