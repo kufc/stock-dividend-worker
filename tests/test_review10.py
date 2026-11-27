@@ -612,3 +612,35 @@ def test_remaining_time_estimate(app, monkeypatch):
     clock[0] += 58
     assert "大約還要 9 分鐘" in app._eta_text(100, 1000)  # 60 秒做了 100 個，還有 900 個
     assert app._eta_text(1000, 1000) == ""
+
+
+# ---------------------------------------------------------------------------- A5：影片的黑畫面
+def test_black_frames_are_dropped_from_video_samples(tmp_path):
+    pytest.importorskip("av")
+    import av
+
+    path = tmp_path / "fade.mp4"
+    with av.open(str(path), "w") as container:
+        stream = container.add_stream("mpeg4", rate=24)
+        stream.width, stream.height, stream.pix_fmt = 64, 64, "yuv420p"
+        for i in range(96):  # 前半全黑（片頭黑幕），後半是紅色的內容
+            color = (0, 0, 0) if i < 48 else (230, 20, 20)
+            for packet in stream.encode(av.VideoFrame.from_image(Image.new("RGB", (64, 64), color))):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    frames, _ = media.sample_video_frames(path, 8)
+    assert 1 <= len(frames) < 8 and not any(media.is_blank_frame(f) for f in frames)
+    loaded = media.load_media(path, "video", 8)
+    assert not media.is_blank_frame(Image.open(__import__("io").BytesIO(loaded.thumbnail)))  # 縮圖也不會是黑的
+    item = analyze([path], FakeClassifier(), CATS, workers=2)[0]
+    assert item.best(CATS)[0] == "紅" and item.best(CATS)[1] > 0.9  # 以前：一半的畫面是黑的，分數被拉低
+
+
+def test_all_dark_video_keeps_its_frames_and_dark_photos_are_not_blank():
+    dark = [Image.new("RGB", (64, 64), (3, 3, 3)) for _ in range(4)]
+    assert media.drop_blank_frames(dark) == dark  # 整支都很暗：原樣保留
+    night = Image.new("RGB", (64, 64), (5, 5, 10))
+    night.paste((255, 255, 200), (20, 20, 44, 44))  # 夜景裡有亮的東西：不是黑畫面
+    assert media.is_blank_frame(dark[0]) and not media.is_blank_frame(night)
+    assert analysis.PREPROCESS_VERSION >= 2  # 影片的向量會變，保存的舊結果要重算

@@ -33,7 +33,7 @@ TAG_COUNT = 5
 LONG_ASPECT = 1.6  # 長寬比超過這個值（例如手機截圖）就切成多塊正方形分別判斷再平均
 # 前處理的版本：讀圖尺寸、切塊方式、影片取樣方式、向量怎麼合併⋯⋯只要改了會讓「同一個檔案算出不同向量」的東西，
 # 就把這個數字加一，保存的辨識結果（workdb）就會全部重算，不會新舊混用。
-PREPROCESS_VERSION = 1
+PREPROCESS_VERSION = 2  # 2：影片取樣拿掉黑畫面
 
 
 def model_key(classifier) -> str:

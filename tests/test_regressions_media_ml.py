@@ -34,11 +34,12 @@ def test_video_frames_are_spread_out_even_with_one_keyframe(tmp_path):
         s.pix_fmt = "yuv420p"
         s.codec_context.gop_size = 1000
         for i in range(240):
-            frame = av.VideoFrame.from_ndarray(np.full((64, 64, 3), [i, 0, 0], np.uint8), format="rgb24")
+            frame = av.VideoFrame.from_ndarray(np.full((64, 64, 3), [i, 90, 90], np.uint8), format="rgb24")
             for p in s.encode(frame):
                 c.mux(p)
         for p in s.encode():
             c.mux(p)
+    # （畫面加了一點底色：純黑漸亮的前幾格現在會被當成黑畫面拿掉，那是另一個測試；這裡只看取樣有沒有散開）
     frames, _ = media.sample_video_frames(path, 8)
     reds = [np.asarray(f)[..., 0].mean() for f in frames]
     assert len(frames) == 8 and len({round(r) for r in reds}) == 8

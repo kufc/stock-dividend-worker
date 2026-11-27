@@ -395,7 +395,23 @@ def sample_video_frames(path: Path, count: int = 8, max_side: int = ANALYSIS_SIZ
             frames = kept[::step][:count]
     if not frames:
         raise ValueError("影片中讀不到任何畫面")
-    return frames, date
+    return drop_blank_frames(frames), date
+
+
+BLANK_FRAME_MAX_BRIGHTNESS = 16   # 0～255；整張平均比這個暗
+BLANK_FRAME_MAX_CONTRAST = 6      # 而且幾乎沒有明暗變化 → 視為黑畫面（淡入淡出、片頭片尾的黑幕）
+
+
+def is_blank_frame(img: Image.Image) -> bool:
+    """幾乎全黑、沒有內容的畫面。這種畫面跟任何分類都不像，卻會被平均進整支影片的分數，還可能被選成縮圖。"""
+    small = np.asarray(img.convert("L").resize((32, 32)), dtype=np.float32)
+    return float(small.mean()) < BLANK_FRAME_MAX_BRIGHTNESS and float(small.std()) < BLANK_FRAME_MAX_CONTRAST
+
+
+def drop_blank_frames(frames: list[Image.Image]) -> list[Image.Image]:
+    """拿掉黑畫面；全部都是黑畫面（例如整支都很暗的影片）就原樣保留，不能讓影片變成「沒有畫面」。"""
+    kept = [frame for frame in frames if not is_blank_frame(frame)]
+    return kept or frames
 
 
 def thumbnail_bytes(img: Image.Image, size: int = THUMB_SIZE) -> bytes:
