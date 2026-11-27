@@ -85,26 +85,196 @@ REV = {
     "Rezuwan/Parrot60_Dataset": "4c71e196bc69e29df64d03d9e61973f3f0a3d86b",
     "LakshC/SynthBench": "dbf1ced77bc0f83d9a55875503b1eb5bd8bb4c0a",
     "Shawn-Huang/CUFED-AlbumBench": "d1e9a034ed66a69bb4fb3a64d94fbe8d625f9dd7",
+    "JapanDegitalMaterial/Places_in_Japan": "0cc93383b39f36d3db8d6d438602f33b14bc54e6",
+    "JapanDegitalMaterial/Objects_in_Japan": "4e99ec4d126c3db49fd8953200eaa1d189ee8f09",
+    "ThePioneer/japanese-photos": "ff8257ad55b3809eaa9b8ad4fef10d34af309a44",
     "FastVideo/Mixkit-Src": "b5fff04254af8bbf716b1c166e85b8fe4000bb0e",
     "Shofo/shofo-tiktok-general-small": "93625fe8042be012276b2d88fd27860c4ee68200",
     "sayakpaul/ucf101-subset": "b9984b8d2a95e4a1879e1b071e9433858d0bc24a",
     "nateraw/kinetics-mini": "9f4ed38128a355c352527209101be3e326471816",
 }
 
-IMAGE_GROUPS = ["人像", "合照", "貓", "狗", "風景", "城市建築", "美食", "花草植物", "交通工具", "螢幕截圖", "文件收據", "動漫插畫",
-                "迷因梗圖", "貓+迷因梗圖", "none_logo", "none_book", "none_galaxy", "none_microscopy", "none_floorplan",
-                "none_banknote", "none_tools", "none_cards", "none_parrot", "none_gadget"]
-VIDEO_GROUPS = ["人像", "合照", "貓", "狗", "風景", "城市建築", "美食", "花草植物", "交通工具", "none_sports", "none_music",
-                "none_misc"]
+# The groups that are BUILT (the folder a file is picked for). The by-eye review below moves some files into further
+# folders that are not built directly: the "A+B" pairs and - for images - more of none_snapshot.
+IMAGE_GROUPS = ["人像", "合照", "貓", "狗", "風景", "城市建築", "美食", "花草植物", "交通工具", "螢幕截圖", "文件收據",
+                "動漫插畫", "迷因梗圖", "貓+迷因梗圖", "none_snapshot", "none_logo", "none_book", "none_galaxy",
+                "none_microscopy", "none_floorplan", "none_banknote", "none_tools", "none_cards", "none_parrot",
+                "none_gadget"]
+VIDEO_GROUPS = ["人像", "合照", "貓", "狗", "風景", "城市建築", "美食", "花草植物", "交通工具", "none_sports",
+                "none_music", "none_misc"]
 
 # ---------------------------------------------------------------------------------------------------------------
 # By-eye review (contact sheets), applied after the random selection. Keys are the names of the RAW selection
 # (<picked-for group>/<NNN><ext>). See holdout2_sources.txt for the reason of every entry.
 # REMOVED_*: deleted. MOVED_*: stored under another group as <picked-for group>_<NNN><ext>.
-REMOVED_IMAGES: dict[str, list[str]] = {}
-MOVED_IMAGES: dict[str, dict[str, str]] = {}
-REMOVED_VIDEOS: dict[str, list[str]] = {}
-MOVED_VIDEOS: dict[str, dict[str, str]] = {}
+REMOVED_IMAGES: dict[str, list[str]] = {
+    "人像": ["062.jpg"],
+    "合照": ["022.jpg", "030.jpg", "047.jpg", "058.jpg", "061.jpg", "075.jpg", "078.jpg"],
+    "風景": [
+        "001.jpg", "031.jpg", "041.jpg", "044.jpg", "045.jpg", "046.jpg", "047.jpg", "048.jpg",
+        "049.jpg", "057.jpg", "058.jpg", "059.jpg", "060.jpg", "061.jpg", "062.jpg", "066.jpg",
+        "075.jpg", "076.jpg",
+    ],
+    "城市建築": ["047.jpg"],
+    "美食": ["001.jpeg", "004.jpeg", "015.jpeg"],
+    "花草植物": ["002.jpg", "034.jpeg"],
+    "交通工具": ["034.jpeg", "036.jpeg", "039.jpeg", "048.jpg"],
+    "none_tools": ["015.jpg", "016.jpg", "032.jpg", "034.jpg"],
+    "none_book": ["029.jpg"],
+    "none_snapshot": ["007.jpg"],
+}
+MOVED_IMAGES: dict[str, dict[str, str]] = {
+    "人像": {
+        **dict.fromkeys(["000.jpg", "010.jpg", "017.jpg", "023.jpg"], "人像+風景"),
+        **dict.fromkeys(["002.jpg", "016.jpg", "018.jpg"], "人像+城市建築"),
+        **dict.fromkeys(["014.jpg"], "風景+交通工具"),
+        **dict.fromkeys(["040.png", "041.png", "045.png", "049.png"], "合照"),
+        **dict.fromkeys(["059.jpg"], "動漫插畫"),
+    },
+    "合照": {
+        **dict.fromkeys([
+            "010.jpg", "042.jpg", "051.jpg", "060.jpg", "063.jpg", "084.jpg", "090.jpg", "091.jpg"], "人像"),
+        **dict.fromkeys(["017.jpg", "032.jpg", "041.jpg"], "合照+風景"),
+        **dict.fromkeys(["023.jpg"], "合照+城市建築"),
+        **dict.fromkeys(["026.jpg"], "合照+美食"),
+        **dict.fromkeys(["027.jpg", "076.jpg", "077.jpg"], "城市建築"),
+        **dict.fromkeys(["031.jpg"], "合照+交通工具"),
+        **dict.fromkeys(["036.jpg"], "風景+城市建築"),
+        **dict.fromkeys(["072.jpg", "073.jpg"], "狗"),
+    },
+    "狗": {
+        **dict.fromkeys(["046.jpg"], "合照+狗"),
+        **dict.fromkeys(["047.jpg"], "狗+城市建築"),
+        **dict.fromkeys(["054.jpg"], "狗+風景"),
+    },
+    "風景": {
+        **dict.fromkeys(["015.jpg"], "風景+交通工具"),
+        **dict.fromkeys([
+            "025.jpg", "029.jpg", "042.jpg", "064.jpg", "065.jpg", "069.jpg", "072.jpg", "073.jpg",
+            "074.jpg", "080.jpg"], "none_snapshot"),
+        **dict.fromkeys(["032.jpg"], "人像+風景"),
+        **dict.fromkeys(["035.jpg", "036.jpg", "068.jpg"], "城市建築+交通工具"),
+        **dict.fromkeys([
+            "063.jpg", "070.jpg", "071.jpg", "078.jpg", "079.jpg", "081.jpg", "088.jpg", "089.jpg",
+            "090.jpg", "091.jpg", "092.jpg", "093.jpg"], "城市建築"),
+        **dict.fromkeys(["077.jpg", "087.jpg"], "花草植物"),
+    },
+    "城市建築": {
+        **dict.fromkeys(["017.heic"], "城市建築+交通工具"),
+        **dict.fromkeys(["025.jpg", "027.jpg", "036.jpg", "049.jpg"], "風景+城市建築"),
+        **dict.fromkeys(["035.jpg", "046.jpg", "052.jpg"], "none_snapshot"),
+        **dict.fromkeys(["037.jpg", "039.jpg"], "風景"),
+    },
+    "美食": {
+        **dict.fromkeys(["018.jpeg"], "人像"),
+        **dict.fromkeys(["029.jpeg"], "合照+美食"),
+        **dict.fromkeys(["050.jpg"], "風景"),
+        **dict.fromkeys(["052.jpg", "056.jpg", "057.jpg", "058.jpg"], "none_snapshot"),
+        **dict.fromkeys(["053.jpg"], "城市建築"),
+        **dict.fromkeys(["059.jpg"], "美食+花草植物"),
+        **dict.fromkeys(["060.jpg"], "風景+美食"),
+        **dict.fromkeys(["062.jpg"], "城市建築+交通工具"),
+    },
+    "花草植物": {
+        **dict.fromkeys(["015.jpg", "036.jpeg", "039.jpeg"], "風景+花草植物"),
+        **dict.fromkeys(["043.jpeg", "054.jpeg"], "美食"),
+        **dict.fromkeys(["053.jpeg"], "城市建築+花草植物"),
+        **dict.fromkeys(["060.jpeg"], "人像+花草植物"),
+    },
+    "交通工具": {
+        **dict.fromkeys(["028.jpeg", "030.jpeg", "032.jpeg", "047.jpg", "050.jpg"], "none_snapshot"),
+        **dict.fromkeys(["029.jpeg", "040.jpeg", "046.jpg", "063.jpg"], "城市建築+交通工具"),
+        **dict.fromkeys(["037.jpeg", "054.jpg", "058.jpg", "064.jpg", "066.jpg"], "城市建築"),
+        **dict.fromkeys([
+            "049.jpg", "052.jpg", "055.jpg", "056.jpg", "060.jpg", "061.jpg", "062.jpg", "067.jpg"], "風景"),
+        **dict.fromkeys(["051.jpg", "053.jpg", "057.jpg"], "風景+交通工具"),
+    },
+    "動漫插畫": {
+        **dict.fromkeys(["034.jpg", "035.jpg", "036.jpg", "038.jpg", "039.jpg"], "動漫插畫+迷因梗圖"),
+    },
+    "迷因梗圖": {
+        **dict.fromkeys([
+            "032.jpg", "033.png", "047.jpg", "048.jpg", "049.gif", "050.jpg", "051.jpg", "052.png",
+            "053.png", "055.gif", "056.jpg", "057.png", "059.png", "060.png", "061.jpg", "062.gif",
+            "063.gif"], "動漫插畫+迷因梗圖"),
+        **dict.fromkeys(["035.gif", "038.gif"], "人像+迷因梗圖"),
+        **dict.fromkeys(["039.jpg"], "貓+迷因梗圖"),
+    },
+    "none_book": {
+        **dict.fromkeys(["032.jpg", "033.jpg", "039.jpg"], "動漫插畫"),
+    },
+    "none_snapshot": {
+        **dict.fromkeys([
+            "001.jpg", "003.jpg", "004.jpg", "005.jpg", "006.jpg", "008.jpg", "009.jpg", "011.jpg",
+            "013.jpg", "014.jpg"], "城市建築"),
+        **dict.fromkeys(["012.jpg", "015.jpg", "016.jpg"], "美食"),
+        **dict.fromkeys(["017.jpg", "018.jpg"], "人像"),
+    },
+}
+REMOVED_VIDEOS: dict[str, list[str]] = {
+    "合照": ["004.mp4", "007.mp4"],
+    "美食": ["017.mp4"],
+    "花草植物": ["001.mp4", "010.mp4"],
+    "交通工具": ["002.mp4", "004.mp4", "008.mp4"],
+    "none_misc": ["002.mp4", "009.mp4", "017.mp4", "021.mp4"],
+}
+MOVED_VIDEOS: dict[str, dict[str, str]] = {
+    "人像": {
+        **dict.fromkeys(["000.mp4", "009.mp4"], "合照"),
+        **dict.fromkeys(["004.mp4"], "人像+花草植物"),
+        **dict.fromkeys(["006.mp4"], "風景"),
+        **dict.fromkeys(["007.mp4"], "none_misc"),
+    },
+    "合照": {
+        **dict.fromkeys(["005.mp4"], "合照+交通工具"),
+        **dict.fromkeys(["010.mp4"], "風景+城市建築"),
+        **dict.fromkeys(["012.mp4"], "合照+狗"),
+    },
+    "貓": {
+        **dict.fromkeys(["001.mp4", "002.mp4", "003.mp4", "010.mp4"], "人像+貓"),
+        **dict.fromkeys(["007.mp4"], "人像"),
+        **dict.fromkeys(["016.mp4"], "貓+動漫插畫"),
+        **dict.fromkeys(["018.mp4", "019.mp4"], "貓+迷因梗圖"),
+    },
+    "狗": {
+        **dict.fromkeys(["001.mp4", "002.mp4", "006.mp4", "009.mp4", "007.mp4"], "人像+狗"),
+        **dict.fromkeys(["005.mp4"], "狗+風景"),
+        **dict.fromkeys(["011.mp4"], "人像"),
+        **dict.fromkeys(["012.mp4", "017.mp4"], "合照+狗"),
+    },
+    "風景": {
+        **dict.fromkeys(["012.mp4"], "none_misc"),
+        **dict.fromkeys(["013.mp4"], "風景+交通工具"),
+    },
+    "城市建築": {
+        **dict.fromkeys(["011.mp4"], "人像"),
+        **dict.fromkeys(["014.mp4"], "風景+城市建築"),
+        **dict.fromkeys(["016.mp4"], "合照"),
+    },
+    "美食": {
+        **dict.fromkeys(["000.mp4", "011.mp4", "020.mp4"], "人像"),
+        **dict.fromkeys(["006.mp4"], "合照+美食"),
+        **dict.fromkeys(["012.mp4", "013.mp4", "014.mp4", "018.mp4"], "人像+美食"),
+        **dict.fromkeys(["019.mp4"], "貓+美食"),
+    },
+    "花草植物": {
+        **dict.fromkeys(["004.mp4"], "人像"),
+        **dict.fromkeys(["009.mp4", "012.mp4"], "合照+花草植物"),
+    },
+    "交通工具": {
+        **dict.fromkeys(["001.mp4"], "人像+交通工具"),
+        **dict.fromkeys(["007.mp4"], "風景"),
+        **dict.fromkeys(["009.mp4", "010.mp4"], "風景+交通工具"),
+        **dict.fromkeys(["011.mp4", "013.mp4"], "城市建築"),
+        **dict.fromkeys(["014.mp4", "020.mp4"], "貓"),
+        **dict.fromkeys(["019.mp4"], "狗+風景"),
+    },
+    "none_misc": {
+        **dict.fromkeys(["022.mp4"], "交通工具"),
+        **dict.fromkeys(["024.mp4", "028.mp4", "029.mp4"], "人像"),
+        **dict.fromkeys(["026.mp4"], "合照"),
+    },
+}
 
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".heic", ".heif", ".tif", ".tiff")
 VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")
@@ -278,7 +448,6 @@ XHS_VEHICLE = re.compile(r"\b(boat|boats|car|cars|motorbike|motorcycle|scooter|s
                          r"kayaks|sailboat|speedboat|longtail|helicopter|tram|suv|vehicle|vehicles)\b", re.I)
 XHS_ANIMAL = re.compile(r"\b(cat|cats|dog|dogs|elephants?|monkeys?|birds?|horses?|yaks?|sheep|cows?|deer|fish|"
                         r"turtles?|animals?|camels?|goats?|buffalo|pandas?|tigers?|peacocks?)\b", re.I)
-XHS_PLANT = re.compile(r"\b(flower|flowers|blossoms?|bouquet|petals|orchids?|lotus|frangipani)\b", re.I)
 _xhs_cache: dict = {}
 
 
@@ -421,12 +590,23 @@ def taiwan(group: str, n: int, topic: str, sub_topic: str) -> list[tuple[str, by
 
 # ---------------------------------------------------------------- the other image sources
 
-def hateful_memes(group, n):
-    """Facebook Hateful Memes, dev_seen split, only memes labelled NOT hateful (label 0)."""
+def hateful_memes(group, n, split="dev_seen"):
+    """Facebook Hateful Memes, one split, only memes labelled NOT hateful (label 0) whose image file is in
+    the repo (the repo does not hold every image the split lists)."""
     repo = "neuralcatcher/hateful_memes"
-    with open(dl(repo, "dev_seen.jsonl"), encoding="utf-8") as f:
-        names = sorted({json.loads(line)["img"] for line in f if line.strip() and json.loads(line)["label"] == 0})
-    return read_files(repo, sorted(rng(group, repo).sample(names, n)))
+    present = {name for name, _ in repo_files(repo)}
+    with open(dl(repo, f"{split}.jsonl"), encoding="utf-8") as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    names = sorted({row["img"] for row in rows if row["label"] == 0 and row["img"] in present})
+    source = repo if split == "dev_seen" else f"{repo}/{split}"
+    return read_files(repo, sorted(rng(group, source).sample(names, n)))
+
+
+def top_up(items: list, more: list) -> list:
+    """items + those of `more` whose source key is not in items yet. Used for the groups that were enlarged after
+    the first by-eye review (the new files are numbered after the old ones, so earlier numbers stay valid)."""
+    seen = {key for key, _, _ in items}
+    return items + [item for item in more if item[0] not in seen]
 
 
 def chinese_bqb(group, n):
@@ -462,6 +642,33 @@ def cufed(group, n):
     return pick_files(group, repo, n, match=lambda name: name.startswith("images/") and name.split("/")[1] in albums)
 
 
+ROTATED_REPOS = ("JapanDegitalMaterial/Places_in_Japan", "JapanDegitalMaterial/Objects_in_Japan",
+                 "ThePioneer/japanese-photos")
+
+
+def exif_rotated(group):
+    """EVERY .jpg of three CC0 repos of unlabelled Japanese everyday photos whose EXIF Orientation tag is 3, 6 or
+    8 (the camera was held sideways / upside down; the pixels are stored unrotated). Selected by that tag only -
+    this is how the set gets files that exercise the EXIF-transpose path. The content is labelled by eye."""
+    from huggingface_hub import HfFileSystem
+    from PIL import ImageFile
+
+    fs, chosen = HfFileSystem(), []
+    for repo in ROTATED_REPOS:
+        for name, _ in repo_files(repo):
+            if not name.lower().endswith((".jpg", ".jpeg")):
+                continue
+            with fs.open(f"datasets/{repo}@{REV[repo]}/{name}", "rb") as handle:
+                parser = ImageFile.Parser()
+                parser.feed(handle.read(200_000))  # the EXIF block is at the start of the file
+            if parser.image is not None and parser.image.getexif().get(274) in (3, 6, 8):
+                chosen.append((repo, name))
+    out = []
+    for repo, name in chosen:
+        out += read_files(repo, [name])
+    return out
+
+
 TOOL_CLASSES = ("gasoline_can", "hammer", "pliers", "rope", "screwdriver", "toolbox", "wrench")
 
 
@@ -488,14 +695,18 @@ def build_images(group: str) -> list[tuple[str, bytes, str]]:
     if g == "美食":
         return (taiwan(g, 35, "Food", "Cuisine and Ingredients")
                 + pick_parquet(g, "TuyenTrungLe/vietnamese_food_images", "data/test-00000-of-00002.parquet", 15)
-                + xhs(g, 14, xhs_food))
+                + xhs(g, 14, xhs_food)
+                + pick_parquet(g, "TuyenTrungLe/vietnamese_food_images", "data/test-00001-of-00002.parquet", 8))
     if g == "花草植物":
         return pick_files(g, "Kos1976/1-flowers-50-commercial", 32) + taiwan(g, 32, "Flora and Fauna", "Plants")
     if g == "交通工具":
-        return (pick_files(g, "Voxel51/FGVC-Aircraft", 12, match=lambda name: name.startswith("data/"))
-                + pick_parquet(g, "tanganke/stanford_cars", "data/test-00000-of-00002.parquet", 16)
-                + taiwan(g, 18, "Transportation", "Transit Systems")
-                + xhs(g, 22, xhs_vehicle))
+        first = (pick_files(g, "Voxel51/FGVC-Aircraft", 12, match=lambda name: name.startswith("data/"))
+                 + pick_parquet(g, "tanganke/stanford_cars", "data/test-00000-of-00002.parquet", 16)
+                 + taiwan(g, 18, "Transportation", "Transit Systems")
+                 + xhs(g, 22, xhs_vehicle))
+        return top_up(first, pick_parquet(g, "tanganke/stanford_cars", "data/test-00001-of-00002.parquet", 10)
+                      + pick_files(g, "Voxel51/FGVC-Aircraft", 9, match=lambda name: name.startswith("data/"),
+                                   source="Voxel51/FGVC-Aircraft/top-up"))
     if g == "螢幕截圖":
         return (pick_files(g, "atharparvezce/iOS-1K-Mobile-UI-Dataset", 25, match=lambda name: name.startswith("images/"))
                 + pick_files(g, "andersonbcdefg/osworld_screenshots", 20)
@@ -511,9 +722,11 @@ def build_images(group: str) -> list[tuple[str, bytes, str]]:
                 + pick_parquet(g, "nobg/anime-segmentation-rgba", "data/train/part-00000.parquet", 20,
                                column="target_rgba"))
     if g == "迷因梗圖":
-        return hateful_memes(g, 32) + chinese_bqb(g, 32)
+        return hateful_memes(g, 32) + chinese_bqb(g, 32) + hateful_memes(g, 14, "train")
     if g == "貓+迷因梗圖":
         return pick_files(g, "pielet/cat-memes", 30, match=lambda name: name.startswith("images/"))
+    if g == "none_snapshot":
+        return exif_rotated(g)
     if g == "none_logo":
         return pick_files(g, "tzvc/organization-logos", 42, match=lambda name: name.startswith("data/chunk_0/"))
     if g == "none_book":
@@ -624,7 +837,7 @@ def build_videos(group: str) -> list[tuple[str, bytes, str]]:
                               "beach|sea|mountain|forest|food|eating|cooking|guitar|piano|dancing|soccer|basketball")
     if g == "合照":
         return mixkit(g, 18, ("Family", "Party", "People", "Couple"),
-                      "family|friends|group of friends|group of people|couple")
+                      "family|friends|group of friends|group of people|couple", "group")
     if g == "貓":
         return mixkit(g, 12, ("Cats", "Pets"), "cat|cats|kitten|kittens", "cat", exclude="dog|dogs") \
             + tiktok(g, 8, "cat|cats|catsoftiktok|kitten|kitty|catlover|gato|gatos|gatitos|gatito", exclude="dog|dogs|perro")

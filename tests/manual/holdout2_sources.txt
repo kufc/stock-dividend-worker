@@ -1,0 +1,369 @@
+HOLD-OUT SET No. 2 ("holdout2") - DO NOT USE FOR TUNING.
+This set was collected on 2026-11-27, AFTER all default prompts, thresholds and rules were fixed. It replaces the
+first hold-out set (holdout_sources.txt), which is "used up": a threshold decision was influenced by it. Never tune
+prompts, thresholds or rules against holdout2; if that ever happens it is no longer a hold-out set and a new one has
+to be collected. Every evaluation run on it has to be written into the evaluation log in docs/evaluation.md.
+The person who collected it only collected, labelled and embedded: the classifier was never run on any file before
+the selection and the labels were final, and no accuracy number was computed while collecting.
+
+Files behind
+    embeddings_holdout2_standard.npz / embeddings_holdout2_accurate.npz              1,342 images, 44 folders
+    embeddings_holdout2_video_standard.npz / embeddings_holdout2_video_accurate.npz    231 videos, 27 folders
+All files come from public, non-gated datasets on the Hugging Face Hub (46 dataset repos). None of the datasets of
+the dev set (photo_sources.txt) or of the first hold-out (holdout_sources.txt) is used, nor any repackaging of the
+same underlying data. The images / videos themselves are NOT committed (licences differ); they are rebuilt by
+    python tests/manual/collect_holdout2.py --out <dir>          ->  <dir>/images/<group>/...  <dir>/videos/<group>/...
+which pins every dataset to a commit hash (REV in the script). <dir>/images/manifest.tsv and <dir>/videos/manifest.tsv
+list: final group, file, the group the file was picked for, source key (dataset:file#row), kept / moved / removed.
+(Checked: a second build from the script's download cache reproduces all files and both manifests byte for byte.
+A build from an empty cache was not repeated.)
+The embeddings were made with
+    python tests/manual/dump_embeddings.py --preset <standard|accurate> --only-extra --per-class 0 --keep-original
+        --extra-dir <dir>/images --out tests/manual/embeddings_holdout2_<preset>.npz
+    (and --extra-dir <dir>/videos --out tests/manual/embeddings_holdout2_video_<preset>.npz)
+
+What is different from the first hold-out
+1. ORIGINAL FILES. Every file is stored with the bytes and the extension the dataset gives it - no re-encoding, no
+   resizing - and goes through the app's real loaders (EXIF transpose, transparency -> white, HEIC, video frame
+   sampling, pixel limit). The first hold-out re-saved everything as JPEG <= 1024 px, so those paths were never
+   measured. In the .npz the n-th file of a folder (sorted by name) is x_<group>_<n><original extension>;
+   image_sources holds "<group>/<file name>", failed_* list the files the loaders could not read (none are dropped
+   silently).
+2. AMBIGUOUS FILES ARE KEPT. A file that is genuinely between two default categories sits in a folder named with both
+   labels joined by "+" (order = order of the default category list), e.g. 人像+風景; image_labels is that name and
+   either answer is to be counted as correct. 99 images and 33 videos are labelled this way.
+3. VIDEOS. A separate video set (231 short clips).
+4. Unknown ("none_*") content is of different KINDS than in the two earlier sets.
+
+Selection discipline
+- Every pick is random with a fixed seed, random.Random("20261127:<group>:<source>"), using only dataset labels and
+  metadata: folder names, file names, class labels, captions, hashtags, EXIF tags (rules below).
+- Then every folder was looked at on contact sheets (200-px thumbnails; unclear files were enlarged; videos: 3-4
+  frames each). The label of a file follows what the file SHOWS:
+    * kept   - the metadata label is right;
+    * moved  - the metadata label is wrong or incomplete: the file goes to the folder it really belongs to
+               (a default category, a "+" pair, or a none_ group) and is called <picked-for group>_<NNN><ext>;
+    * removed- only if it is unrecognisable, or sits between "no default category" and a default category
+               (the first hold-out deleted those too; "+" folders are only for two DEFAULT categories), or
+               between three categories.
+  Nothing was removed or moved for looking "hard": tiny subjects, dark, blurred, sideways, low-resolution files and
+  near-duplicates stay. All by-eye decisions are the REMOVED_* / MOVED_* lists in collect_holdout2.py.
+- Rules of thumb used for the "+" folders: a person / people AND scenery, a building, a vehicle, plants, food or an
+  animal, where neither clearly dominates (typically the person takes well under half of the frame height, or is
+  seen from behind in front of a sight); a street scene where parked or passing vehicles are as prominent as the
+  buildings; scenery with a prominent boat / aircraft wing; cartoon art with a meme caption, or a caption-less
+  cartoon sticker from a meme collection (動漫插畫+迷因梗圖); every file of a cat-meme collection (貓+迷因梗圖).
+- Changes made to the selection after seeing contact sheets (all before any model was run, all on metadata only,
+  none aimed at difficulty):
+  * 合照: Conceptual Captions gave only 22 hits in its whole validation split, so 50 photos of personal event albums
+    (CUFED) were added; that source has no per-photo label and is labelled by eye.
+  * 美食 / 交通工具 / 迷因梗圖 fell below 50 after the review (many travel photos picked by caption turned out to be
+    scenery or street views; many Chinese stickers are cartoon stickers) and were topped up from the same or a
+    sibling shard: +8 Vietnamese dishes, +10 Stanford Cars and +9 FGVC-Aircraft, +14 Hateful-Memes (train split).
+    The new files are numbered after the old ones; none of them was removed.
+  * EXIF orientation: the random picks contained almost no file with an Orientation tag other than 1 outside
+    none_banknote, so one source was added that takes EVERY file with Orientation 3 / 6 / 8 of three CC0 repos of
+    unlabelled Japanese snapshots (19 files, labelled by eye; see none_snapshot).
+"License" is what the dataset card's license tag states; "not stated" = the card has no license tag.
+
+== Technical properties (measured on the final files with Pillow / pillow-heif / PyAV) ==
+Images (1,342 files, 1.0 GB): 906 .jpg / .jpeg, 354 .png, 54 .heic, 20 .gif, 8 .webp.
+- EXIF Orientation tag 3 / 6 / 8 (pixels stored unrotated): 40 files - none_banknote 19 (all "3"), 城市建築 10 ("6"),
+  none_snapshot 5 (three "6", two "8"), 美食 3 ("6"), 人像 2 ("6"), 風景 1 ("8"). 8 more files carry the invalid value 0
+  (風景 2, 城市建築 2, none_snapshot 2, 風景+城市建築 1, 動漫插畫+迷因梗圖 1). 288 files have camera EXIF at all.
+  Several TaiwanVQA photos are stored SIDEWAYS and have no Orientation tag at all: they are kept as they are (no
+  loader can turn them upright).
+- Alpha channel / palette transparency: 101 files (動漫插畫 20, none_floorplan 21, none_logo 20, 螢幕截圖 17, 人像 8,
+  合照 4, 貓+迷因梗圖 4, 動漫插畫+迷因梗圖 3, 迷因梗圖 2, 貓 1, 人像+迷因梗圖 1). In 57 of them some pixels really are
+  transparent: none_floorplan 21 (line drawings on a fully transparent page), 動漫插畫 20 and 人像 8 + 合照 4
+  (cut-out figures), none_logo 2, 貓+迷因梗圖 2.
+- HEIC (iPhone originals): 54 - 城市建築 24, 城市建築+交通工具 1, none_book 29. Their rotation is stored in the HEIF
+  container, not in an EXIF tag.
+- MPO (multi-picture JPEG from phones / cameras, extension .jpg/.jpeg): 47 - none_gadget 35, 城市建築 8, 風景 2,
+  花草植物 1, none_snapshot 1.
+- Animated: 18 GIFs and 1 WebP (動漫插畫 7, 迷因梗圖 4, 動漫插畫+迷因梗圖 3, 貓+迷因梗圖 3, 人像+迷因梗圖 2).
+- Extension does not match the content: 139 files - 135 files called .jpg that hold WebP data (the Xiaohongshu
+  photos, one parrot photo), three cat memes called .png / .gif that hold WebP data, one .jpg that is a PNG.
+- Sizes range from 47-pixel stickers to 5712 x 4284 phone photos (largest file 8.2 MB).
+Videos (231): 209 .mp4 (H.264) and 22 .avi (MPEG-4, 320x240, UCF101). Duration 2.0 - 59.1 s. 68 are portrait
+(taller than wide: TikTok 576x1024 / 720x1280 / 1080x1920 and some Mixkit 1080x1920 clips); the rest are landscape,
+mostly 1920x1080. NO video carries a rotation flag (all portrait clips are encoded upright), there is no .mov and no
+HEVC: those paths are still unmeasured. No public HEIC video / Live Photo source was found.
+
+== Image groups that are default categories ==
+
+人像 (61 images)
+  - Rabornkraken/xhs-travel-photos (Xiaohongshu travel posts; 28,005 images, of which 10,838 have an English caption
+    in captions.json - evidently machine-written; the key is the line number in images.jsonl). Captions containing
+    words for text overlays / collages / drawings are skipped for every use of this source. Rule: the FIRST sentence
+    starts with "A / An ... woman | man | girl | boy | lady" and the caption has no word for several people or an
+    animal; 25 random. License: cc-by-nc-4.0. 17 kept, 8 moved (4 人像+風景, 3 人像+城市建築, 1 風景+交通工具: boats
+    on a lake with a tiny figure).
+  - HuggingFaceM4/FairFace, 0.25/validation-00000-of-00001-951dbd63c8724ee1.parquet, 15 random rows (tight 224-px
+    face crops from YFCC photos). License: cc-by-4.0. 15 kept.
+  - nobg/humans-rgba, data/validation-00000-of-00047.parquet, column "rgba", 12 random rows (1920x1080 PNG cut-outs
+    of people on a TRANSPARENT background). License: apache-2.0. 8 kept, 4 moved to 合照 (3-4 people).
+  - pixparse/cc3m-wds (Conceptual Captions 3M), all 16 cc3m-validation-*.tar: caption starts with "portrait | close
+    up | headshot | profile of a ... man / woman / girl / boy ..." and has no "and / with her ... / couple / dog ...",
+    and no word for drawings / statues / toys; 12 random of 47. License: other. 10 kept, 1 moved to 動漫插畫 (a
+    vector drawing), 1 removed (a hand on a calculator).
+  - moved in: 7 from 合照 / CUFED and 1 from 合照 / CC3M (single persons), 1 from 美食 (a man fishing at a pond),
+    2 from none_snapshot (EXIF-rotated).
+
+合照 (69 images)
+  - pixparse/cc3m-wds, validation split: caption has a word for several people (group of, family, friends, team,
+    couple, children ...) AND "pose / posing / group photo / family portrait / selfie / smiling at the camera /
+    portrait of a ... family | group | couple | team", no word for drawings; all 22 hits. 20 kept, 1 moved to 人像,
+    1 to 合照+風景.
+  - Rabornkraken/xhs-travel-photos: first sentence has "two ... six | a group of" + women / men / friends / people /
+    travelers ..., or "a couple"; 20 random of 214. 11 kept, 7 moved (2 合照+風景, 合照+城市建築, 合照+交通工具,
+    合照+美食, 城市建築, 風景+城市建築), 2 removed (a hotel lobby; a stone face with a tiny figure).
+  - Shawn-Huang/CUFED-AlbumBench (CUFED: personal Flickr albums of events, 500-px photos), albums whose event types
+    are all in {Wedding, Graduation, CasualFamilyGather, GroupActivity, Birthday, Christmas, Halloween}; 50 random
+    photos of 1,957. License: cc-by-nc-2.0. NO per-photo label: labelled by eye. 34 kept, 11 moved (7 人像, 2 狗,
+    2 城市建築: an illuminated castle), 5 removed (a bonfire, a pumpkin sign, lights in the dark, an unlit hall,
+    a train behind trees).
+  - moved in: 4 cut-outs from 人像 / humans-rgba.
+  Two people count as 合照 (the category description says "two or more"); candid groups and crowds are included.
+
+貓 (62 images)
+  - li-yan/cat-by-breed-v1, all image files (train + test; photos of 12 breeds collected from the web, original
+    files of very different sizes), 62 random of 180. License: not stated. 62 kept.
+
+狗 (61 images)
+  - MYtechnology/real-dog-images-with-breed-and-metadata, images/*.jpg (owner snapshots and web photos),
+    62 random of 999. License: not stated (the repo has a LICENSE file). 59 kept, 3 moved (合照+狗: two
+    women with a dog; 狗+城市建築: a house front with a small dog on a balcony; 狗+風景: a dog from behind above a
+    river landscape). Kept on purpose: two sled-dog scenes and a room with a bed frame where the dog is small.
+  - moved in: 2 from 合照 / CUFED.
+
+風景 (58 images)
+  - Rabornkraken/xhs-travel-photos: first sentence has a landscape word (mountain, lake, beach, sea, waterfall,
+    forest, ...) and the caption has no word for people, buildings, food, vehicles or animals; 35 random of 171.
+    29 kept, 4 moved (人像+風景, 風景+交通工具: hot-air balloons, 2 none_snapshot: a coral under water, a squirrel),
+    2 removed (a lane of spirit houses; a cottage with a flower garden and mountains - three categories).
+  - JapanDegitalMaterial/Scenery_of_japan, all 59 .jpg files (CC0 everyday snapshots from Japan, 2002-2022, several
+    old phone cameras). License: cc0-1.0. NO labels: labelled by eye. 18 kept (sky, sunsets, snowy valleys - with
+    near-duplicate series), 25 moved (12 城市建築, 3 城市建築+交通工具, 2 花草植物, 8 none_snapshot: toilets, a coin
+    laundry, asphalt, bollards ...), 16 removed (9 train interiors and 1 view through a train window - between
+    交通工具 and nothing; 3 blank / glare frames; a road at dusk; liquor bottles in a niche; a railway embankment).
+  - moved in: 8 from 交通工具 / xhs, 2 from 城市建築 / xhs, 1 from 美食 / xhs.
+
+城市建築 (75 images)
+  - Wu52F/Image2GPS_dataset, data_human/00_Raw_images/*.heic (1,994 iPhone 12 HEIC originals of a US university
+    campus, taken for GPS regression: buildings, walkways, streets), 25 random. License: mit. 24 kept, 1 moved to
+    城市建築+交通工具 (a parked car fills the foreground). A few show mostly a wall, a lawn or a tree with the
+    building behind.
+  - Rabornkraken/xhs-travel-photos: first sentence has a building / street word and no landscape word, caption has
+    no word for people, food, vehicles or animals; 30 random of 336. 20 kept, 9 moved (4 風景+城市建築, 2 風景,
+    3 none_snapshot: a hotel room, a reclining Buddha, a gilded portrait shrine), 1 removed (a temple interior).
+  - moved in: 12 from 風景 / Scenery_of_japan (incl. 5 blurred night views), 10 from none_snapshot (EXIF-rotated),
+    4 from 交通工具 / xhs, 1 from 交通工具 / TaiwanVQA, 2 from 合照 / CUFED, 1 from 合照 / xhs, 1 from 美食 / xhs.
+
+美食 (63 images)
+  - hhhuang/TaiwanVQA, data/test-*.parquet (all 14 shards; phone photos taken in Taiwan for a VQA benchmark, first
+    row of every image_id), topic "Food" / sub_topic "Cuisine and Ingredients", 35 random of 180. License:
+    cc-by-sa-4.0. 30 kept, 2 moved (人像; 合照+美食: a banquet table seen from above), 3 removed (dried roots, tea
+    tins, a market stall sign - no food recognisable). Kept: packaged snacks, a drink, street stalls, raw fish.
+  - TuyenTrungLe/vietnamese_food_images, data/test-00000-of-00002.parquet 15 random rows + (top-up)
+    data/test-00001-of-00002.parquet 8 random rows. License: not stated. 23 kept.
+  - Rabornkraken/xhs-travel-photos: first sentence has a food / drink word, caption has no people word; 14 random
+    of 44. 5 kept, 9 moved (4 none_snapshot: restaurant and hotel interiors; 風景; 城市建築; 城市建築+交通工具;
+    美食+花草植物; 風景+美食).
+  - moved in: 2 from 花草植物 / TaiwanVQA (cut watermelon, strawberries), 3 from none_snapshot (drink cans, a sake
+    bottle; EXIF-rotated).
+
+花草植物 (57 images)
+  - Kos1976/1-flowers-50-commercial, 32 random of 50 (Canon EOS 450D originals, 4-6 MB). License: apache-2.0 (the
+    repo also carries a "commercial licence" text). 30 kept, 1 moved to 風景+花草植物, 1 removed (a coin charm in
+    front of a plant).
+  - hhhuang/TaiwanVQA, topic "Flora and Fauna" / "Plants", 32 random of 47. 25 kept (incl. street trees), 6 moved
+    (2 美食, 2 風景+花草植物, 人像+花草植物, 城市建築+花草植物), 1 removed (a plant name sign).
+  - moved in: 2 from 風景 / Scenery_of_japan (ivy on a wall, cherry blossom).
+
+交通工具 (58 images)
+  - Voxel51/FGVC-Aircraft, data/**.jpg, 12 random + (top-up) 9 more. License: other. 21 kept.
+  - tanganke/stanford_cars, data/test-00000-of-00002.parquet 16 random rows + (top-up) test-00001-of-00002.parquet
+    10 random rows. License: not stated. 26 kept (several are small, down to 96x64).
+  - hhhuang/TaiwanVQA, topic "Transportation" / "Transit Systems", 18 random of 37. 9 kept (scooters, YouBikes, a
+    train, a taxi; five of them stored sideways), 6 moved (2 城市建築+交通工具, 1 城市建築, 3 none_snapshot: a baggage
+    hall, a stadium, a station hall), 3 removed (a bus-stop display at night, a banner, a railway track).
+  - Rabornkraken/xhs-travel-photos: first sentence has a vehicle word, caption has no people / food word; 22 random
+    of 66. 2 kept, 19 moved (8 風景, 4 城市建築, 3 風景+交通工具, 2 城市建築+交通工具, 2 none_snapshot), 1 removed.
+    This rule mostly found scenery with a small boat.
+  Almost no bicycles, buses, trains or ships: the group is dominated by airliners and cars.
+
+螢幕截圖 (62 images)
+  - atharparvezce/iOS-1K-Mobile-UI-Dataset, images/*.png, 25 random of 1,000 (iPhone app screenshots, 828x1792).
+    License: cc-by-nc-4.0. 25 kept.
+  - andersonbcdefg/osworld_screenshots, 20 random of 12,307 PNGs (Ubuntu desktop, 1920x1080). License: not stated.
+    20 kept (a few are almost only wallpaper).
+  - silatus/1k_Website_Screenshots_and_Metadata, */screenshot.png, 17 random of 1,000 (web pages, 2048 px wide,
+    RGBA). License: cc-by-nc-sa-4.0. 17 kept.
+  No chat screenshots, no Chinese-language UI, no games.
+
+文件收據 (62 images)
+  - Francisco-Cruz/InvoicesReceiptsPT, 20 random of 1,003 (phone photos of Portuguese receipts, 3000x4000).
+    License: apache-2.0. 20 kept.
+  - IngCrowd/japanese-receipts-detailed, 12 random of 100 (phone photos of Japanese receipts). License:
+    cc-by-nc-4.0. 12 kept.
+  - nielsr/funsd, data/test-00000-of-00001.parquet, 14 random of 50 (FUNSD: scanned forms, greyscale PNG). License:
+    not stated. 14 kept.
+  - NoTeS-Bank/ICDAR_2025_Handwritten_Notes_Understanding_Challenge, Task_1/Images/**, 16 random (pages of
+    handwritten study notes; two are typed lecture notes). License: apache-2.0. 16 kept.
+  The category description includes handwritten notes, so they are 文件收據 here.
+
+動漫插畫 (63 images)
+  - deepghs/subsplease_animes, images/*.jpg, 22 random of 948 (key visuals / posters of anime series, with title
+    lettering). License: other. 22 kept.
+  - LiuliFox/stickers, 22 random of 229 (Telegram sticker packs: JPEG and animated GIF). License: mit. 17 kept,
+    5 moved to 動漫插畫+迷因梗圖 (stickers with a Chinese caption).
+  - nobg/anime-segmentation-rgba, data/train/part-00000.parquet, column "target_rgba", 20 random of 64 (character
+    cut-outs on a TRANSPARENT background). License: cc0-1.0. 20 kept (three are mildly suggestive).
+  - moved in: 3 manga covers from none_book, 1 vector drawing from 人像 / CC3M.
+
+迷因梗圖 (58 images)
+  - neuralcatcher/hateful_memes (Facebook Hateful Memes), dev_seen.jsonl, label 0 ("not hateful") and image present
+    in the repo, 32 random; + (top-up) train.jsonl, same rule, 14 random. License: not stated (LICENSE.txt in the
+    repo). 46 kept. Even the "not hateful" half contains crude and offensive jokes; nothing was filtered.
+  - mrzjy/ChineseBQB, data-00000-of-00002.arrow, 32 random rows (Chinese sticker / meme collection, many tiny).
+    License: apache-2.0. 12 kept (photos, TV stills or emoji faces with a caption), 20 moved (17 動漫插畫+迷因梗圖:
+    cartoon art with a caption or caption-less doodle stickers; 2 人像+迷因梗圖: caption-less GIFs of a child;
+    1 貓+迷因梗圖).
+
+== "+" folders (either answer is correct): 99 images ==
+  貓+迷因梗圖 31       - pielet/cat-memes, images/*, 30 random of 54 (famous cat memes, with and without text; jpg /
+                         webp / png / gif). License: mit. All kept as one group. + 1 from ChineseBQB.
+  動漫插畫+迷因梗圖 22  - 17 ChineseBQB, 5 LiuliFox stickers.
+  城市建築+交通工具 9, 人像+風景 5, 風景+交通工具 5, 風景+城市建築 5, 人像+城市建築 3, 合照+風景 3, 風景+花草植物 3,
+  人像+迷因梗圖 2, 合照+美食 2, and one each: 人像+花草植物, 合照+交通工具, 合照+城市建築, 合照+狗, 城市建築+花草植物,
+  狗+城市建築, 狗+風景, 美食+花草植物, 風景+美食.
+
+== Image groups that belong to NO default category (434 images) ==
+
+none_banknote (40) - paowick/Banknote_thai, validation/<value>/*.jpeg, 8 random of each of 20 / 50 / 100 / 500 /
+    1000 THB (Xiaomi phone photos of Thai banknotes, 4624x3472, 4-7 MB; 19 carry EXIF Orientation 3). License: not
+    stated. 40 kept. (The notes show a portrait of the king.)
+none_book (39) - nadakandrew/booksdata, all 29 .HEIC (iPhone 16 Pro photos of textbooks lying on a carpet). License:
+    not stated. 29 kept. + marvy/book-covers, data/train-00000-of-00001.parquet, 14 random rows (cover scans,
+    ~150x220). License: not stated. 10 kept, 3 moved to 動漫插畫 (manga covers), 1 removed (a doodle-art cover).
+none_cards (42) - JackFurby/playing-cards, imgs/single and imgs/three, 21 random each (synthetic: playing cards
+    pasted on texture photos, 700x700). License: mit. 42 kept.
+none_floorplan (42) - umesh16071973/Floorplan_Dataset_22022024, 21 random (coloured house plans, 3200x1800 JPEG).
+    License: mit. + Voxel51/FloorPlanCAD, data/*.png, 21 random (CAD drawing crops; thin lines on a fully TRANSPARENT
+    page). License: cc-by-sa-4.0. 42 kept.
+none_gadget (42) - LakshC/SynthBench, data/raw/<class>/*, 7 random of each of laptop, mouse, pen, phone,
+    rubiks_cube, water_bottle (iPhone 17 Pro Max snapshots, mostly MPO). License: mit. 42 kept.
+none_galaxy (40) - matthieulel/galaxy10_decals, data/test-00000-of-00001-cef82967b9d8e57e.parquet, 4 random of each
+    of the 10 classes (256x256 telescope cut-outs). License: not stated. 40 kept.
+none_logo (42) - tzvc/organization-logos, data/chunk_0/*.png, 42 random (512x512 company logos). License: not
+    stated. 42 kept.
+none_microscopy (42) - bloombio/phytoplankton-microscopy, classification/validation-00000-of-00002.parquet, 42
+    random rows (light-microscope crops of plankton, with near-duplicates). License: cc-by-4.0. 42 kept.
+none_parrot (42) - Rezuwan/Parrot60_Dataset, files up to 3 MB, 42 random (pet and wild parrots, web photos).
+    License: apache-2.0. 42 kept.
+none_tools (38) - shravya11/mechanical-tools-dataset, 6 random of each of gasoline_can, hammer, pliers, rope,
+    screwdriver, toolbox, wrench (web images; "pebbles" not used). License: other. 38 kept, 4 removed (two clip-art
+    pliers, a neon "tool box" logo, an office mislabelled as toolbox).
+none_snapshot (25) - a by-eye group: everyday photos that show nothing a default category covers.
+    - JapanDegitalMaterial/Places_in_Japan + JapanDegitalMaterial/Objects_in_Japan (cc0-1.0) + ThePioneer/
+      japanese-photos ("Sample images", cc0-1.0): EVERY .jpg whose EXIF Orientation is 3, 6 or 8 - 19 files,
+      selected by that tag only. 3 stay here (a metal cabinet, an advertising panel, a rusty hatch), 10 moved to
+      城市建築, 3 to 美食, 2 to 人像, 1 removed (a traffic mirror on a green lane).
+    - moved in (22): 8 from 風景 / Scenery_of_japan, 7 from xhs picks for 美食 / 城市建築 (interiors, statues),
+      2 from 風景 / xhs, 5 from 交通工具 (TaiwanVQA halls and a stadium; xhs: dolphins, a café table).
+
+== Video groups ==
+Sources
+  - FastVideo/Mixkit-Src (Mixkit stock footage cut into 6-second 1080p clips, <search word>/mixkit-<title>-<id>_
+    clip_<k>.mp4; 8,356 files). The folder is only a search word, so a clip qualifies if its folder is one of the
+    listed ones AND its title contains one of the listed words (and none of the excluded words); at most one clip per
+    title; files up to 6 MB. License: not stated (Mixkit's own free licence applies to the footage).
+  - Shofo/shofo-tiktok-general-small (57,960 TikTok videos with metadata.parquet): description contains one of the
+    listed hashtags, not AI-generated, not an ad, 5-60 s, file up to 8 MB. License: other. Hashtags are very noisy,
+    so this source is labelled by eye more than any other. These are real PORTRAIT phone videos, many with captions
+    burnt in.
+  - sayakpaul/ucf101-subset, UCF101_subset.tar.gz (10 UCF101 classes, .avi, 320x240). License: apache-2.0.
+  - nateraw/kinetics-mini (5 Kinetics classes, YouTube clips, .mp4). License: not stated.
+Groups (folder -> files; the rules are in build_videos() of the script)
+  人像 21: Mixkit Man / Woman / Girl with "man | woman | girl | boy" in the title, 16 random -> 11 kept, 5 moved
+      (2 合照, 風景, none_misc: hands with toy bricks, 人像+花草植物). Moved in 10: single persons from the 美食, 狗,
+      貓, 花草植物, 城市建築 and none_misc picks.
+  合照 17: Mixkit Family / Party / People / Couple with "family | friends | group of ... | couple", 18 random ->
+      13 kept, 3 moved, 2 removed (close-ups of hands). Moved in 4.
+  貓 14: Mixkit Cats / Pets + "cat | kitten" 12 random; TikTok #cat #catsoftiktok #gato ... 8 random. 12 kept,
+      8 moved (4 人像+貓, 人像: a woman in a cat mask, 貓+動漫插畫: a drawn cat, 2 貓+迷因梗圖). Moved in 2 from the
+      交通工具 hashtag pick. One clip shows the cat only in its last second.
+  狗 11: Mixkit Dogs / Pets + "dog | puppy" 12 random; TikTok #dog #dogsoftiktok #perro ... 8 random. 11 kept,
+      9 moved (5 人像+狗, 2 合照+狗, 狗+風景, 人像).
+  風景 18: Mixkit mountain / forest / beach / sea / sky with a landscape word and no people / vehicle / building
+      word, 18 random. 16 kept, 2 moved (風景+交通工具: sailing boats, none_misc: pebbles). Moved in 2. Mostly drone
+      shots.
+  城市建築 17: Mixkit City / Street with "city | street | building | skyline ...", 18 random. 15 kept, 3 moved
+      (人像: a street musician, 合照, 風景+城市建築). Moved in 2. Mostly aerial views.
+  美食 12: TikTok #food #foodtiktok #recipe #cooking #comida #receta ..., 22 random. 12 kept (cooking and food
+      close-ups, snack unboxing, a fridge), 9 moved (4 人像+美食, 3 人像, 合照+美食, 貓+美食), 1 removed. Mixkit has no
+      food folder, so all food videos are TikTok clips.
+  花草植物 13: Mixkit flower with a flower / plant word, 18 random. 13 kept, 3 moved, 2 removed (bokeh; torsos).
+  交通工具 11: Mixkit Car / Trains / Airplane / Bicycle / Truck with a vehicle word 14 random; TikTok #car
+      #carsoftiktok #truck #moto ... 8 random. 10 kept, 9 moved (2 貓, 2 城市建築, 2 風景+交通工具, 風景,
+      人像+交通工具, 狗+風景), 3 removed (bokeh lights; an empty track). Moved in 1.
+  none_sports 24: UCF101 Archery, BalanceBeam, BaseballPitch, Basketball, BasketballDunk, BenchPress (3 clips each,
+      from different recording groups); Kinetics bowling, flying_kite, high_jump (2 each). All kept.
+  none_music 16: UCF101 BandMarching 4, Kinetics marching 2, Mixkit Music with an instrument word 10. All kept.
+  none_misc 24: Mixkit fire 6, smoke 5, Fish / Reptiles 5, earth 5 (globes, planet); TikTok #gaming #drawing #diy
+      #asmr #satisfying ... 10. 22 kept, 5 moved (3 人像, 合照, 交通工具), 4 removed (hot-air balloons, factory
+      chimneys, bare terrain, ice cubes - between nothing and a default category). Moved in 2.
+  "+" folders (33 videos): 人像+狗 5, 人像+貓 4, 人像+美食 4, 合照+狗 3, 風景+交通工具 3, 風景+城市建築 2, 貓+迷因梗圖 2,
+      狗+風景 2, 合照+花草植物 2, and one each: 人像+交通工具, 人像+花草植物, 合照+交通工具, 合照+美食, 貓+動漫插畫, 貓+美食.
+
+== Not found / skipped ==
+- HEIC is only present as still photos of two kinds (campus buildings, books). No public HEIC source for people,
+  pets or food was found; nothing was converted to HEIC.
+- EXIF-rotated originals of people, pets, food are rare in public datasets (most are re-encoded): only the files
+  listed above.
+- Videos for 螢幕截圖 / 文件收據 / 動漫插畫 / 迷因梗圖 (screen recordings etc.): no labelled source was looked for
+  further; a few TikTok clips with meme captions ended up in "+" folders.
+- No .mov, no rotation-flagged and no HEVC video. Video total download ~555 MB, images ~1.0 GB.
+- Tried and rejected before any file was selected: google/docci (loader script fetching from another host),
+  useKled/* (gated), AbhinayGampa/family-photos-fullres and trentmkelly/tea-app-selfies (private-looking personal
+  photos), visheratin/google_landmarks_photos and the Pexels / Unsplash sets (URL lists; hosts other than
+  huggingface.co are not reachable), EmileEsmaili/sheet_music_clean (printed pages - too close to 文件收據),
+  pixel-art sets (too close to 動漫插畫), flwrlabs/celeba (not needed after FairFace).
+
+== Known limits and debatable labels ==
+- Heavy by-eye labelling. Three sources have no usable per-file label and are labelled entirely by eye
+  (Scenery_of_japan, CUFED, the EXIF-rotated snapshots), and the caption / hashtag rules (xhs, TikTok, Mixkit titles)
+  were corrected by eye in a large share of cases (e.g. xhs "vehicle": 2 of 22 kept). One reviewer, mostly on 200-px
+  thumbnails. For these sources the expected label is the reviewer's judgement, not a dataset label.
+- The "+" decision (person vs. scenery etc.) is a judgement call; borderline files were put INTO a "+" folder rather
+  than into a single category. A stricter or looser reviewer would move maybe 20-30 files either way.
+- none groups that can be argued about: none_sports and none_music videos show people (a user might accept 人像 /
+  合照; three music clips are close-ups of one singer); none_banknote shows a printed portrait; none_book shows
+  printed covers (close to 文件收據?) and some covers carry drawings; none_gadget includes laptops with a visible
+  desktop and water bottles (a drink?); none_cards are synthetic composites on texture photos (one on a waffle, one
+  on a drawn face); none_parrot are pets, but not cats / dogs; none_snapshot contains a coral and a squirrel;
+  none_misc videos include guinea pigs with their owner and lizards.
+- Train interiors, railway tracks, bus-stop displays, hot-air balloons (video), factory chimneys, temple and hotel
+  interiors were REMOVED or put into none_snapshot depending on how clearly "nothing" they are; a user could file
+  some of them under 交通工具 or 城市建築.
+- Packaged food and drinks: packaged snacks, instant-noodle packs on a shelf, drink cans and one sake bottle are
+  美食; tea tins and liquor bottles in a wall niche were removed. This line is thin.
+- 人像: three very different kinds - travel portraits (young women, full body, scenic background), 224-px face
+  crops, cut-outs on transparency, stock portraits. 合照: includes couples, candid party / wedding photos (dark,
+  blurred) and crowds.
+- 貓 / 狗 images are clear single-animal photos (an easy set); the cat and dog VIDEOS are harder (owners in frame).
+- 風景: travel-poster-like xhs photos plus dull sky / snow snapshots, with near-duplicate series (cloud photos,
+  snowy woods). 城市建築: one US campus (24), Asian temples and streets, blurred Japanese night views.
+- 花草植物 has trees and street greenery from Taiwan next to studio-like flower close-ups.
+- 螢幕截圖 / 文件收據: clean sources, nothing was removed; no chat screenshots, no ID cards, no Chinese receipts.
+- 動漫插畫: Japanese-style only; 22 of 63 are posters with lettering. 迷因梗圖: English image macros (some
+  offensive) and 12 Chinese ones.
+- Xiaohongshu photos are WebP data in files called .jpg, and the faces in TaiwanVQA are sometimes greyed out by the
+  dataset authors.
+- The video set is small (11-24 per folder): per-folder numbers will be very noisy. Stock footage (Mixkit) is
+  cleaner than what people shoot themselves; the TikTok clips are closer to a real phone folder but have captions,
+  effects and cuts.
+- tools/evaluate.py (Recorded.items) currently treats only names ending in ".mp4" as videos; the 22 ".avi" clips
+  have their frame vectors in frame_owner / frame_emb like every other video, but that loader would score them from
+  the combined vector unless it is extended to the other video extensions.
