@@ -249,3 +249,30 @@ def test_video_rotation_flag_is_applied(tmp_path, matrix, size, red_side):
     spot = {"top": pixels[3, w // 2], "bottom": pixels[h - 4, w // 2], "right": pixels[h // 2, w - 4]}[red_side]
     opposite = {"top": pixels[h - 4, w // 2], "bottom": pixels[3, w // 2], "right": pixels[h // 2, 3]}[red_side]
     assert spot[0] > 150 > spot[2] and opposite[2] > 150 > opposite[0]
+
+
+@pytest.mark.parametrize("codec,suffix,pix_fmt", [("libx265", ".mov", "yuv420p"), ("libx265", ".mp4", "yuv420p10le"),
+                                                  ("libx264", ".mov", "yuv420p")])
+def test_phone_style_containers_and_codecs_load(tmp_path, codec, suffix, pix_fmt):
+    """iPhone 錄的是 .mov（HEVC，HDR 時是 10 位元）。第二份獨立測試集找不到這種真實檔案，所以用合成的確認讀得進來、
+    顏色沒有跑掉：整支影片是橘色，取樣出來也要是橘色（10 位元沒轉好的話會變暗或偏色）。真實手機檔案仍未驗證。"""
+    av = pytest.importorskip("av")
+    try:
+        av.codec.Codec(codec, "w")
+    except Exception:  # noqa: BLE001 - 這個環境的 ffmpeg 沒有這個編碼器
+        pytest.skip(f"沒有 {codec} 編碼器")
+    path = tmp_path / f"clip{suffix}"
+    picture = np.full((96, 128, 3), (230, 120, 20), np.uint8)
+    with av.open(str(path), "w") as c:
+        s = c.add_stream(codec, rate=24)
+        s.width, s.height, s.pix_fmt = 128, 96, pix_fmt
+        for _ in range(48):
+            for p in s.encode(av.VideoFrame.from_ndarray(picture, format="rgb24")):
+                c.mux(p)
+        for p in s.encode():
+            c.mux(p)
+    frames, _ = media.sample_video_frames(path, 4)
+    assert len(frames) == 4 and frames[0].size == (128, 96)
+    for frame in frames:
+        r, g, b = np.asarray(frame).reshape(-1, 3).mean(axis=0)
+        assert abs(r - 230) < 25 and abs(g - 120) < 25 and abs(b - 20) < 25

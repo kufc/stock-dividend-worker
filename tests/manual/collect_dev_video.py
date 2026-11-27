@@ -62,8 +62,106 @@ MAX_BYTES = 40_000_000
 # By-eye review (contact sheets), applied after the random selection. Keys are the names of the RAW selection
 # (<picked-for group>/<NNN><ext>). See dev_video_sources.txt for the reasons.
 REMOVED: dict[str, list[str]] = {
+    "人像+貓": ["007.avi"],
+    "合照": ["001.mp4", "017.mp4", "022.mp4", "026.mp4"],
+    "人像": ["005.mp4", "006.mp4", "009.mp4", "011.mp4", "018.mp4", "021.mp4", "024.mp4", "027.avi"],
+    "美食": ["003.mp4"],
+    "花草植物": ["002.mp4", "006.mp4", "007.mp4", "011.mp4"],
+    "交通工具": ["004.mp4", "008.mp4", "009.mp4", "015.mp4"],
+    "風景": ["022.mp4"],
+    "城市建築": ["002.mp4", "021.mp4", "025.mp4"],
+    "none_sports": ["002.mp4", "004.mp4"],
+    "none_music": ["001.mp4"],
+    "none_dance": ["011.mp4"],
+    "none_machine": ["001.mp4", "002.mp4", "007.mp4", "009.mp4", "016.mp4", "017.mp4"],
+    "none_underwater": ["007.mp4", "008.mp4", "011.mp4", "014.mp4"],
+    "none_wildlife": ["003.avi", "005.avi", "010.mp4"],
 }
 MOVED: dict[str, dict[str, str]] = {
+    "貓": {
+        **dict.fromkeys(["010.mp4", "012.mp4", "016.mp4", "017.mp4"], "人像+貓"),
+        **dict.fromkeys(["011.mp4"], "合照+貓"),
+    },
+    "狗": {
+        **dict.fromkeys(["004.avi", "015.mp4", "016.mp4"], "人像+狗"),
+        **dict.fromkeys(["009.mp4"], "合照+狗"),
+    },
+    "人像+貓": {
+        **dict.fromkeys(["000.mp4", "001.mp4", "002.mp4", "003.mp4", "004.mp4", "006.avi"], "貓"),
+    },
+    "人像+狗": {
+        **dict.fromkeys(["004.mp4", "007.avi"], "狗"),
+    },
+    "合照": {
+        **dict.fromkeys(["007.mp4"], "人像+風景"),
+        **dict.fromkeys(["014.mp4"], "合照+美食"),
+        **dict.fromkeys(["025.mp4", "032.avi", "034.avi"], "人像"),
+        **dict.fromkeys(["028.mp4"], "合照+城市建築"),
+        **dict.fromkeys(["030.avi"], "合照+花草植物"),
+        **dict.fromkeys(["033.avi"], "none_dance"),
+    },
+    "人像": {
+        **dict.fromkeys(["025.avi"], "人像+風景"),
+        **dict.fromkeys(["028.avi"], "合照"),
+    },
+    "美食": {
+        **dict.fromkeys(["001.mp4", "005.mp4"], "花草植物"),
+        **dict.fromkeys(["002.mp4"], "美食+花草植物"),
+        **dict.fromkeys(["008.mp4", "016.mp4"], "人像"),
+        **dict.fromkeys(["012.mp4", "014.mp4"], "合照+美食"),
+        **dict.fromkeys(["013.mp4", "015.mp4", "017.mp4"], "人像+美食"),
+    },
+    "花草植物": {
+        **dict.fromkeys(["000.mp4"], "城市建築"),
+        **dict.fromkeys(["001.mp4"], "風景+花草植物"),
+        **dict.fromkeys(["014.mp4"], "城市建築+花草植物"),
+    },
+    "交通工具": {
+        **dict.fromkeys(["000.mp4", "011.mp4", "013.mp4", "016.mp4"], "人像+交通工具"),
+        **dict.fromkeys(["002.mp4", "003.mp4"], "風景+交通工具"),
+        **dict.fromkeys(["012.mp4", "022.mp4", "025.avi", "026.avi"], "合照+交通工具"),
+        **dict.fromkeys(["014.mp4"], "人像"),
+        **dict.fromkeys(["019.mp4"], "城市建築+交通工具"),
+    },
+    "風景": {
+        **dict.fromkeys(["007.mp4"], "風景+花草植物"),
+        **dict.fromkeys(["020.mp4"], "花草植物"),
+        **dict.fromkeys(["021.mp4"], "人像+風景"),
+    },
+    "城市建築": {
+        **dict.fromkeys(["004.mp4", "011.mp4"], "風景+城市建築"),
+        **dict.fromkeys(["012.mp4", "016.mp4"], "城市建築+交通工具"),
+        **dict.fromkeys(["024.mp4"], "合照+城市建築"),
+    },
+    "none_sports": {
+        **dict.fromkeys(["014.mp4"], "風景"),
+        **dict.fromkeys(["016.mp4", "019.mp4"], "人像"),
+        **dict.fromkeys(["017.mp4"], "合照+風景"),
+        **dict.fromkeys(["018.mp4"], "合照"),
+    },
+    "none_music": {
+        **dict.fromkeys(["000.mp4"], "人像"),
+    },
+    "none_dance": {
+        **dict.fromkeys(["010.mp4"], "none_sports"),
+        **dict.fromkeys(["012.mp4"], "合照"),
+        **dict.fromkeys(["014.mp4"], "人像"),
+    },
+    "none_machine": {
+        **dict.fromkeys(["000.mp4"], "none_dance"),
+        **dict.fromkeys(["004.mp4", "011.mp4"], "人像"),
+        **dict.fromkeys(["006.mp4"], "人像+城市建築"),
+        **dict.fromkeys(["010.mp4"], "合照"),
+    },
+    "none_underwater": {
+        **dict.fromkeys(["001.mp4"], "美食+花草植物"),
+        **dict.fromkeys(["012.mp4"], "none_wildlife"),
+        **dict.fromkeys(["015.mp4"], "人像"),
+    },
+    "none_wildlife": {
+        **dict.fromkeys(["001.avi", "002.avi", "008.mp4"], "none_sports"),
+        **dict.fromkeys(["007.mp4"], "合照"),
+    },
 }
 
 VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")
@@ -98,11 +196,12 @@ def share(captions: list[str], pattern: re.Pattern) -> float:
     return sum(1 for c in captions if pattern.search(c)) / max(len(captions), 1)
 
 
-def take(group: str, source: str, candidates: list[str], n: int, fetch, used: set[str]) -> list[tuple[str, bytes, str]]:
+def take(group: str, source: str, candidates: list[str], n: int, fetch, used: set[str], tag: str = "") -> list[tuple[str, bytes, str]]:
     """The first n clips, in a seeded random order of the (sorted) candidates, that no earlier group used, are
-    not larger than MAX_BYTES and last MIN_SECONDS..MAX_SECONDS. fetch(candidate) -> (source key, bytes, ext)."""
+    not larger than MAX_BYTES and last MIN_SECONDS..MAX_SECONDS. fetch(candidate) -> (source key, bytes, ext).
+    `tag` only changes the seed (used by the top-ups, which have rules of their own)."""
     order = sorted(candidates)
-    rng(group, source).shuffle(order)
+    rng(group, source + tag).shuffle(order)
     out = []
     for candidate in order:
         if len(out) == n:
@@ -206,7 +305,7 @@ def zip_of(repo: str, name: str) -> zipfile.ZipFile:
     return _cache[(repo, name)]
 
 
-def msrvtt(group: str, n: int, rule, used: set[str], categories: tuple[str, ...] = ()) -> list:
+def msrvtt(group: str, n: int, rule, used: set[str], categories: tuple[str, ...] = (), tag: str = "") -> list:
     """n random MSR-VTT clips for which rule(captions) is true (and whose category is one of `categories`).
     Clips of the categories gaming / animation / advertisement are never used."""
     wanted = {VTT[c] for c in categories}
@@ -218,7 +317,7 @@ def msrvtt(group: str, n: int, rule, used: set[str], categories: tuple[str, ...]
     def fetch(vid: str):
         return f"{MSRVTT}:MSRVTT_Videos.zip:video/{vid}.mp4", zip_of(MSRVTT, "MSRVTT_Videos.zip").read(f"video/{vid}.mp4"), ".mp4"
 
-    return take(group, "msrvtt", ok, n, fetch, used)
+    return take(group, "msrvtt", ok, n, fetch, used, tag)
 
 
 # ---------------------------------------------------------------- MSVD (YouTube clips, ~40 human captions each)
@@ -278,7 +377,7 @@ def pexels_meta() -> dict[str, tuple[str, int, int, str, str]]:
     return _cache["pexels"]
 
 
-def pexels(group: str, n: int, rule, used: set[str]) -> list:
+def pexels(group: str, n: int, rule, used: set[str], tag: str = "") -> list:
     """n random Pexels clips for which rule(first sentence, all captions) is true; files up to PEXELS_MAX_BYTES."""
     from huggingface_hub import HfFileSystem
 
@@ -295,7 +394,7 @@ def pexels(group: str, n: int, rule, used: set[str]) -> list:
             raise RuntimeError(f"unexpected tar member at {shard}@{offset}")
         return f"{PEXELS}:videos/{shard}:{sid}.mp4", blob[512:], ".mp4"
 
-    return take(group, "pexels", ok, n, fetch, used)
+    return take(group, "pexels", ok, n, fetch, used, tag)
 
 
 # ---------------------------------------------------------------- rules
@@ -513,18 +612,33 @@ def build(group: str, used: set[str]) -> list[tuple[str, bytes, str]]:
     raise ValueError(group)
 
 
+def build_top_up(group: str, used: set[str]) -> list[tuple[str, bytes, str]]:
+    """More clips for a group that fell below 18 after the first by-eye review. Built AFTER all groups (so the
+    earlier selection cannot change) and numbered after the group's first files."""
+    g = group
+    if g == "交通工具":
+        return (pexels(g, 7, lambda first, text: bool(VEHICLE.search(first)) and not PX_NO_PEOPLE.search(text)
+                       and not PX_ANY_ANIMAL.search(text)
+                       and not any(p.search(first) for p in (FOOD, SPORT, MACHINE, LAND, BUILDING)), used, "/top-up")
+                + msrvtt(g, 7, lambda c: share(c, VEHICLE) >= 0.8 and share(c, PERSON) <= 0.15
+                         and share(c, VTT_MANY) <= 0.15 and none_of(c, CAT, DOG, OTHER_ANIMAL, SPORT, FOOD), used,
+                         ("vehicles",), "/top-up"))
+    raise ValueError(group)
+
+
+TOP_UPS = ["交通工具"]
+
+
 # ---------------------------------------------------------------- output
 
 def frames_of(path: Path, count: int = 4):
     """`count` frames spread over the clip (by seeking), upright (the display matrix is applied)."""
     import av
-    from PIL import Image
 
     out = []
     with av.open(str(path)) as container:
         stream = container.streams.video[0]
         length = float(stream.duration * stream.time_base) if stream.duration else float(container.duration or 0) / 1e6
-        rotation = 0
         for i in range(count):
             target = length * (i + 0.5) / count
             try:
@@ -533,11 +647,9 @@ def frames_of(path: Path, count: int = 4):
                 pass
             for frame in container.decode(stream):
                 if frame.time is None or frame.time >= target - 0.5:
-                    rotation = getattr(frame, "rotation", 0) or 0
                     image = frame.to_image()
-                    if rotation:
-                        image = image.rotate(rotation, expand=True) if isinstance(image, Image.Image) else image
-                    out.append(image)
+                    rotation = getattr(frame, "rotation", 0) or 0  # display matrix (PyAV >= 12)
+                    out.append(image.rotate(rotation, expand=True) if rotation else image)
                     break
     return out
 
@@ -563,11 +675,12 @@ def contact_sheet(folder: Path, out: Path, cell: int = 200, columns: int = 2, co
     sheet.save(out, quality=85)
 
 
-def cached_build(group: str, used: set[str], cache: Path | None):
-    """build(), with the selected bytes of each group kept in --cache between runs."""
+def cached_build(group: str, used: set[str], cache: Path | None, top_up: bool = False):
+    """build() / build_top_up(), with the selected bytes of each group kept in --cache between runs."""
+    build = build_top_up if top_up else globals()["build"]
     if cache is None:
         return build(group, used)
-    folder = cache / group
+    folder = cache / (group + ("_top-up" if top_up else ""))
     index = folder / "index.json"
     if index.exists():
         listing = json.loads(index.read_text(encoding="utf-8"))
@@ -601,11 +714,14 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     used: set[str] = set()
     rows = []
+    built = {group: cached_build(group, used, cache) for group in GROUPS}
+    for group in TOP_UPS:
+        built[group] = built[group] + cached_build(group, used, cache, top_up=True)
     for group in GROUPS:
         gone = set() if args.raw else set(REMOVED.get(group, []))
         elsewhere = {} if args.raw else MOVED.get(group, {})
         kept = 0
-        for number, (source, data, ext) in enumerate(cached_build(group, used, cache)):
+        for number, (source, data, ext) in enumerate(built[group]):
             name = f"{number:03d}{ext}"
             if name in gone:
                 rows.append((group, name, group, source, "removed"))
