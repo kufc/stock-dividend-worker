@@ -46,6 +46,13 @@ try:  # 資源回收筒；沒有安裝時，復原改把複本搬到隔離資料
 except ImportError:  # pragma: no cover - 選用功能
     _send2trash = None
 
+
+def _trash(path: str) -> None:
+    """送進資源回收筒。預設就是 send2trash；新的 IFileOperation 路徑預設關閉（見 recycle.py）。"""
+    from .recycle import to_recycle_bin  # noqa: PLC0415
+
+    to_recycle_bin(path, lambda target: _send2trash(target))
+
 INVALID_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 LOG_FIELDS = ["動作", "原始路徑", "新路徑", "分類", "時間", "大小", "來源資料夾", "輸出資料夾"]
@@ -991,7 +998,7 @@ def undo(log_path: Path, expected_digest: str | None = None) -> ExecuteResult:
             no_bin = recycle_bin_problem(dst)
             if _send2trash is not None and no_bin is None:
                 def sink(staged: Path) -> Path | None:
-                    _send2trash(str(staged))
+                    _trash(str(staged))
                     return None
             elif no_bin is not None:
                 # 複本所在的磁碟沒有回收筒：搬到同一個磁碟（輸出資料夾裡）的隔離資料夾，不刪除
@@ -1056,7 +1063,7 @@ def remove_originals(log_path: Path, expected_digest: str | None = None) -> Exec
                                     "確定不需要原檔的話，請自行在檔案總管刪除。"))
                 retry.append(row)
                 continue
-            _remove_verified(src, dst, STAGE_MARK_ORIGINAL, lambda staged: _send2trash(str(staged)), precheck=False)
+            _remove_verified(src, dst, STAGE_MARK_ORIGINAL, lambda staged: _trash(str(staged)), precheck=False)
             done += 1
         except Exception as exc:  # noqa: BLE001 - 任何錯誤都只影響這一個檔案
             errors.append((src, str(exc) if isinstance(exc, OSError) else f"未預期的錯誤：{exc}"))

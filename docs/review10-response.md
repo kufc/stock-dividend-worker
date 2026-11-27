@@ -10,7 +10,7 @@ Windows 專屬的部分在 Wine 加安裝版內建的 Windows Python 裡跑過�
 | 編號 | 查證 | 處理 |
 | --- | --- | --- |
 | A1 | 規則斷層屬實。但在開發集上（13 個分類，以及 3／5／8 個分類各 20 組）把「其他」一律放進去比，效果等同把門檻調高，同樣的人工檢查量下誤接受率差不到 2 個百分點 | **不改**。數字在 `docs/evaluation.md`「試過但沒有採用」。沒有動用獨立測試集 |
-| B1 | 屬實。讀了 send2trash 1.8.3 的原始碼：沒有 pywin32 時走舊介面 `SHFileOperationW`，旗標是 `FOF_ALLOWUNDO \| FOF_NOCONFIRMATION \| FOF_NOERRORUI \| FOF_SILENT` | **已修（做法乙）**：移除前讀回收筒設定（使用者關閉、管理原則、容量上限；沒設定時用預設公式估），會變成永久刪除就不移除。追問的兩項也加了：路徑超過 240 個字元不送；檔案在被重新導向的已知資料夾裡時，另外讀 `BitBucket\KnownFolder` 的設定，兩邊取比較嚴的。**做法甲（IFileOperation）沒做**：需要在真的 Windows 上開發，列在上市前檢查清單 |
+| B1 | 屬實。讀了 send2trash 1.8.3 的原始碼：沒有 pywin32 時走舊介面 `SHFileOperationW`，旗標是 `FOF_ALLOWUNDO \| FOF_NOCONFIRMATION \| FOF_NOERRORUI \| FOF_SILENT` | **已修（做法乙）**：移除前讀回收筒設定（使用者關閉、管理原則、容量上限；沒設定時用預設公式估），會變成永久刪除就不移除。追問的兩項也加了：路徑超過 240 個字元不送；檔案在被重新導向的已知資料夾裡時，另外讀 `BitBucket\KnownFolder` 的設定，兩邊取比較嚴的。**做法甲（IFileOperation＋「不能進回收筒就失敗」）已寫好，但預設關閉**（`media_sorter/recycle.py`）：Wine 的這個介面是空殼（每個方法都回「未實作」），所以只驗證到「介面不能用時退回原本做法、檔案不被碰」；真正搬檔案的呼叫沒有執行過，不能當預設。Windows 拒絕時不會退回舊介面（有測試）。在真的 Windows 上依上市前檢查清單驗證後，改一個常數就能開啟 |
 
 ## 中
 
