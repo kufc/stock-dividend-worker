@@ -435,10 +435,12 @@ class CategoryDialog(tk.Toplevel):
         ttk.Label(right, text="分類名稱（也會是資料夾名稱）").pack(anchor="w")
         self.name_var = tk.StringVar()
         ttk.Entry(right, textvariable=self.name_var).pack(fill="x", pady=(px(2), px(10)))
-        ttk.Label(right, text="補充說明（可以留白）").pack(anchor="w")
+        ttk.Label(right, text="補充說明（建議寫：有寫準很多）").pack(anchor="w")
         for text in ("告訴 AI 這一類長什麼樣子，一行寫一種說法；中文、英文都可以，多寫幾種說法比較準。",
                      "例：街景與建築物",
-                     "留白時會直接用分類名稱判斷。常見的名稱（廣告、商品、圖表⋯）新增時會自動帶入說明。"):
+                     "寫 5～10 行，描述畫面裡會出現什麼、不同的拍法與場景。只有名稱、沒有說明也能用，但比較不準："
+                     "用真實照片量過，只靠名稱時各分類平均分對 92%，寫了十幾行說明是 97%，最差的分類從 75% 升到 87%。",
+                     "常見的名稱（廣告、商品、圖表⋯）新增時會自動帶入說明。"):
             hint = ttk.Label(right, style="Hint.TLabel", justify="left", text=cjk_wrap(text))
             hint.pack(anchor="w", fill="x")
             hint.bind("<Configure>", lambda e, w=hint: w.configure(wraplength=max(200, e.width)))
