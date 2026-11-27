@@ -155,6 +155,30 @@ class Item:
         return None
 
 
+def planned_category(item: Item, categories: list[Category], threshold: float, similarity_floor: float,
+                     low_mode: str, unsorted_name: str) -> tuple[str | None, bool]:
+    """整理時這個檔案要進哪個分類資料夾：回傳 (分類名稱或 None＝不整理, 是不是「AI 沒把握、使用者也沒改」)。
+
+    - 略過、讀取失敗、還沒辨識的：不整理
+    - 使用者指定過的：照使用者的
+    - AI 有把握的：AI 的第一名
+    - AI 沒把握、使用者也沒改的，依 low_mode：「leave」不整理、「unsorted」放 unsorted_name、其他值照 AI 的第一名
+    （這條規則以前寫在視窗類別裡，要開視窗才測得到。）
+    """
+    if item.status not in (PENDING, CONFIRMED) or not item.analyzed:
+        return None, False
+    category = item.final_category(categories)
+    if not category:
+        return None, False
+    if item.status == PENDING and item.is_low(categories, threshold, similarity_floor):
+        if low_mode == "leave":
+            return None, True
+        if low_mode == "unsorted":
+            return unsorted_name, True
+        return category, True
+    return category, False
+
+
 # 「從你的修正學習」的相似度下限（圖片向量之間的 cosine）。0.8：開發集上模擬「使用者看完需檢查的檔案」之後，
 # 不屬於任何分類卻被接受的比例從 34.8% 降到 27.1%（高精準模型 40.6% → 31.8%），分對的檔案沒有任何一個被多標；
 # 0.85 以上幾乎沒有效果，更低沒有試（會開始把只是有點像的檔案也拉進來）。見 docs/evaluation.md。

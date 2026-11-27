@@ -644,3 +644,81 @@ def test_all_dark_video_keeps_its_frames_and_dark_photos_are_not_blank():
     night.paste((255, 255, 200), (20, 20, 44, 44))  # 夜景裡有亮的東西：不是黑畫面
     assert media.is_blank_frame(dark[0]) and not media.is_blank_frame(night)
     assert analysis.PREPROCESS_VERSION >= 2  # 影片的向量會變，保存的舊結果要重算
+
+
+# ---------------------------------------------------------------- C5：「哪個檔案去哪個資料夾」不用開視窗就能測
+def _scored_items(tmp_path):
+    cats = [Category("紅"), Category("綠"), Category("藍")]
+    paths = [make_image(tmp_path / f"{n}.png", rgb) for n, rgb in
+             [("r", (250, 0, 0)), ("g", (0, 250, 0)), ("b", (0, 0, 250)), ("x", (250, 0, 0))]]
+    return cats, analyze(paths, FakeClassifier(), cats)
+
+
+@pytest.mark.parametrize("low_mode,expected", [("unsorted", ("未分類", True)), ("leave", (None, True)),
+                                               ("suggest", ("紅", True))])
+def test_planned_category_for_unsure_files_follows_the_chosen_mode(tmp_path, low_mode, expected):
+    cats, items = _scored_items(tmp_path)
+    sure, unsure = items[1], items[0]
+    unsure.neighbor_hint = ("綠", 0.9)  # 讓它變成「AI 沒把握」
+    assert analysis.planned_category(unsure, cats, 0.5, 0.0, low_mode, "未分類") == expected
+    assert analysis.planned_category(sure, cats, 0.5, 0.0, low_mode, "未分類") == ("綠", False)
+
+
+def test_planned_category_respects_the_users_decisions(tmp_path):
+    cats, items = _scored_items(tmp_path)
+    chosen, skipped, failed, fresh = items
+    chosen.neighbor_hint = ("綠", 0.9)
+    chosen.chosen, chosen.status = "藍", analysis.CONFIRMED       # 使用者指定過：不管 AI 有沒有把握都照使用者的
+    skipped.status = analysis.SKIPPED
+    failed.status = analysis.ERROR
+    fresh = analysis.Item(fresh.path, "image")                     # 還沒辨識
+    for mode in ("unsorted", "leave", "suggest"):
+        assert analysis.planned_category(chosen, cats, 0.5, 0.0, mode, "未分類") == ("藍", False)
+        for item in (skipped, failed, fresh):
+            assert analysis.planned_category(item, cats, 0.5, 0.0, mode, "未分類") == (None, False)
+
+
+def test_the_window_plans_with_the_same_rule(app_factory, tmp_path):
+    src = tmp_path / "src"
+    for name, rgb in [("r", (250, 0, 0)), ("g", (0, 250, 0)), ("b", (0, 0, 250))]:
+        make_image(src / f"{name}.png", rgb)
+    app = app_factory()
+    run_analysis(app, src)
+    low = next(it for it in app.items if it.path.name == "r.png")
+    low.neighbor_hint = ("綠", 0.9)
+    app.low_mode_var.set("unsorted")
+    plan = app._compute_plan()
+    assert plan.pending_count == 1
+    assert {op.src.name: op.category for op in plan.ops}["r.png"] == app_module_unsorted()
+    app.low_mode_var.set("leave")
+    assert "r.png" not in {op.src.name for op in app._compute_plan().ops}
+
+
+def app_module_unsorted():
+    from media_sorter import app as app_module
+
+    return app_module.UNSORTED_NAME
+
+
+# ---------------------------------------------------------------- C3：打字時不逐字問磁碟
+def test_typing_a_folder_path_does_not_hit_the_disk_per_keystroke(app_factory, tmp_path, monkeypatch):
+    """以前：欄位每變一次就 Path.is_dir() 一次（在畫面執行緒）。網路磁碟上每個字都可能卡幾秒。
+    現在：打字時不問磁碟，停下來 0.35 秒後問一次；還沒問到之前顯示「正在檢查資料夾」。"""
+    app = app_factory()
+    target = tmp_path / "photos"
+    make_image(target / "a.png", "red")
+    pump(app.root, lambda: app._folder_job is None)
+    calls = []
+    real = Path.is_dir
+    monkeypatch.setattr(Path, "is_dir", lambda self: (calls.append(str(self)), real(self))[1])
+    text = str(target)
+    for end in range(1, len(text) + 1):
+        app.folder_var.set(text[:end])
+    assert calls == []
+    assert "正在檢查" in app.page1.hint_var.get()
+    pump(app.root, lambda: app.stats is not None)
+    assert len(calls) == 1 and calls[0] == text  # 停下來之後只問一次，問的是最後的路徑
+    assert "將辨識 1 個檔案" in app.page1.hint_var.get()
+    app.folder_var.set(str(tmp_path / "missing"))
+    pump(app.root, lambda: app._folder_job is None)
+    assert "找不到" in app.page1.hint_var.get()

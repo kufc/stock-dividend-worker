@@ -27,7 +27,8 @@ from PIL import Image, ImageTk
 
 from . import APP_NAME, __version__, netpolicy
 from .analysis import (
-    CONFIRMED, ERROR, PENDING, SKIPPED, Item, analyze, learn_from_decisions, rescore, suggest_categories,
+    CONFIRMED, ERROR, PENDING, SKIPPED, Item, analyze, learn_from_decisions, planned_category, rescore,
+    suggest_categories,
 )
 from .classifier import covered_tags
 from .config import (
@@ -291,6 +292,7 @@ class App:
 
         self._build_ui()
         self._bind_keys()
+        self._folder_checked: tuple[str, bool] | None = None  # (欄位裡的文字, 那時候資料夾存不存在)
         self.folder_var.trace_add("write", self._on_folder_edit)
         self.subfolders_var.trace_add("write", self._on_folder_edit)
         self.output_var.trace_add("write", lambda *_: self.schedule_plan())
@@ -539,7 +541,9 @@ class App:
         self.stats, self.stats_error = None, ""
         text = self.folder_var.get().strip()
         folder = Path(text).absolute() if text else None
-        if folder is not None and folder.is_dir():
+        exists = folder is not None and folder.is_dir()
+        self._folder_checked = (text, exists)
+        if exists:
             threading.Thread(target=self._stats_worker, daemon=True, args=(
                 self._folder_token, folder, self.subfolders_var.get(), self.output_dir())).start()
         self._update_page1()
@@ -666,11 +670,17 @@ class App:
     def _update_page1(self) -> None:
         p = self.page1
         text = self.folder_var.get().strip()
-        is_dir = bool(text) and Path(text).is_dir()
+        # 資料夾存不存在只在 refresh_folder_stats 問磁碟（停止打字 0.35 秒後），不是每打一個字問一次：
+        # 網路磁碟或睡著的外接硬碟上，每問一次可能卡住畫面好幾秒。還沒問到之前當成「正在檢查」。
+        checked = self._folder_checked
+        checking = bool(text) and (checked is None or checked[0] != text)
+        is_dir = bool(text) and not checking and checked[1]
         running = self._analysis_active
         supported = self.stats.supported if self.stats else 0
         if not text:
             p.show_empty("還沒有選擇資料夾。按「選擇資料夾…」，或把資料夾路徑貼在上面的欄位。")
+        elif checking:
+            p.show_empty("正在檢查資料夾⋯")
         elif not is_dir:
             p.show_empty("找不到這個資料夾，請確認路徑，或按「選擇資料夾…」重新選擇。")
         elif self.stats_error:
@@ -691,13 +701,15 @@ class App:
             p.start_btn.configure(text=f"開始辨識 {supported:,} 個檔案" if supported else "開始辨識",
                                   style="Accent.TButton")
             p.start_btn.state(["!disabled"] if (supported and not self.organizing) else ["disabled"])
-        p.browse_btn.configure(style="TButton" if (is_dir and not running) else "Accent.TButton")
+        p.browse_btn.configure(style="TButton" if ((is_dir or checking) and not running) else "Accent.TButton")
         for widget in (p.entry, p.browse_btn, p.sub_check):
             widget.state(["disabled"] if running else ["!disabled"])
         if running:
             p.hint_var.set("辨識進行中。可以按「停止辨識」，已辨識的檔案不會遺失。")
         elif not text:
             p.hint_var.set("先選擇一個資料夾。")
+        elif checking:
+            p.hint_var.set("正在檢查資料夾⋯")
         elif not is_dir:
             p.hint_var.set("找不到資料夾。")
         elif self.stats is None and not self.stats_error:
@@ -1915,19 +1927,14 @@ class App:
     def _compute_plan(self) -> Plan:
         output = self.output_dir()
         source = self._base_dir() or self.source_dir()
-        mode = self.low_mode_var.get()
         entries = []
         low_count = 0
         for it in self.items:
-            category = self._category_of(it)
+            category, low = planned_category(it, self.categories, self.settings["confidence_threshold"],
+                                             self.similarity_floor(), self.low_mode_var.get(), UNSORTED_NAME)
+            low_count += low
             if not category:
                 continue
-            if it.status == PENDING and self._is_low(it):  # AI 沒把握、你也沒改的檔案：依步驟 3 的選擇
-                low_count += 1
-                if mode == "leave":
-                    continue
-                if mode == "unsorted":
-                    category = UNSORTED_NAME
             try:
                 date = it.date or file_date(it.path)
             except OSError:  # 檔案已不在：執行時會回報
