@@ -91,6 +91,24 @@ def test_ambiguous_answers_count_either_category_as_correct():
     assert result["per_class"]["人像"]["closed"][1] == 0.5 and result["per_class"]["美食"]["closed"][1] == 1.0
 
 
+def test_unknown_share_table_only_reweights():
+    """換算成別的「都不是」比例時，用原本的比例必須算回原本的成績。"""
+    result = evaluate.evaluate(evaluate.load("holdout2", "standard"))
+    share = result["n_unknown"] / result["n"]
+    (_, wrong, flagged), = evaluate.unknown_share_table(result, shares=(share,))
+    assert wrong == pytest.approx(result["accepted_error"]) and flagged == pytest.approx(result["flagged"])
+    low, high = evaluate.unknown_share_table(result, shares=(0.1, 0.6))
+    assert low[1] < result["accepted_error"] < high[1]
+
+
+def test_few_categories_report_is_repeatable_and_sane():
+    recorded = evaluate.load("dev", "standard")
+    first, again = evaluate.few_categories(recorded, groups=4), evaluate.few_categories(recorded, groups=4)
+    assert first == again and set(first) == {3, 5, 8}
+    assert first[3]["known_share"] < first[8]["known_share"] < 1   # 分類越少，越多檔案變成「都不是」
+    assert all(0.9 < row["closed_accuracy"] <= 1 and 0 < row["unknown_false_accept"] < 1 for row in first.values())
+
+
 def test_readme_quotes_the_second_holdout_numbers():
     """README 引用的是第二份（較難、沒被用來做過任何決定的）獨立測試集；第一份的封閉成績只當對照提一句。"""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")

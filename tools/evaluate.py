@@ -150,6 +150,8 @@ def evaluate(recorded: Recorded, threshold: float = THRESHOLD) -> dict:
         "accepted_error_known": (sum(1 for r in accepted if r[0] != NONE and r[0] != r[1])
                                  / max(1, sum(1 for r in accepted if r[0] != NONE))),
         "unknown_false_accept": sum(1 for r in unknown if not r[2]) / len(unknown) if unknown else float("nan"),
+        "known_flagged": sum(r[2] for r in known) / max(1, len(known)),
+        "known_accepted_wrong": sum(1 for r in known if not r[2] and r[0] != r[1]) / max(1, len(known)),
         "correct_flagged": sum(r[2] for r in correct_known) / max(1, len(correct_known)),
         "wrong_known_flagged": sum(r[2] for r in wrong_known) / max(1, len(wrong_known)),
         "n_wrong_known": len(wrong_known),
@@ -199,6 +201,54 @@ def learning_simulation(recorded: Recorded, threshold: float = THRESHOLD, rounds
         learn_from_decisions(items, categories)
         flags = [f or it.neighbor_hint is not None for f, it in zip(flags, items)]
     return before, metrics(flags)
+
+
+def unknown_share_table(result: dict, shares=(0.1, 0.36, 0.6)) -> list[tuple[float, float, float]]:
+    """真實資料夾裡「都不是」的比例沒人知道，所以把同一份成績換算成幾種比例：回傳 (比例, 接受部分分錯, 需檢查比例)。
+    只是重新加權：有答案的檔案與未知的檔案各自的表現不變，改變的是兩者的比重。"""
+    known_flag, known_wrong, unknown_accept = result["known_flagged"], result["known_accepted_wrong"], result["unknown_false_accept"]
+    rows = []
+    for share in shares:
+        accepted = (1 - share) * (1 - known_flag) + share * unknown_accept
+        wrong = (1 - share) * known_wrong + share * unknown_accept
+        rows.append((share, wrong / accepted if accepted else float("nan"),
+                     (1 - share) * known_flag + share * (1 - unknown_accept)))
+    return rows
+
+
+def few_categories(recorded: Recorded, sizes=(3, 5, 8), groups: int = 20, seed: int = 20261127,
+                   threshold: float = THRESHOLD) -> dict[int, dict]:
+    """使用者只設了幾個分類時的表現：從預設分類隨機取 size 個（每種 groups 組，固定亂數種子），其餘分類的檔案一律當成
+    「都不是」。兩可的檔案只要有一個答案在這一組裡就算有答案。只看圖片。規則跟產品相同（classifier.score、
+    比「其他東西」更像就進需檢查），直接用陣列算，所以很快。回傳每個 size 的平均。"""
+    from media_sorter.classifier import score  # noqa: PLC0415
+
+    categories = [Category(c.name, list(c.prompts)) for c in DEFAULT_CATEGORIES]
+    answers = recorded.answers()
+    keep = [i for i, name in enumerate(recorded.names) if answers[name] != "?"]
+    images = recorded.images[keep]
+    truth = [answers[recorded.names[i]].split("+") for i in keep]
+    all_emb, other = recorded.encode_categories(categories), recorded.other_embedding()
+    other_sim = images @ other
+    rng = np.random.default_rng(seed)
+    result = {}
+    for size in sizes:
+        rows = []
+        for _ in range(groups):
+            chosen = sorted(rng.choice(len(categories), size=size, replace=False).tolist())
+            names = [categories[i].name for i in chosen]
+            emb = all_emb[chosen]
+            probs = score(images, emb, recorded.logit_scale, other)
+            best = probs.argmax(axis=1)
+            low = (probs.max(axis=1) < threshold) | (other_sim > (images @ emb.T).max(axis=1))
+            known = np.array([any(t in names for t in parts) for parts in truth])
+            right = np.array([names[b] in parts for b, parts in zip(best, truth)]) & known
+            rows.append((float((~low[~known]).mean()), float(low.mean()), float(low[right].mean()),
+                         float(right[known].mean()), float(known.mean())))
+        mean = np.mean(rows, axis=0)
+        result[size] = dict(zip(("unknown_false_accept", "flagged", "correct_flagged", "closed_accuracy", "known_share"),
+                                mean.tolist()))
+    return result
 
 
 def pct(value: float) -> str:
@@ -307,6 +357,36 @@ def render() -> str:
             before, after = learning_simulation(rec)
             cells = " | ".join(f"{pct(before[k])} → {pct(after[k])}"
                                for k in ("flagged", "unknown_false_accept", "accepted_error", "correct_flagged"))
+            out.append(f"| {label} | {PRESETS[preset]} | {cells} |")
+    out.append("")
+    out.append("### 「都不是」的比例不同時\n")
+    out.append("真實資料夾裡有多少不屬於任何分類的東西沒人知道。把同一份成績換算成三種比例（只是重新加權）。"
+               "每格是「不進需檢查的部分分錯的比例／要看的檔案比例」。\n")
+    out.append("| 資料 | 模型 | 都不是占 10% | 占 36% | 占 60% |")
+    out.append("| --- | --- | ---: | ---: | ---: |")
+    labels = (("holdout2", "第二份獨立測試集（圖片）"), ("holdout2_video", "第二份獨立測試集（影片）"),
+              ("holdout", "第一份獨立測試集"), ("dev", "開發集"))
+    for which, label in labels:
+        for preset in PRESETS:
+            if (which, preset) in results:
+                cells = " | ".join(f"{pct(wrong)}／{pct(flagged)}"
+                                   for _, wrong, flagged in unknown_share_table(results[(which, preset)]))
+                out.append(f"| {label} | {PRESETS[preset]} | {cells} |")
+    out.append("")
+    out.append("### 只設幾個分類時\n")
+    out.append("從 13 個預設分類隨機取 3、5、8 個（各 20 組），其餘分類的圖片一律當成「都不是」。每格是 20 組的平均："
+               "未知誤接受／要看的檔案比例／分對被多標／有答案的檔案第一名分對。\n")
+    out.append("| 資料 | 模型 | 3 個分類 | 5 個分類 | 8 個分類 |")
+    out.append("| --- | --- | ---: | ---: | ---: |")
+    for which, label in (("holdout2", "第二份獨立測試集（圖片）"), ("dev", "開發集")):
+        for preset in PRESETS:
+            rec = load(which, preset)
+            if rec is None:
+                continue
+            few = few_categories(rec)
+            cells = " | ".join("／".join(pct(few[size][k]) for k in
+                                        ("unknown_false_accept", "flagged", "correct_flagged", "closed_accuracy"))
+                               for size in few)
             out.append(f"| {label} | {PRESETS[preset]} | {cells} |")
     out.append("")
     out.append("### 門檻的依據：在開發集上改變門檻\n")
