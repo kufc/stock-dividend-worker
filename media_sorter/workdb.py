@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS files (
     frames       BLOB,               -- 影片每張畫面的向量 float32 (n, dim)
     thumb        TEXT,               -- thumbs/ 底下的相對路徑
     analyzed_at  TEXT NOT NULL,
-    seen_at      TEXT NOT NULL
+    seen_at      TEXT NOT NULL,
+    incomplete   INTEGER NOT NULL DEFAULT 0   -- 檔案看起來沒傳完（1.1 之後加的欄位；舊資料庫開啟時會補上）
 );
 CREATE TABLE IF NOT EXISTS decisions (
     path_key   TEXT PRIMARY KEY,
@@ -83,10 +84,18 @@ class CachedAnalysis:
     frames: np.ndarray | None
     date: datetime | None
     thumb_file: Path | None
+    incomplete: bool = False
 
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _is_temporary(exc: sqlite3.Error) -> bool:
+    """「暫時打不開」而不是「壞掉」：被鎖住、忙碌中、開不了檔。"""
+    text = str(exc).lower()
+    return isinstance(exc, sqlite3.OperationalError) and any(
+        word in text for word in ("locked", "busy", "unable to open", "disk i/o", "readonly", "read-only"))
 
 
 class WorkStore:
@@ -130,24 +139,30 @@ class WorkStore:
                 raise sqlite3.DatabaseError(f"schema {row[0]}")
             if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise sqlite3.DatabaseError("quick_check failed")
+            # 之後才加的欄位：舊資料庫補上就好，不必重建（使用者改過的分類都留著）
+            columns = {row[1] for row in db.execute("PRAGMA table_info(files)")}
+            if "incomplete" not in columns:
+                db.execute("ALTER TABLE files ADD COLUMN incomplete INTEGER NOT NULL DEFAULT 0")
+                db.commit()
             return db
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as exc:
             if db is not None:
                 try:
                     db.close()  # 一定要先關：Windows 上開著的檔案不能改名（用 Wine 測出來的）
                 except sqlite3.Error:
                     pass
+            if _is_temporary(exc):
+                # 只是暫時打不開（被別的程式鎖住、防毒掃描中）：資料庫沒壞，裡面有使用者改過的分類，不能擱置重來。
+                # 往上丟，這次先不用資料庫（程式照常運作），下次開啟再試。
+                raise
             return self._recreate()
 
     def _recreate(self) -> sqlite3.Connection:
         """資料庫讀不出來：改名保留，重新開始。只是快取，最壞情況是重新辨識。"""
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         aside = self.db_path.with_name(f"無法讀取_{stamp}_{DB_NAME}")
-        try:
-            os.replace(self.db_path, aside)
-            self.recreated_from = aside
-        except OSError:
-            self.db_path.unlink(missing_ok=True)
+        os.replace(self.db_path, aside)  # 改不了名就往上丟：寧可這次不用資料庫，也不刪掉裡面可能還救得回的資料
+        self.recreated_from = aside
         for suffix in ("-wal", "-shm"):
             Path(str(self.db_path) + suffix).unlink(missing_ok=True)
         db = self._connect()
@@ -192,7 +207,7 @@ class WorkStore:
         key = path_key(path)
         with self._lock:
             row = self._db.execute(
-                "SELECT size, mtime_ns, model_key, video_frames, media_date, dim, embedding, frames, thumb "
+                "SELECT size, mtime_ns, model_key, video_frames, media_date, dim, embedding, frames, thumb, incomplete "
                 "FROM files WHERE path_key=?", (key,)).fetchone()
             if row is None or (row[0], row[1]) != fingerprint or row[2] != model_key or row[3] != video_frames:
                 return None
@@ -211,11 +226,11 @@ class WorkStore:
                 date = datetime.fromisoformat(row[4])
             except ValueError:
                 date = None
-        return CachedAnalysis(embedding.copy(), frames, date, thumb)
+        return CachedAnalysis(embedding.copy(), frames, date, thumb, bool(row[9]))
 
     def save_analysis(self, path: Path, kind: str, model_key: str, video_frames: int, fingerprint: tuple[int, int],
                       embedding: np.ndarray, frames: np.ndarray | None, date: datetime | None,
-                      thumbnail: bytes | None) -> Path | None:
+                      thumbnail: bytes | None, incomplete: bool = False) -> Path | None:
         """存一個檔案的辨識結果（不 commit；呼叫端每完成一批呼叫 commit）。回傳縮圖檔的位置。"""
         key = path_key(path)
         name = None
@@ -228,10 +243,11 @@ class WorkStore:
         with self._lock:
             old = self._db.execute("SELECT thumb FROM files WHERE path_key=?", (key,)).fetchone()
             self._db.execute(
-                "INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO files (path_key, path, size, mtime_ns, kind, model_key, video_frames, media_date,"
+                " dim, embedding, frames, thumb, analyzed_at, seen_at, incomplete) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (key, str(path), fingerprint[0], fingerprint[1], kind, model_key, video_frames,
                  date.isoformat() if date else None, int(embedding.size), embedding.tobytes(), frame_blob, name,
-                 now, now))
+                 now, now, int(bool(incomplete))))
             # 檔案內容換過：舊的決定是針對舊內容做的，不再適用
             self._db.execute("DELETE FROM decisions WHERE path_key=? AND (size<>? OR mtime_ns<>?)",
                              (key, fingerprint[0], fingerprint[1]))

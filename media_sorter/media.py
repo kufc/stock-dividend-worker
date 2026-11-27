@@ -389,6 +389,28 @@ class LoadedMedia:
     frames: list[Image.Image]
     date: datetime
     thumbnail: bytes  # 預覽用縮圖（避免預覽時再讀原檔，HEIC 尤其慢）
+    incomplete: bool = False  # 檔案看起來沒傳完（缺結尾）：讀得出來的部分照常辨識，但要請使用者看一下
+
+
+def looks_incomplete(path: Path) -> bool:
+    """JPEG／PNG 的檔尾標記不見了 → 檔案多半是傳到一半、複製中斷。
+
+    這種圖 Pillow 仍讀得出上半部（缺的部分補灰色，見 LOAD_TRUNCATED_IMAGES），AI 會照樣給它一個分類，
+    使用者卻不知道圖是壞的。只看檔尾 64 KB 找結尾標記，不解碼；判斷不出來（其他格式、讀不到）一律當成完整。
+    """
+    ext = path.suffix.lower()
+    if ext not in (".jpg", ".jpeg", ".png"):
+        return False
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 65536))
+            tail = f.read()
+    except OSError:
+        return False
+    marker = b"IEND" if ext == ".png" else b"\xff\xd9"
+    return marker not in tail
 
 
 def load_media(path: Path, kind: str, video_frames: int = 8) -> LoadedMedia:
@@ -396,7 +418,7 @@ def load_media(path: Path, kind: str, video_frames: int = 8) -> LoadedMedia:
         frames, date = sample_video_frames(path, video_frames)
         return LoadedMedia(frames, date or file_date(path), thumbnail_bytes(frames[len(frames) // 2]))
     img, date = load_image(path, max_side=ANALYSIS_SIZE)
-    return LoadedMedia([img], date or file_date(path), thumbnail_bytes(img))
+    return LoadedMedia([img], date or file_date(path), thumbnail_bytes(img), looks_incomplete(path))
 
 
 def open_thumbnail(data: bytes, draft_size: int | None = None) -> Image.Image:

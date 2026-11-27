@@ -13,6 +13,7 @@ import queue
 import shutil
 import sys
 import threading
+import time
 import traceback
 import tkinter as tk
 from collections import Counter, OrderedDict
@@ -142,6 +143,9 @@ class RunInfo:
         return [op for op in self.ops if str(op.src) not in self.done_sources]
 
 
+DOUBLE_CLICK_GUARD = 0.7  # 秒。「開始」按下後這段時間內，同一顆按鈕的第二下不算（習慣連點兩下的人不會變成「開始又馬上停止」）
+
+
 def _same_folder(a: str | Path, b: str | Path) -> bool:
     try:
         return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
@@ -214,6 +218,7 @@ class App:
         self.model_download_func = model_download_func or _default_model_download
         self.model_repair_func = model_repair_func or _default_model_repair
         self.model_task_running = False  # 正在下載或修復模型（使用者要求的）
+        self._startup_notices: list[str] = []  # 啟動時要告訴使用者一次的事（設定檔壞掉、資料庫打不開⋯）
         # 工作資料庫：辨識結果與你的修改都存在磁碟上，程式關掉、當掉後可以接續（見 workdb）
         self.store = work_store if work_store is not None else self._open_store()
         self.settings = load_settings()
@@ -287,6 +292,7 @@ class App:
         self.show_step(1)
         self.refresh_folder_stats()
         self._start_model_status()
+        self.root.after(300, self.show_startup_notices)
         root.after(100, self._poll_queue)
         root.after(GC_INTERVAL_MS, self._collect_garbage)
 
@@ -443,7 +449,7 @@ class App:
         state = ["disabled"] if busy else ["!disabled"]
         self.header.set_busy(busy)
         for widget in (self.page1.start_btn, self.page1.category_btn, self.page3.back_btn, *self.page3.low_radios,
-                       self.page3.output_entry,
+                       self.page3.output_entry, self.page3.browse_btn,
                        self.page3.pattern_entry, *self.page3.radios, self.page4.again_btn, self.page4.back_btn,
                        self.page4.records_btn, self.page4.remove_btn, self.page4.open_btn):
             widget.state(state)
@@ -499,6 +505,8 @@ class App:
             self.folder_var.set(os.path.normpath(folder))
 
     def choose_output(self) -> None:
+        if self.organizing:  # 複製中改輸出位置不會生效（畫面卻會顯示新位置），所以不給改
+            return
         folder = filedialog.askdirectory(initialdir=self.output_var.get() or self.folder_var.get() or None,
                                          title="選擇輸出資料夾")
         if folder:
@@ -545,12 +553,28 @@ class App:
             store = WorkStore(WORK_DIR)
         except Exception:  # noqa: BLE001
             self._store_problem = traceback.format_exc()
+            self._startup_notices.append(
+                "這次無法使用保存的辨識結果（工作資料庫暫時打不開，可能正被其他程式使用）。程式可以照常使用，"
+                "但這次的辨識結果與你改的分類不會被保存；之前保存的資料沒有被動到，關閉可能占用它的程式後重新開啟即可。")
             return None
+        if store.recreated_from is not None:
+            self._startup_notices.append(
+                f"保存的辨識結果讀不出來（檔案損壞），已經重新建立；之前改過的分類需要重新指定。壞掉的那份保留在：{store.recreated_from}")
         try:
             store.prune()
         except Exception:  # noqa: BLE001 - 清理失敗不影響使用
             pass
         return store
+
+    def show_startup_notices(self) -> None:
+        """設定檔壞掉、資料庫打不開這類事，啟動後講一次（講發生什麼、資料在哪、要做什麼）。"""
+        from . import config
+
+        notices = self._startup_notices + list(config.LOAD_PROBLEMS)
+        self._startup_notices.clear()
+        config.LOAD_PROBLEMS.clear()
+        if notices:
+            messagebox.showinfo(APP_NAME, "\n\n".join(notices))
 
     def _decision_changed(self, item: Item) -> None:
         """你指定分類、略過、撤回的那一刻就寫進工作資料庫（Item.__setattr__ 會呼叫這裡）。"""
@@ -1065,6 +1089,9 @@ class App:
             note = f"你指定的分類：{item.chosen}"
         elif item.status == SKIPPED:
             note = "已略過，不會被整理。選一個分類就會整理回來。"
+        elif item.incomplete:
+            note = ("這個檔案看起來不完整（可能沒傳完或複製中斷），畫面缺的部分是灰色的。AI 是依看得到的部分判斷，"
+                    "請確認；你沒指定分類的話，預設會放到「未分類」資料夾。")
         elif item.top_similarity < floor or item.fits_nothing:
             note = "這個檔案可能不屬於任何一個分類。請看一下；需要的話可以新增分類，或按「略過，不整理」。"
         elif low:
@@ -1410,11 +1437,17 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     # ------------------------------------------------------------------ 辨識（背景執行緒）
+    def _just_started(self) -> bool:
+        return time.monotonic() - getattr(self, "_started_at", -10.0) < DOUBLE_CLICK_GUARD
+
     def toggle_analysis(self) -> None:
         if self.analysis_running():
-            self.stop_analysis()
+            if not self._just_started():  # 連點兩下的第二下：忽略
+                self.stop_analysis()
         else:
             self.start_analysis()
+            if self.analysis_running():
+                self._started_at = time.monotonic()
 
     def stop_analysis(self) -> None:
         if self.analysis_running():
@@ -1807,6 +1840,10 @@ class App:
                 date = datetime.now()
             entries.append((it.path.absolute(), category, date))
         plan = Plan([], source, output, pending_count=low_count)
+        if _same_folder(output, source):
+            plan.problem = ("輸出資料夾不能就是來源資料夾：分類資料夾會跟原檔混在一起，下次辨識還會把整理好的複本再分一次。"
+                            "請選另一個資料夾（預設是來源資料夾裡的「已分類」）。")
+            return plan
         rename, pattern, problem = self._rename_settings()
         if problem:
             plan.problem = problem
@@ -1888,9 +1925,12 @@ class App:
     # ------------------------------------------------------------------ 複製
     def toggle_copy(self) -> None:
         if self.organizing:
-            self.request_stop_copy()
+            if not self._just_started():
+                self.request_stop_copy()
         else:
             self.start_copy()
+            if self.organizing:
+                self._started_at = time.monotonic()
 
     def request_stop_copy(self) -> None:
         self.copy_stop.set()
@@ -1921,18 +1961,35 @@ class App:
 
     def toggle_retry(self) -> None:
         if self.organizing:
-            self.request_stop_copy()
+            if not self._just_started():
+                self.request_stop_copy()
         else:
             self.retry_remaining()
+            if self.organizing:
+                self._started_at = time.monotonic()
 
     def retry_remaining(self) -> None:
         info = self.run_info
         if info is None or self.organizing or self.analysis_running():
             return
-        ops = info.remaining_ops()
+        ops = self._current_ops_for(info.remaining_ops())
         if ops:
             append = info.log_path if info.log_path is not None and info.log_path.exists() else None
             self._begin_copy(ops, append)
+
+    def _current_ops_for(self, remaining: list[PlannedOp]) -> list[PlannedOp]:
+        """重試時用「現在」的分類重新決定目的地：失敗之後回去改過分類、略過的檔案，不能照舊的計畫複製。
+        還沒複製成功的檔案裡，現在的計畫不包含的（被略過了）就不複製；計畫算不出來時維持原本的。"""
+        wanted = {os.path.normcase(str(op.src)) for op in remaining}
+        plan = self._compute_plan()
+        if plan.problem or not plan.ops:
+            return remaining if plan.problem else []
+        ops = [op for op in plan.ops if os.path.normcase(str(op.src)) in wanted]
+        info = self.run_info
+        if info is not None:
+            keep = [op for op in info.ops if str(op.src) in info.done_sources]
+            info.ops = keep + ops  # 「完成」頁與之後的重試都以新的計畫為準
+        return ops
 
     def _begin_copy(self, ops: list[PlannedOp], append_to: Path | None) -> None:
         info = self.run_info

@@ -61,7 +61,7 @@ def test_failed_copy_leaves_no_partial_file(tmp_path, monkeypatch):
     def disk_full(fd):
         # 資料已經寫進暫存檔（磁碟上看得到半成品），交給磁碟時才發現空間不足。
         # （複製改成自己邊讀邊算雜湊再 fsync，不再呼叫 shutil.copyfile，所以改在這裡讓它失敗）
-        assert any((tmp_path / "out").rglob("*.partial"))
+        assert any((tmp_path / "out").rglob(f"*{organizer.PARTIAL_SUFFIX}"))
         raise OSError(errno.ENOSPC, "No space left on device")
 
     monkeypatch.setattr(organizer.os, "fsync", disk_full)

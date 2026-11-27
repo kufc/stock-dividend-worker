@@ -169,11 +169,29 @@ def ensure_data_dir(path: Path | None = None) -> None:
         pass
 
 
+LOAD_PROBLEMS: list[str] = []  # 讀設定時發現的問題（給介面在啟動後顯示一次）
+
+
 def _read_json(path: Path):
+    """讀 JSON 設定檔。檔案壞掉（斷電留下的空檔、被改壞、編碼不對）時不能讓程式開不起來：
+    把壞的那份改名留在旁邊（內容不丟），這次用預設值，並記下來讓介面告訴使用者。"""
     try:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
+        return None
+    except (ValueError, OSError) as exc:  # ValueError 含 JSON 格式錯誤與編碼錯誤
+        aside = None
+        try:
+            from datetime import datetime
+
+            aside = path.with_name(f"{path.name}.壞掉_{datetime.now():%Y%m%d_%H%M%S}")
+            os.replace(path, aside)
+        except OSError:
+            aside = None
+        LOAD_PROBLEMS.append(
+            f"「{path.name}」讀不出來（{type(exc).__name__}），這次改用預設值。"
+            + (f"原本的檔案已改名保留：{aside}" if aside else "原本的檔案還在原位，請檢查它是否被其他程式使用。"))
         return None
 
 
@@ -184,15 +202,19 @@ def _write_json(path: Path, data) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())  # 先確實寫進磁碟再換檔：斷電時不會留下一個空的設定檔
     os.replace(tmp, path)
 
 
 def load_categories(path: Path = CATEGORIES_FILE) -> list[Category]:
     data = _read_json(path)
-    if not data or not data.get("categories"):
+    if not isinstance(data, dict) or not isinstance(data.get("categories"), list) or not data["categories"]:
         return [Category(c.name, list(c.prompts)) for c in DEFAULT_CATEGORIES]
     categories = []
     for entry in data["categories"]:
+        if not isinstance(entry, dict):
+            continue
         name = " ".join(str(entry.get("name", "")).split())  # 名稱中的換行、定位字元一律換成空白
         if name:
             categories.append(Category(name, upgrade_prompts(name, [str(p) for p in entry.get("prompts", [])])))

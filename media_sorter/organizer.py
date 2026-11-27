@@ -63,7 +63,9 @@ FINISHED_PREFIX = "已完成_"  # 原檔已全部移除的整理紀錄
 QUARANTINE_DIR = "復原移除"  # 沒有資源回收筒可用時，復原移除的複本改放到這裡
 SEQ = "{序號}"
 MAX_NAME = 100  # 檔名（不含副檔名）上限，避免超過 Windows 路徑長度限制
-PARTIAL_SUFFIX = ".partial"
+PARTIAL_SUFFIX = ".ams-partial"  # 本程式複製用的暫存檔（名稱獨特，才能放心清掉上次被強制結束留下的）
+STALE_PARTIAL_SECONDS = 3600
+MAX_TRASH_PATH = 240  # Windows 的回收筒處理不了接近 260 個字元的路徑（暫時改名還會再長一點），超過就不送
 SPACE_MARGIN = 200 * 1024 * 1024  # 複製前預留的磁碟空間
 
 
@@ -265,6 +267,28 @@ def _copy_no_clobber(src: Path, dst: Path) -> None:
         raise
 
 
+def _remove_stale_partials(folders, now: float | None = None) -> int:
+    """清掉上次複製到一半被強制結束留下的暫存檔。只認本程式的暫存檔名（*.ams-partial）、而且夠舊的；
+    同一時間只會有一個本程式在跑（app.lock），所以舊的暫存檔一定沒有人在用。回傳清掉的數量。"""
+    import time
+
+    now = time.time() if now is None else now
+    removed = 0
+    for folder in folders:
+        try:
+            candidates = [p for p in Path(folder).glob(f"*{PARTIAL_SUFFIX}") if p.is_file() and not p.is_symlink()]
+        except OSError:
+            continue
+        for path in candidates:
+            try:
+                if now - path.stat().st_mtime >= STALE_PARTIAL_SECONDS:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 @dataclass
 class ExecuteResult:
     done: int
@@ -375,6 +399,7 @@ def execute(
     aborted = False
     stopped = False
     done_sources: list[Path] = []
+    _remove_stale_partials({op.dst.parent for op in ops})
     with f:
         writer = csv.writer(f)
         if append_to is None:
@@ -621,6 +646,14 @@ def default_bin_capacity(volume_bytes: int) -> int:
     return int(first * 0.10 + (volume_bytes - first) * 0.05)
 
 
+def path_too_long_for_bin(path: str) -> str | None:
+    """路徑太長的檔案，Windows 的回收筒放不進去（檔案總管會問「要永久刪除嗎」；程式關掉了詢問，所以不能送）。"""
+    if len(path) > MAX_TRASH_PATH:
+        return (f"這個檔案的路徑太長（{len(path)} 個字元），Windows 的資源回收筒放不進去，會變成永久刪除；"
+                "把資料夾搬到比較短的路徑再試")
+    return None
+
+
 def recycle_bin_setting_problem(*, policy_off: bool, nuke_on_delete: bool, max_capacity_mb: int | None,
                                 volume_bytes: int | None, file_size: int) -> str | None:
     """依回收筒的設定判斷：這個檔案「送回收筒」會不會其實是永久刪除。
@@ -680,6 +713,62 @@ def _recycle_bin_settings(root: str) -> dict:
     return {"policy_off": policy_off, "nuke_on_delete": nuke, "max_capacity_mb": capacity, "volume_bytes": volume_bytes}
 
 
+def _known_folder_bin_settings(path: str) -> tuple[bool, int | None]:
+    """「圖片」「文件」這類資料夾被搬到別處（重新導向）時，Windows 替它另外記一份回收筒設定
+    （BitBucket\\KnownFolder\\{資料夾代號}），不在磁碟那一筆。檔案在這種資料夾裡時，回傳那一份的
+    (不移到回收筒, 容量上限 MB)；不在任何一個裡面回傳 (False, None)。只在 Windows 呼叫。
+    """
+    import ctypes
+    import winreg
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD), ("c", wintypes.WORD), ("d", ctypes.c_ubyte * 8)]
+
+    base = r"Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket\KnownFolder"
+    try:
+        root_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, base)
+    except OSError:
+        return False, None
+    shell32, ole32 = ctypes.WinDLL("shell32"), ctypes.WinDLL("ole32")
+    shell32.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE,
+                                             ctypes.POINTER(ctypes.c_wchar_p)]
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    target = os.path.normcase(path)
+    nuke, capacity = False, None
+    with root_key:
+        index = 0
+        while True:
+            try:
+                name = winreg.EnumKey(root_key, index)
+            except OSError:
+                break
+            index += 1
+            guid, found = GUID(), ctypes.c_wchar_p()
+            if ole32.CLSIDFromString(name, ctypes.byref(guid)) != 0:
+                continue
+            if shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(found)) != 0 or not found.value:
+                continue
+            folder = os.path.normcase(found.value).rstrip("\\")
+            ole32.CoTaskMemFree(ctypes.cast(found, ctypes.c_void_p))
+            if not (target == folder or target.startswith(folder + "\\")):
+                continue
+            try:
+                with winreg.OpenKey(root_key, name) as key:
+                    for value_name in ("NukeOnDelete", "MaxCapacity"):
+                        try:
+                            value = winreg.QueryValueEx(key, value_name)[0]
+                        except OSError:
+                            continue
+                        if value_name == "NukeOnDelete":
+                            nuke = nuke or value == 1
+                        elif isinstance(value, int) and value >= 0:
+                            capacity = value if capacity is None else min(capacity, value)
+            except OSError:
+                continue
+    return nuke, capacity
+
+
 def recycle_bin_problem(path: Path) -> str | None:
     """這個檔案「送資源回收筒」其實會變成永久刪除時，回傳給使用者看的原因；確定會進回收筒
     （或這個系統交給 send2trash 判斷）回傳 None。
@@ -710,12 +799,22 @@ def recycle_bin_problem(path: Path) -> str | None:
         return recycle_bin_problem_for_drive_type(0)
     if problem is not None:
         return problem
+    too_long = path_too_long_for_bin(full)
+    if too_long is not None:
+        return too_long
     try:
         size = os.path.getsize(path)
     except OSError:
         size = 0
     try:
-        return recycle_bin_setting_problem(file_size=size, **_recycle_bin_settings(root))
+        settings = _recycle_bin_settings(root)
+        # 檔案在被重新導向的「圖片／文件」資料夾裡：那個資料夾自己的設定也要過（兩邊取比較嚴的）
+        folder_nuke, folder_capacity = _known_folder_bin_settings(full)
+        settings["nuke_on_delete"] = settings["nuke_on_delete"] or folder_nuke
+        if folder_capacity is not None:
+            current = settings["max_capacity_mb"]
+            settings["max_capacity_mb"] = folder_capacity if current is None else min(current, folder_capacity)
+        return recycle_bin_setting_problem(file_size=size, **settings)
     except Exception:  # noqa: BLE001 - 設定讀不出來：不能因此假設回收筒可用
         return "無法確認這個磁碟的資源回收筒設定（為了安全當成沒有回收筒）"
 

@@ -17,7 +17,7 @@ if not exist "media_sorter\installer.py" (
 
 rem 已存在的 .venv 若是 32 位元或版本太舊，刪掉重建
 if exist ".venv\Scripts\python.exe" (
-    ".venv\Scripts\python.exe" -c "import sys,struct;sys.exit(not(sys.version_info[:2]>=(3,10) and struct.calcsize('P')==8))" >nul 2>&1
+    ".venv\Scripts\python.exe" -c "import sys,struct;sys.exit(not(sys.version_info[:2]==(3,12) and struct.calcsize('P')==8))" >nul 2>&1
     if errorlevel 1 (
         echo 現有的 .venv 無法使用，重新建立⋯
         rmdir /s /q ".venv"
@@ -26,17 +26,17 @@ if exist ".venv\Scripts\python.exe" (
 
 if exist ".venv\Scripts\python.exe" goto :install
 
-rem 依序尋找建議的 Python 版本（64 位元、3.10 以上）
+rem 需要 64 位元的 Python 3.12（下載的套件要核對雜湊，鎖定檔是替 3.12 產生的）
 set "PY="
-set "CHECK=import sys,struct;sys.exit(not(sys.version_info[:2]>=(3,10) and struct.calcsize('P')==8))"
-for %%V in (3.12 3.11 3.13 3.10) do (
+set "CHECK=import sys,struct;sys.exit(not(sys.version_info[:2]==(3,12) and struct.calcsize('P')==8))"
+for %%V in (3.12) do (
     if not defined PY py -%%V -c "%CHECK%" >nul 2>&1 && set "PY=py -%%V"
 )
 if not defined PY py -3 -c "%CHECK%" >nul 2>&1 && set "PY=py -3"
 if not defined PY python -c "%CHECK%" >nul 2>&1 && set "PY=python"
 if not defined PY (
     echo.
-    echo 找不到可用的 Python！（需要 64 位元的 Python 3.10 以上）
+    echo 找不到 64 位元的 Python 3.12！（其他版本不行：安裝時要核對套件的雜湊）
     echo 請到 https://www.python.org/downloads/ 下載安裝 Python 3.12，
     echo 安裝時記得勾選「Add python.exe to PATH」，裝完後再雙擊 install.bat。
     echo.

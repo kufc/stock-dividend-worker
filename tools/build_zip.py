@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CRLF_SUFFIXES = {".bat", ".cmd", ".txt"}  # 跟 .gitattributes 的 eol=crlf 相同
 REQUIRED = [  # 少了任何一個就不是完整的交付（tests/test_build_zip.py 也會檢查）
     "README.md", "install.bat", "start.bat", "uninstall.bat", "requirements.txt", "requirements.lock",
-    "media_sorter/__init__.py", "docs/evaluation.md", "docs/roadmap.md", "docs/release-checklist.md", "docs/handoff.md", "tools/evaluate.py", "tools/build_zip.py",
+    "media_sorter/__init__.py", "docs/evaluation.md", "docs/roadmap.md", "docs/release-checklist.md", "docs/handoff.md", "docs/review10-response.md", "tools/evaluate.py", "tools/build_zip.py",
     "tests/test_real_embeddings.py", "tests/manual/embeddings_standard.npz", "tests/manual/embeddings_accurate.npz",
     "tests/manual/embeddings_holdout_standard.npz", "tests/manual/embeddings_holdout_accurate.npz",
     "tests/manual/photo_sources.txt", "tests/manual/holdout_sources.txt", "tests/manual/dump_embeddings.py",

@@ -238,10 +238,14 @@ def prepare_for(preset: str, cache: Path | None = None, stamp_file: Path | None 
 
 
 # ---------------------------------------------------------------------------- 下載與修復（使用者明確要求時才呼叫）
-def _remove_file(path: Path) -> None:
-    """刪掉一個壞掉的模型檔：快取裡的檔案可能是指向 blobs 的連結，兩邊都要刪，不然重新下載時會直接沿用壞的。"""
+def _remove_file(path: Path, cache: Path | None = None) -> None:
+    """刪掉一個壞掉的模型檔：快取裡的檔案可能是指向 blobs 的連結，兩邊都要刪，不然重新下載時會直接沿用壞的。
+    連結指到快取資料夾以外的地方時（有人把模型檔連到別處）只拆連結，不碰外面的檔案。"""
     try:
         target = path.resolve() if path.is_symlink() else None
+        root = (cache or hf_cache_dir()).resolve()
+        if target is not None and root not in target.parents:
+            target = None
     except OSError:
         target = None
     for victim in (path, target):
@@ -263,7 +267,7 @@ def download_preset(preset: str, cache: Path | None = None, *, stamp_file: Path 
               if check_file(f, cache, stamps=_load_stamps(stamp_file)) is not None]
     for file in wanted:  # 大小不對或內容不對的舊檔先刪掉，確保拿到的是重新下載的
         if file.path(cache).exists() or file.path(cache).is_symlink():
-            _remove_file(file.path(cache))
+            _remove_file(file.path(cache), cache)
     done = []
     with _network_allowed():
         if fetch is None and wanted:

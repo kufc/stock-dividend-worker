@@ -55,6 +55,7 @@ class Item:
     thumb_file: Path | None = None    # 有工作資料庫時縮圖放在磁碟上，這裡只記檔名（十萬張也不占記憶體）
     fingerprint: tuple[int, int] | None = None  # 辨識當時檔案的（大小, 修改時間）
     cached: bool = False              # 這次是沿用保存的結果，沒有重新讀檔與計算
+    incomplete: bool = False          # 檔案看起來沒傳完（見 media.looks_incomplete）：一律進「需檢查」
     probs: np.ndarray | None = None
     prob_names: tuple[str, ...] = ()  # probs 每個位置對應的分類名稱（分類清單改變時不會對錯位置）
     top_similarity: float = 1.0       # 與最像分類的原始相似度
@@ -111,7 +112,7 @@ class Item:
 
     def merge_analysis(self, other: "Item") -> None:
         """把背景辨識的結果併入這個項目，保留使用者已經做的確認／略過。"""
-        for attr in ("embedding", "frames", "date", "thumbnail", "thumb_file", "fingerprint", "cached", "probs",
+        for attr in ("embedding", "frames", "date", "thumbnail", "thumb_file", "fingerprint", "cached", "incomplete", "probs",
                      "prob_names", "top_similarity", "other_similarity", "tags", "error"):
             setattr(self, attr, getattr(other, attr))
         if self.status == PENDING:
@@ -135,7 +136,7 @@ class Item:
         if self.status != PENDING or not self.analyzed:
             return False
         return (self.best(categories)[1] < threshold or self.top_similarity < similarity_floor
-                or self.fits_nothing)
+                or self.fits_nothing or self.incomplete)
 
     @property
     def fits_nothing(self) -> bool:
@@ -243,6 +244,7 @@ def analyze(
         if cached is None:
             return False
         item.embedding, item.frames, item.date, item.thumb_file = cached.embedding, cached.frames, cached.date, cached.thumb_file
+        item.incomplete = cached.incomplete
         item.cached = True
         _apply_scores(item, class_emb, names, vocab_emb, classifier.logit_scale, other_emb)
         if decision and item.status == PENDING and (decision[0] == SKIPPED or decision[1] in names):
@@ -260,7 +262,8 @@ def analyze(
             return  # 辨識途中檔案被改過：這次的結果照用，但不保存（下次會重新辨識）
         try:
             thumb_file = store.save_analysis(item.path, item.kind, key, frames_of(item), item.fingerprint,
-                                             item.embedding, item.frames, item.date, item.thumbnail)
+                                             item.embedding, item.frames, item.date, item.thumbnail,
+                                             incomplete=item.incomplete)
         except Exception:  # noqa: BLE001 - 存不進去（磁碟滿了⋯）不影響這次辨識，只是下次要重算
             return
         if thumb_file is not None:
@@ -273,7 +276,7 @@ def analyze(
         media = load_media(item.path, item.kind, video_frames)
         crops = media.frames if item.kind == "video" else square_crops(media.frames[0])
         tensors = [classifier.prepare(crop) for crop in crops]
-        return media.date, media.thumbnail, tensors  # 不保留原始畫面，省下一半記憶體
+        return media.date, media.thumbnail, tensors, media.incomplete  # 不保留原始畫面，省下一半記憶體
 
     def finish(index: int, item: Item) -> None:
         nonlocal done
@@ -320,7 +323,7 @@ def analyze(
                 queue.popleft()
                 in_flight -= cost(item)
                 try:
-                    item.date, item.thumbnail, tensors = future.result()
+                    item.date, item.thumbnail, tensors, item.incomplete = future.result()
                 except Exception as exc:  # noqa: BLE001 - 任何讀檔錯誤都只影響該檔案
                     item.status, item.error = ERROR, f"{type(exc).__name__}: {exc}"
                     finish(index, item)

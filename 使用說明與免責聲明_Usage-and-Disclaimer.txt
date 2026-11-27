@@ -77,12 +77,12 @@ counterpart.
 
 ・64 位元的 Windows。用安裝程式（setup.exe）安裝時，Python 已經內建，不需要
 　另外安裝；只有用「免安裝版」（ZIP＋install.bat）時，才需要自己安裝 64 位元
-　的 Python 3.10 以上（建議 3.12），並勾選「Add python.exe to PATH」與
+　的 Python 3.12（一定要 3.12，其他版本會被拒絕），並勾選「Add python.exe to PATH」與
 　「tcl/tk and IDLE」。
    64-bit Windows. Python is bundled when you use the installer
    (setup.exe), so you do not need to install it yourself. Only the
    portable version (ZIP plus install.bat) needs your own 64-bit Python
-   3.10 or newer (3.12 recommended), with "Add python.exe to PATH" and
+   3.12 (exactly 3.12; other versions are refused), with "Add python.exe to PATH" and
    "tcl/tk and IDLE" checked.
 
 ・記憶體 8 GB 以上（使用「高精準」模型建議 12 GB 以上）。
@@ -466,6 +466,16 @@ counterpart.
    capacity of its drive (common with very large videos), Windows deletes
    permanently. The program checks these settings first and, in that
    case, does not remove the original and explains why.
+
+・路徑很長（超過 240 個字元）的檔案也放不進資源回收筒，同樣不會被移除。
+   Files with a very long path (over 240 characters) cannot go to the
+   Recycle Bin either and are likewise not removed.
+
+・圖片檔看起來沒有傳完（缺少檔尾）時，程式仍會辨識看得到的部分，但一律
+　放進「需檢查」並說明原因。
+   When an image file looks incomplete (its end is missing), the program
+   still recognizes the visible part but always puts it in "需檢查" and
+   says why.
 
 ・雲端同步的資料夾（例如 OneDrive）在複製與改名期間可能同時進行同步，
 　建議先暫停同步。

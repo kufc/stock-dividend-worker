@@ -670,7 +670,8 @@ class PlanPage(ttk.Frame):
         row.pack(fill="x", pady=(px(8), 0))
         self.output_entry = ttk.Entry(row, textvariable=app.output_var)
         self.output_entry.pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="瀏覽…", command=app.choose_output).pack(side="left", padx=(px(8), 0))
+        self.browse_btn = ttk.Button(row, text="瀏覽…", command=app.choose_output)
+        self.browse_btn.pack(side="left", padx=(px(8), 0))
         self.space_var = TextVar()
         self.space_label = autowrap(ttk.Label(out, textvariable=self.space_var, style="CardHint.TLabel",
                                               justify="left"))

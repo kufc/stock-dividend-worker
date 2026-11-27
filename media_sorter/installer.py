@@ -247,6 +247,12 @@ def main() -> int:
     if sys.version_info < (3, 10) or struct.calcsize("P") != 8:
         print(f"需要 64 位元的 Python 3.10 以上版本（建議 3.12）。請安裝後，{FIX_HINT}。")
         return 1
+    if sys.platform == "win32" and not hashes_apply():
+        # 鎖定檔的雜湊只有 Python 3.12 的。用別的版本就只能「固定版本但不核對下載到的檔案」，上市版不接受這種安裝。
+        print("✘ 免安裝版需要 64 位元的 Python 3.12（下載的套件要逐一核對雜湊，鎖定檔是替 3.12 產生的）。")
+        print("  請到 https://www.python.org/downloads/ 安裝 Python 3.12，刪除 .venv 資料夾後重新執行 install.bat；")
+        print("  或改用安裝程式（setup.exe），它自帶 Python。")
+        return 1
     if app_is_running():
         print("✘ AI 媒體分類器正在執行中，請先關閉程式視窗再繼續。")
         return 1
@@ -265,8 +271,8 @@ def main() -> int:
     if truststore_crashes():
         LEGACY_CERTS = True
         print("⚠ 這台電腦的 Windows 憑證元件會讓 pip 當掉，安裝時改用 pip 內建的憑證。", flush=True)
-    if not INSTALLED:  # 免安裝版才需要更新 pip（安裝版內建的已經夠新）
-        pip("--upgrade", "pip")
+    # 不升級 pip：以前免安裝版會先 pip install --upgrade pip（裝到當天最新、沒有核對）。
+    # Python 3.12 內建的 pip 已經支援 --require-hashes，用它就好。
 
     print("\n[1/4] 安裝 PyTorch（CUDA 版本約 2~3 GB，請耐心等候）⋯", flush=True)
     current = installed_torch()
@@ -302,7 +308,7 @@ def main() -> int:
             print("依 requirements.lock 安裝（固定版本並核對雜湊）", flush=True)
             ok = pip("--require-hashes", "--no-deps", "-r", str(LOCK_FILE))
         else:
-            print("這個環境不是 Windows x64 + Python 3.12：只固定 requirements.txt 的版本，不核對雜湊。", flush=True)
+            print("這不是 Windows（開發環境）：只固定 requirements.txt 的版本，不核對雜湊。", flush=True)
             ok = pip("-r", str(ROOT / "requirements.txt"), "-c", constraints.name)
         if not ok:
             print("\n✘ 套件安裝失敗。可能是網路連線中斷，也可能是套件版本衝突；")
