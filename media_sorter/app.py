@@ -26,7 +26,9 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from . import APP_NAME, __version__, netpolicy
-from .analysis import CONFIRMED, ERROR, PENDING, SKIPPED, Item, analyze, rescore, suggest_categories
+from .analysis import (
+    CONFIRMED, ERROR, PENDING, SKIPPED, Item, analyze, learn_from_decisions, rescore, suggest_categories,
+)
 from .classifier import covered_tags
 from .config import (
     LOG_DIR,
@@ -591,6 +593,7 @@ class App:
 
     def _decision_changed(self, item: Item) -> None:
         """你指定分類、略過、撤回的那一刻就寫進工作資料庫（Item.__setattr__ 會呼叫這裡）。"""
+        self._schedule_learning()
         if self.store is None or item.status == ERROR:
             return
         try:
@@ -599,6 +602,37 @@ class App:
             if not getattr(self, "_decision_save_failed", False):
                 self._decision_save_failed = True
                 self.log_error("無法保存你的修改到工作資料庫（之後的修改也可能沒有保存）：\n" + traceback.format_exc())
+
+    # ------------------------------------------------------------------ 從你的修正學習（同一批檔案內）
+    def _schedule_learning(self) -> None:
+        """你的決定變了（或辨識剛結束）：稍後重新比對一次。連續很多個決定只算一次。"""
+        if getattr(self, "_learning_job", None) is not None:
+            return
+        try:
+            self._learning_job = self.root.after(300, self._run_learning)
+        except tk.TclError:  # 視窗已經關了
+            self._learning_job = None
+
+    def _run_learning(self) -> None:
+        self._learning_job = None
+        if self.analysis_running():
+            return  # 辨識結束時會再算一次；辨識中清單一直在變
+        before = {item.uid: item.neighbor_hint for item in self.items}
+        try:
+            learn_from_decisions(self.items, self.categories)
+        except Exception:  # noqa: BLE001 - 這只是多一層提醒，出錯不能影響操作
+            self.log_error(traceback.format_exc())
+            return
+        changed = [i for i, item in enumerate(self.items) if (before[item.uid] is None) != (item.neighbor_hint is None)]
+        if not changed:
+            return
+        if self.step == 2:
+            for index in changed:
+                self.update_row(index)
+            self.refresh_buckets()
+        self.update_counts(force=True)
+        if self.step == 3:
+            self.schedule_plan()
 
     def clear_saved_work(self) -> None:
         """「設定」裡的「清除保存的辨識結果…」。只清快取，不動任何照片、複本與整理紀錄。"""
@@ -1104,6 +1138,11 @@ class App:
             note = f"你指定的分類：{item.chosen}"
         elif item.status == SKIPPED:
             note = "已略過，不會被整理。選一個分類就會整理回來。"
+        elif item.neighbor_hint is not None and not item.fits_nothing and not item.incomplete:
+            decided = item.neighbor_hint[0]
+            what = f"分到「{decided}」" if decided else "略過（不整理）"
+            note = (f"這個檔案跟你剛才{what}的檔案很像，但 AI 給它的分類不一樣，所以請你看一下。"
+                    "你沒指定分類的話，預設會放到「未分類」資料夾。")
         elif item.incomplete:
             note = ("這個檔案看起來不完整（可能沒傳完或複製中斷），畫面缺的部分是灰色的。AI 是依看得到的部分判斷，"
                     "請確認；你沒指定分類的話，預設會放到「未分類」資料夾。")
@@ -1785,6 +1824,7 @@ class App:
                 self.page2.analysis_var.set(f"辨識中：{done}／{total}{self._eta_text(done, total)}")
         elif kind == "done":
             self._finish_worker(args[0])
+            self._schedule_learning()  # 上次保存的決定剛套回來：用它們重看其餘的檔案
         elif kind == "organized":
             self._finish_organize(*args)
         elif kind in ("undone", "removed"):

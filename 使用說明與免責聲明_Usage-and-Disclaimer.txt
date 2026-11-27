@@ -294,6 +294,14 @@ counterpart.
    says which of the current categories is relatively closest and is not
    the probability that it is right.
 
+・程式會從你的修正學習：你把某個檔案改成別的分類或略過之後，同一批裡
+　跟它很像、AI 卻給了不同分類的檔案，會被放進「需檢查」並說明原因。
+　程式不會自動替你改分類。
+   The program learns from your corrections: after you move a file to
+   another category or skip it, files in the same batch that look very
+   similar but got a different category from the AI are put into
+   "需檢查" with an explanation. It never changes a category for you.
+
 ・分類按鈕、採用建議、略過只會處理你選取的縮圖。
    The category buttons, accept and skip only affect the thumbnails you
    have selected.

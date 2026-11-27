@@ -24,7 +24,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from media_sorter.analysis import Item, _apply_scores  # noqa: E402
+from media_sorter.analysis import CONFIRMED, SKIPPED, Item, _apply_scores, learn_from_decisions  # noqa: E402
 from media_sorter.classifier import OTHER_TEXTS, SIMILARITY_FLOOR, normalize  # noqa: E402
 from media_sorter.config import DEFAULT_CATEGORIES, DEFAULT_SETTINGS, Category  # noqa: E402
 from media_sorter.vocabulary import VOCABULARY  # noqa: E402
@@ -34,7 +34,8 @@ DOC = ROOT / "docs" / "evaluation.md"
 BEGIN, END = "<!-- BEGIN GENERATED: python tools/evaluate.py --update-doc -->", "<!-- END GENERATED -->"
 NONE = "（都不像）"
 PRESETS = {"standard": "標準", "accurate": "高精準"}
-SETS = {"holdout": "embeddings_holdout_{}.npz", "dev": "embeddings_{}.npz"}
+SETS = {"holdout": "embeddings_holdout_{}.npz", "dev": "embeddings_{}.npz", "holdout2": "embeddings_holdout2_{}.npz",
+        "holdout2_video": "embeddings_holdout2_video_{}.npz"}
 THRESHOLD = float(DEFAULT_SETTINGS["confidence_threshold"])
 SWEEP = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
 
@@ -99,7 +100,13 @@ def evaluate(recorded: Recorded, threshold: float = THRESHOLD) -> dict:
     categories = [Category(c.name, list(c.prompts)) for c in DEFAULT_CATEGORIES]
     names = [c.name for c in categories]
     answers = recorded.answers()
-    rows = [(answers[it.path.name], it.best(categories)[0], it.is_low(categories, threshold, SIMILARITY_FLOOR))
+    def settle(answer: str, predicted: str) -> str:
+        """「兩可」的檔案（答案寫成 人像+美食）：AI 選了其中任何一個都算對，否則算在第一個答案頭上。"""
+        parts = answer.split("+")
+        return predicted if predicted in parts else parts[0]
+
+    rows = [(settle(answers[it.path.name], it.best(categories)[0]), it.best(categories)[0],
+             it.is_low(categories, threshold, SIMILARITY_FLOOR))
             for it in recorded.items(categories) if answers[it.path.name] != "?"]
     known = [r for r in rows if r[0] != NONE]
     unknown = [r for r in rows if r[0] == NONE]
@@ -154,6 +161,40 @@ def _unknown_groups(recorded, categories, answers, threshold) -> dict[str, tuple
         key = group or item.path.name.rsplit("_", 1)[0]
         groups.setdefault(key, []).append(not item.is_low(categories, threshold, SIMILARITY_FLOOR))
     return {key: (len(values), sum(values) / len(values)) for key, values in sorted(groups.items())}
+
+
+def learning_simulation(recorded: Recorded, threshold: float = THRESHOLD, rounds: int = 2) -> tuple[dict, dict]:
+    """模擬「從修正學習」：假設使用者把「需檢查」裡的每個檔案都處理對了（屬於某個分類的指定正確分類，都不是的略過），
+    程式用這些修正重看其餘的檔案（analysis.learn_from_decisions，就是產品用的那個函式），新被拉進「需檢查」的再處理一輪。
+    回傳 (學習前, 學習後) 的指標。這是上限的估計：真實的使用者不一定看完、也可能改錯。"""
+    categories = [Category(c.name, list(c.prompts)) for c in DEFAULT_CATEGORIES]
+    answers = recorded.answers()
+    items = [it for it in recorded.items(categories) if answers[it.path.name] != "?"]
+    predicted = [it.best(categories)[0] for it in items]
+    truth = [p if p in answers[it.path.name].split("+") else answers[it.path.name].split("+")[0]
+             for it, p in zip(items, predicted)]
+
+    def metrics(flags: list[bool]) -> dict:
+        unknown = [f for f, t in zip(flags, truth) if t == NONE]
+        right = [f for f, t, p in zip(flags, truth, predicted) if t == p]
+        accepted = [(t, p) for f, t, p in zip(flags, truth, predicted) if not f]
+        return {"flagged": sum(flags) / len(flags),
+                "unknown_false_accept": sum(not f for f in unknown) / max(1, len(unknown)),
+                "correct_flagged": sum(right) / max(1, len(right)),
+                "accepted_error": sum(t != p for t, p in accepted) / max(1, len(accepted))}
+
+    flags = [it.is_low(categories, threshold, SIMILARITY_FLOOR) for it in items]
+    before = metrics(flags)
+    for _ in range(rounds):
+        for it, flagged, answer in zip(items, flags, truth):
+            if flagged and it.status not in (CONFIRMED, SKIPPED):  # 使用者處理這個檔案
+                if answer == NONE:
+                    it.status = SKIPPED
+                else:
+                    it.chosen, it.status = answer, CONFIRMED
+        learn_from_decisions(items, categories)
+        flags = [f or it.neighbor_hint is not None for f, it in zip(flags, items)]
+    return before, metrics(flags)
 
 
 def pct(value: float) -> str:
@@ -243,6 +284,20 @@ def render() -> str:
     per_class("holdout")
     summary("dev", "開發集（dev）——描述與規則是看著它定的，只當對照")
     per_class("dev")
+    out.append("### 從修正學習（模擬）\n")
+    out.append("假設使用者把「需檢查」的檔案都處理對了，程式用這些修正重看其餘檔案（兩輪）。這是效果的上限估計。\n")
+    out.append("| 資料 | 模型 | 需檢查：前 → 後 | 未知誤接受：前 → 後 | 接受部分分錯：前 → 後 | 分對被誤標：前 → 後 |")
+    out.append("| --- | --- | ---: | ---: | ---: | ---: |")
+    for which, label in (("holdout2", "第二份獨立測試集"), ("holdout", "第一份獨立測試集"), ("dev", "開發集")):
+        for preset in PRESETS:
+            rec = load(which, preset)
+            if rec is None:
+                continue
+            before, after = learning_simulation(rec)
+            cells = " | ".join(f"{pct(before[k])} → {pct(after[k])}"
+                               for k in ("flagged", "unknown_false_accept", "accepted_error", "correct_flagged"))
+            out.append(f"| {label} | {PRESETS[preset]} | {cells} |")
+    out.append("")
     out.append("### 門檻的依據：在開發集上改變門檻\n")
     out.append("預設門檻是看這張表（與更早的 425 張）定的。粗體是目前的預設值。\n")
     sweep("dev")

@@ -56,6 +56,9 @@ class Item:
     fingerprint: tuple[int, int] | None = None  # 辨識當時檔案的（大小, 修改時間）
     cached: bool = False              # 這次是沿用保存的結果，沒有重新讀檔與計算
     incomplete: bool = False          # 檔案看起來沒傳完（見 media.looks_incomplete）：一律進「需檢查」
+    # 從你的修正學到的：這個檔案跟你處理過的某個檔案很像，但 AI 給它的分類跟你當時的決定不一樣 → (你的決定, 相似度)。
+    # 你的決定是分類名稱，或 None（你略過了那個檔案）。有這個提示的檔案會進「需檢查」。見 neighbor_hints。
+    neighbor_hint: tuple | None = None
     probs: np.ndarray | None = None
     prob_names: tuple[str, ...] = ()  # probs 每個位置對應的分類名稱（分類清單改變時不會對錯位置）
     top_similarity: float = 1.0       # 與最像分類的原始相似度
@@ -136,7 +139,7 @@ class Item:
         if self.status != PENDING or not self.analyzed:
             return False
         return (self.best(categories)[1] < threshold or self.top_similarity < similarity_floor
-                or self.fits_nothing or self.incomplete)
+                or self.fits_nothing or self.incomplete or self.neighbor_hint is not None)
 
     @property
     def fits_nothing(self) -> bool:
@@ -150,6 +153,61 @@ class Item:
         if self.status == PENDING:
             return self.best(categories)[0]
         return None
+
+
+# 「從你的修正學習」的相似度下限（圖片向量之間的 cosine）。0.8：開發集上模擬「使用者看完需檢查的檔案」之後，
+# 不屬於任何分類卻被接受的比例從 34.8% 降到 27.1%（高精準模型 40.6% → 31.8%），分對的檔案沒有任何一個被多標；
+# 0.85 以上幾乎沒有效果，更低沒有試（會開始把只是有點像的檔案也拉進來）。見 docs/evaluation.md。
+NEIGHBOR_MIN_SIMILARITY = 0.8
+_HINT_CHUNK = 2048
+
+
+def neighbor_hints(embeddings: np.ndarray, predictions: list, example_embeddings: np.ndarray, example_labels: list,
+                   min_similarity: float = NEIGHBOR_MIN_SIMILARITY) -> list:
+    """從使用者的修正學習：每個還沒處理的檔案，找「使用者處理過的檔案」裡最像的那一個。
+    夠像（相似度 ≥ min_similarity）、而使用者當時的決定跟 AI 給這個檔案的分類不一樣 → 回傳 (使用者的決定, 相似度)，
+    否則 None。使用者的決定是分類名稱，或 None（略過＝不屬於任何分類）。
+
+    只用來「多提醒」，不會自動改分類、也不會把原本要檢查的檔案變成不用檢查：使用者改錯一張，最壞只是多看幾張。
+    只看同一批檔案裡的修正（不跨資料夾、不保存）。
+    """
+    if len(embeddings) == 0 or len(example_embeddings) == 0:
+        return [None] * len(embeddings)
+    examples = np.asarray(example_embeddings, dtype=np.float32)
+    result: list = []
+    for start in range(0, len(embeddings), _HINT_CHUNK):
+        sims = np.asarray(embeddings[start:start + _HINT_CHUNK], dtype=np.float32) @ examples.T
+        nearest = sims.argmax(axis=1)
+        best = sims[np.arange(len(nearest)), nearest]
+        for row, (index, similarity) in enumerate(zip(nearest, best)):
+            label = example_labels[index]
+            if similarity >= min_similarity and label != predictions[start + row]:
+                result.append((label, float(similarity)))
+            else:
+                result.append(None)
+    return result
+
+
+def learn_from_decisions(items: list[Item], categories: list[Category]) -> int:
+    """依目前清單裡使用者的決定（指定的分類、略過）重新計算每個待處理檔案的 neighbor_hint。回傳有提示的檔案數。"""
+    usable = lambda it: it.embedding is not None and it.status != ERROR  # noqa: E731
+    examples = [it for it in items if usable(it) and it.status in (CONFIRMED, SKIPPED)]
+    pending = [it for it in items if usable(it) and it.status == PENDING and it.analyzed]
+    for it in items:
+        if it.neighbor_hint is not None and it.status != PENDING:
+            it.neighbor_hint = None
+    if not pending:
+        return 0
+    if not examples:
+        for it in pending:
+            it.neighbor_hint = None
+        return 0
+    hints = neighbor_hints(np.stack([it.embedding for it in pending]), [it.best(categories)[0] for it in pending],
+                           np.stack([it.embedding for it in examples]),
+                           [it.chosen if it.status == CONFIRMED else None for it in examples])
+    for it, hint in zip(pending, hints, strict=True):
+        it.neighbor_hint = hint
+    return sum(hint is not None for hint in hints)
 
 
 def square_crops(img: Image.Image) -> list[Image.Image]:
