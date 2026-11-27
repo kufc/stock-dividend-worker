@@ -209,6 +209,9 @@ def test_thumbnail_size_is_remembered(app, tmp_path):
 def test_narrow_window_hides_the_preview_and_keeps_buttons(app, tmp_path):
     run_analysis(app, photos(tmp_path, 2))
     page = app.page2
+    # 視窗最大化時（1280x1024 的螢幕上程式會自己最大化，Wine 的測試環境就是）改大小不會生效，真的 Windows 也一樣；
+    # 這個測試要量的是「視窗變窄時」的版面，所以先還原成一般視窗。
+    app.root.state("normal")
     app.root.geometry("920x700")  # 比 1100（100% 縮放）窄 → 收起右邊的預覽
     pump(app.root, lambda: page.narrow)
     app.root.update()
@@ -520,6 +523,7 @@ def test_help_opens_the_usage_document(app, monkeypatch):
 def test_mouse_wheel_scrolls_only_the_area_under_the_pointer(app, tmp_path):
     run_analysis(app, photos(tmp_path, 2))
     app.confirm_current()
+    app.root.state("normal")  # 最大化的視窗改不了大小（見上面窄視窗的測試）
     app.root.geometry("900x520")
     assert app.show_step(3)
     pump(app.root, lambda: app.page3.scroll.canvas.yview()[1] < 1.0)  # 內容比視窗高，才需要捲動
