@@ -13,7 +13,7 @@
   改名、被別的檔案取代都不允許（開檔時不給 FILE_SHARE_DELETE），送出前還會再確認它仍是同一個檔案
   （限制：這些強制保護只有 Windows 有；其他系統只能做到改名、第二次比對與送出前的檢查）
 - 複製：寫完暫存檔先 fsync 到磁碟，再把寫進去的內容讀回來跟讀到的原檔比對（雜湊），確認無誤才改成正式檔名
-- 資源回收筒不是到處都有：網路磁碟、隨身碟上的檔案「送回收筒」其實是直接永久刪除。
+- 資源回收筒不是到處都有：網路磁碟、隨身碟上的檔案，或回收筒被關掉、檔案比回收筒容量大時，「送回收筒」其實是直接永久刪除。
   所以先看檔案所在的磁碟（recycle_bin_problem）：沒有回收筒就不移除原檔，並明確告訴使用者；
   復原時的複本則搬到同一個磁碟上的隔離資料夾，而不是刪除
 - 紀錄記著這次整理的來源資料夾與輸出資料夾，每一列都必須落在這兩個資料夾內。
@@ -615,11 +615,78 @@ def recycle_bin_problem_for_drive_type(drive_type: int) -> str | None:
     return f"這個檔案在{kind}上，那裡沒有資源回收筒（Windows 會直接永久刪除，無法救回）"
 
 
-def recycle_bin_problem(path: Path) -> str | None:
-    """這個檔案所在的磁碟沒有資源回收筒時，回傳給使用者看的原因；有（或這個系統交給 send2trash 判斷）回傳 None。
+def default_bin_capacity(volume_bytes: int) -> int:
+    """使用者沒改過設定時，Windows 給這個磁碟的回收筒容量：前 40 GB 的 10%，加上其餘的 5%。"""
+    first = min(volume_bytes, 40 * 1024**3)
+    return int(first * 0.10 + (volume_bytes - first) * 0.05)
 
-    Windows 對網路磁碟、隨身碟上的檔案「送資源回收筒」其實是直接永久刪除，而且不會警告。
-    本程式的底線是「移除一定救得回來」，所以先看磁碟種類；判斷不出來一律當成沒有。
+
+def recycle_bin_setting_problem(*, policy_off: bool, nuke_on_delete: bool, max_capacity_mb: int | None,
+                                volume_bytes: int | None, file_size: int) -> str | None:
+    """依回收筒的設定判斷：這個檔案「送回收筒」會不會其實是永久刪除。
+
+    Windows 在兩種情況下不會放進回收筒，而且（程式為了不跳出一堆視窗而關掉確認）不會問就直接永久刪除：
+    1. 使用者或公司政策把回收筒關掉（「不要將檔案移到資源回收筒」）
+    2. 檔案比這個磁碟的回收筒容量還大
+    容量查不到時用 Windows 的預設公式估；連磁碟大小都查不到就不擋（只有第 1 種查得出來）。
+    """
+    if policy_off:
+        return "這台電腦的資源回收筒被系統管理原則關閉了（刪除的檔案不會進回收筒，無法救回）"
+    if nuke_on_delete:
+        return "這個磁碟的資源回收筒被設定成「不要將檔案移到資源回收筒」（刪除後無法救回）"
+    if max_capacity_mb is not None:
+        capacity = max_capacity_mb * 1024 * 1024
+    elif volume_bytes:
+        capacity = default_bin_capacity(volume_bytes)
+    else:
+        return None
+    if file_size > capacity:
+        return (f"這個檔案（{file_size / 1024**3:.1f} GB）比這個磁碟的資源回收筒容量（{capacity / 1024**3:.1f} GB）還大，"
+                "Windows 會直接永久刪除而不是放進回收筒")
+    return None
+
+
+def _recycle_bin_settings(root: str) -> dict:
+    """讀這個磁碟的回收筒設定（登錄檔）。讀不到的項目用「沒有設定」的值。只在 Windows 呼叫。"""
+    import ctypes
+    import winreg
+    from ctypes import wintypes
+
+    def read(hive, key: str, name: str):
+        try:
+            with winreg.OpenKey(hive, key) as handle:
+                return winreg.QueryValueEx(handle, name)[0]
+        except OSError:
+            return None
+
+    policy = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+    policy_off = any(read(hive, policy, "NoRecycleFiles") == 1
+                     for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE))
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    nuke, capacity = False, None
+    buffer = ctypes.create_unicode_buffer(64)
+    kernel32.GetVolumeNameForVolumeMountPointW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+    if kernel32.GetVolumeNameForVolumeMountPointW(root, buffer, len(buffer)):
+        guid = buffer.value[buffer.value.find("{"):buffer.value.find("}") + 1]  # \\?\Volume{...}\ → {...}
+        if guid:
+            key = r"Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket\Volume" + "\\" + guid
+            nuke = read(winreg.HKEY_CURRENT_USER, key, "NukeOnDelete") == 1
+            value = read(winreg.HKEY_CURRENT_USER, key, "MaxCapacity")
+            capacity = int(value) if isinstance(value, int) and value >= 0 else None
+    try:
+        volume_bytes = shutil.disk_usage(root).total
+    except OSError:
+        volume_bytes = None
+    return {"policy_off": policy_off, "nuke_on_delete": nuke, "max_capacity_mb": capacity, "volume_bytes": volume_bytes}
+
+
+def recycle_bin_problem(path: Path) -> str | None:
+    """這個檔案「送資源回收筒」其實會變成永久刪除時，回傳給使用者看的原因；確定會進回收筒
+    （或這個系統交給 send2trash 判斷）回傳 None。
+
+    本程式的底線是「移除一定救得回來」。Windows 在下面幾種情況會直接永久刪除、而且不警告，所以要先查：
+    - 檔案在網路磁碟、隨身碟上（磁碟種類不是本機固定磁碟；判斷不出來一律當成沒有回收筒）
+    - 回收筒被關掉，或檔案比回收筒的容量大（見 recycle_bin_setting_problem）
     """
     if os.name != "nt":
         return None  # Linux／macOS：send2trash 找不到可用的回收筒會自己丟錯誤，不會改成永久刪除
@@ -638,9 +705,19 @@ def recycle_bin_problem(path: Path) -> str | None:
             root = buffer.value
         else:
             root = os.path.splitdrive(full)[0] + "\\"
-        return recycle_bin_problem_for_drive_type(int(kernel32.GetDriveTypeW(root)))
+        problem = recycle_bin_problem_for_drive_type(int(kernel32.GetDriveTypeW(root)))
     except (OSError, AttributeError, ValueError):
         return recycle_bin_problem_for_drive_type(0)
+    if problem is not None:
+        return problem
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = 0
+    try:
+        return recycle_bin_setting_problem(file_size=size, **_recycle_bin_settings(root))
+    except Exception:  # noqa: BLE001 - 設定讀不出來：不能因此假設回收筒可用
+        return "無法確認這個磁碟的資源回收筒設定（為了安全當成沒有回收筒）"
 
 
 def _same_content(a: Path, b: Path, chunk: int = 1 << 20, reader_a=None, reader_b=None) -> bool:
@@ -900,8 +977,10 @@ def classify_rows(rows: list[dict], mode: str) -> list[tuple[dict, str | None]]:
         else:
             note = ("略過：原檔已不在" if not src_exists
                     else "保留原檔：找不到複本" if not dst_exists else None)
-            if note is None and recycle_bin_problem(Path(row["原始路徑"])) is not None:
-                note = "保留原檔：所在的磁碟沒有資源回收筒，移除後無法救回"
+            if note is None:
+                no_bin = recycle_bin_problem(Path(row["原始路徑"]))
+                if no_bin is not None:
+                    note = f"保留原檔：{no_bin}"
         result.append((row, note))
     return result
 

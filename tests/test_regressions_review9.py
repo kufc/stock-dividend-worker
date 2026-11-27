@@ -325,3 +325,77 @@ def test_windows_network_drive_is_detected():
     if not drive:
         pytest.skip("設定 MEDIA_SORTER_TEST_NETWORK_DRIVE=磁碟代號（例如 N:）才執行")
     assert "網路磁碟" in organizer.recycle_bin_problem(Path(drive + "\\any\\file.jpg"))
+
+
+# ---------------------------------------------------------------------------- 回收筒被關掉、或檔案比回收筒大（第十輪審查 B1）
+GB = 1024**3
+
+
+def setting(**overrides):
+    values = dict(policy_off=False, nuke_on_delete=False, max_capacity_mb=None, volume_bytes=500 * GB, file_size=10 * 1024**2)
+    values.update(overrides)
+    return organizer.recycle_bin_setting_problem(**values)
+
+
+def test_recycle_bin_settings_that_turn_trash_into_permanent_delete():
+    """程式是用「不跳確認視窗」的方式送回收筒，所以這些情況下 Windows 會不吭聲地永久刪除。"""
+    assert setting() is None                                            # 一般情況
+    assert "不要將檔案移到資源回收筒" in setting(nuke_on_delete=True)    # 使用者關掉回收筒
+    assert "系統管理原則" in setting(policy_off=True)                    # 公司政策
+    assert setting(max_capacity_mb=1024, file_size=1 * GB) is None      # 剛好放得下
+    assert "容量" in setting(max_capacity_mb=1024, file_size=1 * GB + 1)  # 比使用者設定的容量大
+    assert setting(max_capacity_mb=0, file_size=1) is not None
+    # 沒改過設定：用 Windows 的預設容量（前 40 GB 的 10% ＋ 其餘的 5%）
+    assert organizer.default_bin_capacity(40 * GB) == 4 * GB
+    assert organizer.default_bin_capacity(500 * GB) == 4 * GB + 23 * GB
+    assert setting(volume_bytes=100 * GB, file_size=6 * GB) is None      # 容量 7 GB
+    assert "容量" in setting(volume_bytes=100 * GB, file_size=8 * GB)
+    assert setting(volume_bytes=None, file_size=999 * GB) is None       # 連磁碟大小都查不到：只有前兩種查得出來
+
+
+def test_oversized_or_disabled_bin_keeps_the_original(tmp_path, monkeypatch):
+    """整段流程：回收筒收不下這個原檔 → 不移除，原檔與複本都在，確認視窗也先講。"""
+    a = touch(tmp_path / "src" / "a.jpg", "A")
+    ops, result = organize(tmp_path, [a])
+    bin_dir = make_trash(tmp_path, monkeypatch)
+    monkeypatch.setattr(organizer, "recycle_bin_problem",
+                        lambda p: organizer.recycle_bin_setting_problem(
+                            policy_off=False, nuke_on_delete=True, max_capacity_mb=None, volume_bytes=None, file_size=1))
+    rows = organizer.read_log(result.log_path)
+    assert "不要將檔案移到資源回收筒" in organizer.classify_rows(rows, "remove")[0][1]
+    removed = remove_originals(result.log_path)
+    assert removed.done == 0 and "不要將檔案移到資源回收筒" in removed.errors[0][1]
+    assert a.read_text() == "A" and ops[0].dst.read_text() == "A" and not list(bin_dir.iterdir())
+
+
+@windows_only
+def test_windows_reads_the_recycle_bin_settings_from_the_registry(tmp_path):
+    """真的去讀登錄檔：把這個磁碟的回收筒設成「不要移到回收筒」→ 偵測得到；改回來 → 正常。"""
+    import winreg
+
+    target = touch(tmp_path / "a.jpg", "A")
+    root = os.path.splitdrive(str(target))[0] + "\\"
+    settings = organizer._recycle_bin_settings(root)
+    assert set(settings) == {"policy_off", "nuke_on_delete", "max_capacity_mb", "volume_bytes"}
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(64)
+    if not ctypes.windll.kernel32.GetVolumeNameForVolumeMountPointW(root, buffer, len(buffer)):
+        pytest.skip("這個磁碟查不到磁碟區識別碼（例如 Wine 對應到 Linux 資料夾的磁碟）")
+    guid = buffer.value[buffer.value.find("{"):buffer.value.find("}") + 1]
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket\Volume" + "\\" + guid
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+        try:
+            before = winreg.QueryValueEx(key, "NukeOnDelete")[0]
+        except OSError:
+            before = None
+        try:
+            winreg.SetValueEx(key, "NukeOnDelete", 0, winreg.REG_DWORD, 1)
+            assert organizer._recycle_bin_settings(root)["nuke_on_delete"] is True
+            assert "不要將檔案移到資源回收筒" in organizer.recycle_bin_problem(target)
+        finally:
+            if before is None:
+                winreg.DeleteValue(key, "NukeOnDelete")
+            else:
+                winreg.SetValueEx(key, "NukeOnDelete", 0, winreg.REG_DWORD, before)
+    assert organizer._recycle_bin_settings(root)["nuke_on_delete"] is False

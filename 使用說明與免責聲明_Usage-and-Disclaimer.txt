@@ -458,6 +458,15 @@ counterpart.
    being deleted. The program relies on the drive type reported by
    Windows and treats an unknown type as having no Recycle Bin.
 
+・資源回收筒被關掉（「不要將檔案移到資源回收筒」或公司的管理原則），
+　或檔案比該磁碟的回收筒容量還大（常見於很大的影片）時，Windows 會直接
+　永久刪除。程式會先檢查這些設定，遇到這種情況就不移除原檔並說明原因。
+   When the Recycle Bin is turned off ("Don't move files to the Recycle
+   Bin" or a company policy), or a file is larger than the Recycle Bin
+   capacity of its drive (common with very large videos), Windows deletes
+   permanently. The program checks these settings first and, in that
+   case, does not remove the original and explains why.
+
 ・雲端同步的資料夾（例如 OneDrive）在複製與改名期間可能同時進行同步，
 　建議先暫停同步。
    Cloud-synced folders (for example OneDrive) may sync while files are
