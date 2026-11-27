@@ -112,10 +112,13 @@ def test_default_threshold_and_model_follow_the_documented_decisions(tmp_path):
 
     from media_sorter import config
 
-    assert config.DEFAULT_SETTINGS["confidence_threshold"] == 0.7 == evaluate.THRESHOLD
+    # （外部審查 A7：原本寫死 0.7。門檻的數值由下面兩個「結果」測試把關；這裡只管評測用的門檻就是產品的預設值，
+    # 以及舊設定檔會升級到現在的預設值。）
+    default = config.DEFAULT_SETTINGS["confidence_threshold"]
+    assert default == evaluate.THRESHOLD and 0.5 < default < 1
     old = tmp_path / "old.json"
     old.write_text(json.dumps({"confidence_threshold": 0.5, "model": "auto"}), encoding="utf-8")
-    assert config.load_settings(old)["confidence_threshold"] == 0.7        # 舊版的預設值：升級
+    assert config.load_settings(old)["confidence_threshold"] == default    # 舊版的預設值：升級
     custom = tmp_path / "custom.json"
     custom.write_text(json.dumps({"confidence_threshold": 0.35}), encoding="utf-8")
     assert config.load_settings(custom)["confidence_threshold"] == 0.35    # 使用者自己調過的：不動
@@ -134,3 +137,15 @@ def test_default_threshold_on_the_dev_set(preset):
     assert now["correct_flagged"] <= 0.05
     assert now["unknown_false_accept"] <= before["unknown_false_accept"] - 0.08
     assert now["accepted_error"] < before["accepted_error"]
+
+
+@pytest.mark.parametrize("preset,unknown_limit", [("standard", 0.36), ("accurate", 0.42)])
+def test_judging_rules_keep_their_measured_results_on_the_dev_set(preset, unknown_limit):
+    """外部審查 A7：釘「期望」而不是「做法」。不管之後怎麼改規則（「其他」怎麼比、門檻多少、相似度下限），
+    在開發集上都不能比現在差：實測 未知誤接受 34.8%／40.6%、分對被多標 3.7%／3.1%、需檢查 27.7%／25.0%、
+    各分類平均分對 97.1%／96.9%。改善判讀的人可以放心改做法，只要這些結果守得住（變好的話請把上限往下修）。"""
+    result = evaluate.evaluate(evaluate.load("dev", preset))
+    assert result["unknown_false_accept"] <= unknown_limit
+    assert result["correct_flagged"] <= 0.05
+    assert result["flagged"] <= 0.30
+    assert result["closed_balanced"] >= 0.96

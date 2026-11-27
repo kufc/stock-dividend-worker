@@ -148,7 +148,8 @@ def test_similarity_floor_would_have_flagged_correct_files(scored):
     categories, items, answers = scored
     correct = [it for it in items if answers[it.path.name] == it.best(categories)[0]]
     assert sum(it.top_similarity < 0.18 for it in correct) / len(correct) > 0.3
-    assert SIMILARITY_FLOOR == 0
+    # （外部審查 A7：原本寫死「下限＝0」。現在釘結果：不管下限設多少，分對的檔案被它攔下的不能超過 2%。）
+    assert sum(it.top_similarity < SIMILARITY_FLOOR for it in correct) / len(correct) <= 0.02
 
 
 def test_missing_categories_are_suggested_but_covered_ones_are_not(recorded, scored):

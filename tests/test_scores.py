@@ -9,7 +9,7 @@ from conftest import run_analysis
 from helpers import make_image
 from media_sorter import app as app_module
 from media_sorter.analysis import Item, _apply_scores, rescore
-from media_sorter.classifier import FEW_CATEGORIES, normalize, score, score_frames
+from media_sorter.classifier import normalize, score, score_frames
 from media_sorter.config import DEFAULT_CATEGORIES, Category
 
 MANUAL = Path(__file__).resolve().parent / "manual"
@@ -45,13 +45,14 @@ def test_two_categories_neither_fits():
     assert with_other.max() < 0.01 and with_other.sum() < 1  # 一起比：兩個都很低，總和不到 1
 
 
-def test_three_or_more_categories_are_unchanged():
-    """分類夠多時不加「其他」：維持用真實照片調過的行為（門檻、評測都是以這個為準）。"""
-    assert FEW_CATEGORIES == 3
-    rng = np.random.default_rng(0)
-    cats, other, images = normalize(rng.normal(size=(3, 8))), normalize(rng.normal(size=8)), normalize(rng.normal(size=(5, 8)))
-    assert np.array_equal(score(images, cats, 50.0, other), score(images, cats, 50.0))
-    assert np.allclose(score(images, cats, 50.0, other).sum(axis=1), 1.0)
+def test_many_categories_still_give_a_clear_winner_to_a_clear_file():
+    """（外部審查 A7：這裡原本把「分類 3 個以上不加『其他』」這個做法寫死，改善判讀的人會先撞到它。
+    現在只釘結果：明顯屬於某個分類的檔案，不管「其他」有沒有參加，都要拿到很高的分數、而且是第一名。
+    做法換了之後準不準，由 tests/test_evaluation.py 用真模型的向量檢查。）"""
+    cats, other = np.stack([unit(1, 0, 0, 0), unit(0, 1, 0, 0), unit(0, 0, 1, 0)]), unit(0, 0, 0, 1)
+    clear = unit(0.05, 1, 0.05, 0.05)
+    result = score(clear[None], cats, 100.0, other)[0]
+    assert result.argmax() == 1 and result[1] > 0.9 and result.sum() <= 1.0 + 1e-9
 
 
 def test_video_frames_use_the_same_rule():
