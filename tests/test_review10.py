@@ -722,3 +722,15 @@ def test_typing_a_folder_path_does_not_hit_the_disk_per_keystroke(app_factory, t
     app.folder_var.set(str(tmp_path / "missing"))
     pump(app.root, lambda: app._folder_job is None)
     assert "找不到" in app.page1.hint_var.get()
+
+
+def test_confirmation_shows_folders_as_they_are_on_disk(tmp_path, monkeypatch):
+    """Wine 下發現：整理紀錄裡的資料夾是比對用的形式（Windows 上全部小寫），確認視窗直接把它顯示給使用者看。
+    現在資料夾還在時顯示磁碟上真正的寫法；不在了就照紀錄顯示。"""
+    real = tmp_path / "My Photos"
+    real.mkdir()
+    assert organizer.display_path(str(real)) == str(real.resolve())
+    assert organizer.display_path(str(tmp_path / "gone")) == str(tmp_path / "gone")
+    assert organizer.display_path("") == ""
+    if sys.platform == "win32":
+        assert organizer.display_path(str(real).lower()) == str(real.resolve())

@@ -52,7 +52,10 @@ def test_large_inputs_are_processed_in_chunks(monkeypatch):
     predictions, labels = ["a"] * 50, ["b"] * 9
     chunked = neighbor_hints(pending, predictions, examples, labels, 0.3)
     monkeypatch.setattr(analysis, "_HINT_CHUNK", 10_000)
-    assert chunked == neighbor_hints(pending, predictions, examples, labels, 0.3) and any(chunked)
+    whole = neighbor_hints(pending, predictions, examples, labels, 0.3)
+    # 分批與一次算完的相似度可能差在浮點數最後幾位（Windows 的數學函式庫會，Wine 下實測差 1e-7），所以比到小數第五位
+    assert [h and h[0] for h in chunked] == [h and h[0] for h in whole] and any(chunked)
+    assert all(abs(a[1] - b[1]) < 1e-5 for a, b in zip(chunked, whole) if a)
 
 
 def test_learning_flags_lookalikes_and_never_changes_categories():

@@ -530,6 +530,15 @@ def log_roots(rows: list[dict]) -> tuple[str, str]:
     return rows[0]["來源資料夾"], rows[0]["輸出資料夾"]
 
 
+def display_path(text: str) -> str:
+    """給使用者看的路徑。紀錄裡的資料夾是比對用的形式（Windows 上全部小寫）；資料夾還在的話換回磁碟上真正的大小寫。"""
+    try:
+        path = Path(text)
+        return str(path.resolve()) if text and path.exists() else text
+    except OSError:
+        return text
+
+
 def set_aside_log(log_path: Path) -> Path:
     """把無法讀取的紀錄改名移到旁邊（保留內容供查看），之後「最新紀錄」就不會再選到它。"""
     log_path = Path(log_path)

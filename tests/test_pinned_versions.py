@@ -122,6 +122,9 @@ def test_other_pythons_install_exact_pins_without_hashes(monkeypatch, tmp_path):
     orig = installer.install_torch
     monkeypatch.setattr(installer, "install_torch",
                         lambda build: (orig(build), state.update(torch=("2.15.0+cpu", None)))[0])
+    # 這個測試講的是「不是 Windows」的環境（開發用）。Windows 上沒有雜湊可核對時安裝程式會直接拒絕
+    # （test_review10 另外測），所以在 Windows 上跑這個測試時要假裝是別的系統，否則它測到的是那個拒絕。
+    monkeypatch.setattr(installer.sys, "platform", "linux")
     assert installer.main() == 0
     flat = [arg for call in calls for arg in call]
     assert "--upgrade" not in flat and "--require-hashes" not in flat

@@ -60,6 +60,7 @@ from .organizer import (
     folder_key,
     free_space_problem,
     log_roots,
+    display_path,
     plan_operations,
     remove_originals,
     set_aside_log,
@@ -2341,11 +2342,11 @@ class App:
                 name = str(target)
             lines.append(name if note is None else f"{name}　（{note}）")
         if mode == "undo":
-            head = (f"要移除 {when} 這次整理建立的複本嗎？\n來源資料夾：{source}\n輸出資料夾：{output}\n\n"
+            head = (f"要移除 {when} 這次整理建立的複本嗎？\n來源資料夾：{display_path(source)}\n輸出資料夾：{display_path(output)}\n\n"
                     f"會處理 {len(active)} 個複本（移到資源回收筒），\n原檔不會被動到。")
             ok_text, list_title = "移除這次建立的複本", "會移除的複本（含不處理的原因）"
         else:
-            head = (f"要把 {when} 整理的原檔移到資源回收筒嗎？\n來源資料夾：{source}\n輸出資料夾：{output}\n\n"
+            head = (f"要把 {when} 整理的原檔移到資源回收筒嗎？\n來源資料夾：{display_path(source)}\n輸出資料夾：{display_path(output)}\n\n"
                     f"會處理 {len(active)} 個原檔。\n"
                     "・只有跟複本內容完全相同的原檔才會移除，而且可以從資源回收筒救回\n"
                     "・資源回收筒裡的檔名會多一個「(整理前)」標記，還原後改回即可\n"
