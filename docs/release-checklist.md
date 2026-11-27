@@ -27,6 +27,7 @@
 - [ ] **驗證並開啟新的回收筒介面**（`media_sorter/recycle.py`：IFileOperation 加「不能進回收筒就失敗」的旗標，
       讓 Windows 自己把關，不必只靠我們列舉的規則）。程式已經寫好但**預設關閉**，因為 Wine 的這個介面是空殼，
       真正搬檔案的呼叫從來沒有執行過。在真的 Windows 上：
+      0. `python tools/verify_recycle_windows.py`：應該印出「通過：檔案進了資源回收筒」（它會核對回收筒的項目數多了一個）
       1. `set MEDIA_SORTER_MODERN_RECYCLE=1` 後執行 `python -m pytest tests/test_recycle.py -s`：
          `test_real_call_either_recycles_or_…` 必須通過，而且**不能**印出「IFileOperation 不支援」；到回收筒確認 `recycle-me.jpg` 在裡面
       2. 同一個環境變數下執行 `python -m pytest tests/test_regressions_review7.py tests/test_regressions_review8.py tests/test_regressions_review9.py tests/test_copy_first_safety.py`
