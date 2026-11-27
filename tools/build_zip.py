@@ -28,6 +28,9 @@ REQUIRED = [  # 少了任何一個就不是完整的交付（tests/test_build_zi
     "tests/manual/embeddings_holdout_standard.npz", "tests/manual/embeddings_holdout_accurate.npz",
     "tests/manual/photo_sources.txt", "tests/manual/holdout_sources.txt", "tests/manual/dump_embeddings.py",
     "tests/manual/collect_holdout.py", "tests/manual/real_model_check.py", "tests/manual/prompt_candidates.py",
+    "tests/manual/embeddings_holdout2_standard.npz", "tests/manual/embeddings_holdout2_accurate.npz",
+    "tests/manual/embeddings_holdout2_video_standard.npz", "tests/manual/embeddings_holdout2_video_accurate.npz",
+    "tests/manual/holdout2_sources.txt", "tests/manual/collect_holdout2.py",
 ]
 
 

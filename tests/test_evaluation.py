@@ -19,7 +19,10 @@ def test_evaluation_data_is_in_the_repo():
     """第九輪審查：交付的 ZIP 少了這些檔案，「97%」無法重現。現在缺檔是失敗，不是 skip。"""
     for name in ("embeddings_standard.npz", "embeddings_accurate.npz", "embeddings_holdout_standard.npz",
                  "embeddings_holdout_accurate.npz", "photo_sources.txt", "holdout_sources.txt",
-                 "dump_embeddings.py", "collect_holdout.py", "prompt_candidates.py", "real_model_check.py"):
+                 "dump_embeddings.py", "collect_holdout.py", "prompt_candidates.py", "real_model_check.py",
+                 "embeddings_holdout2_standard.npz", "embeddings_holdout2_accurate.npz",
+                 "embeddings_holdout2_video_standard.npz", "embeddings_holdout2_video_accurate.npz",
+                 "holdout2_sources.txt", "collect_holdout2.py"):
         assert (evaluate.MANUAL / name).is_file(), name
 
 
@@ -38,14 +41,68 @@ def test_holdout_headline_numbers(preset):
     assert 0.0 < result["unknown_false_accept"] < 1.0
 
 
-def test_readme_quotes_the_holdout_numbers():
+@pytest.mark.parametrize("preset", ["standard", "accurate"])
+def test_second_holdout_headline_numbers(preset):
+    """第二份獨立測試集：保留原始檔與兩可的檔案，另外有影片。下限一樣很寬，只防向量檔壞掉。"""
+    images = evaluate.evaluate(evaluate.load("holdout2", preset))
+    assert (images["n"], images["n_known"], images["n_unknown"], images["n_ambiguous"]) == (1342, 908, 434, 99)
+    assert len(images["per_class"]) == 13 and min(v["n"] for v in images["per_class"].values()) >= 50
+    assert images["closed_balanced"] >= 0.85  # 實測 92.4%／93.2%
+    videos = evaluate.evaluate(evaluate.load("holdout2_video", preset))
+    assert (videos["n"], videos["n_known"], videos["n_unknown"], videos["n_ambiguous"]) == (231, 167, 64, 33)
+    assert videos["closed_accuracy"] >= 0.70  # 實測 85.0%／82.0%
+
+
+def test_videos_are_scored_from_their_frames_whatever_the_extension():
+    """第二份測試集有 22 個 .avi。以前用「檔名是不是 .mp4」判斷影片，.avi 會被當成圖片、不走逐格計分。"""
+    from media_sorter.config import DEFAULT_CATEGORIES
+
+    recorded = evaluate.load("holdout2_video", "standard")
+    items = recorded.items(list(DEFAULT_CATEGORIES))
+    assert any(it.path.suffix == ".avi" for it in items)
+    assert all(it.kind == "video" and it.frames is not None and len(it.frames) == 8 for it in items)
+    assert all(it.kind == "image" for it in evaluate.load("holdout2", "standard").items(list(DEFAULT_CATEGORIES)))
+
+
+def test_ambiguous_answers_count_either_category_as_correct():
+    class Stub:
+        def __init__(self, predictions):
+            self.predictions, self.groups = predictions, [""] * len(predictions)
+
+        def answers(self):
+            return {"a.jpg": "人像+美食", "b.jpg": "人像+美食", "c.jpg": "人像+美食", "d.jpg": "貓"}
+
+        def items(self, categories):
+            class One:
+                def __init__(self, name, predicted):
+                    self.path, self.predicted = Path(name), predicted
+
+                def best(self, categories):
+                    return self.predicted, 0.99
+
+                def is_low(self, *args):
+                    return False
+
+            return [One(n, p) for n, p in self.predictions.items()]
+
+    result = evaluate.evaluate(Stub({"a.jpg": "人像", "b.jpg": "美食", "c.jpg": "狗", "d.jpg": "貓"}))
+    assert result["closed_accuracy"] == 0.75 and result["n_ambiguous"] == 3
+    assert result["per_class"]["人像"]["n"] == 2 and result["per_class"]["美食"]["n"] == 1  # 沒選到的算在第一個答案頭上
+    assert result["per_class"]["人像"]["closed"][1] == 0.5 and result["per_class"]["美食"]["closed"][1] == 1.0
+
+
+def test_readme_quotes_the_second_holdout_numbers():
+    """README 引用的是第二份（較難、沒被用來做過任何決定的）獨立測試集；第一份的封閉成績只當對照提一句。"""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "docs/evaluation.md" in readme
     for preset in ("standard", "accurate"):
-        result = evaluate.evaluate(evaluate.load("holdout", preset))
+        result = evaluate.evaluate(evaluate.load("holdout2", preset))
         assert evaluate.pct(result["closed_balanced"]) in readme
         assert evaluate.pct(result["unknown_false_accept"]) in readme
         assert evaluate.pct(result["accepted_error"]) in readme
+        assert evaluate.pct(result["flagged"]) in readme
+        assert evaluate.pct(evaluate.evaluate(evaluate.load("holdout2_video", preset))["closed_accuracy"]) in readme
+        assert evaluate.pct(evaluate.evaluate(evaluate.load("holdout", preset))["closed_balanced"]) in readme
     assert "準確度明顯較高" not in readme  # 高精準模型在獨立測試集上沒有比較好
 
 

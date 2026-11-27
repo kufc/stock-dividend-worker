@@ -3,10 +3,13 @@
     python tools/evaluate.py                 印出結果（Markdown）
     python tools/evaluate.py --update-doc    把結果寫進 docs/evaluation.md 的「自動產生」區塊
 
-兩批資料（兩個模型各一份向量）：
-- dev      tests/manual/embeddings_<模型>.npz          1,243 張。描述與規則是看著這一批定的，成績偏樂觀，只當對照。
-- holdout  tests/manual/embeddings_holdout_<模型>.npz  1,176 張。來源完全不同、在所有描述與門檻定案之後才收集；
-           只用來報告，**不准拿它調任何東西**（見 tests/manual/holdout_sources.txt 開頭）。
+三批資料（兩個模型各一份向量）：
+- dev       tests/manual/embeddings_<模型>.npz           1,243 張。描述與規則是看著這一批定的，成績偏樂觀，只當對照。
+- holdout   tests/manual/embeddings_holdout_<模型>.npz   1,176 張。來源完全不同、在所有描述與門檻定案之後才收集；
+            門檻從 50 改成 70 的決定看過它，現在只當對照。
+- holdout2  tests/manual/embeddings_holdout2_<模型>.npz、embeddings_holdout2_video_<模型>.npz  1,342 張圖片與 231 個影片。
+            保留原始檔與「兩可」的檔案（答案寫成「人像+美食」）。只用來報告，**不准拿它調任何東西**
+            （見 tests/manual/holdout2_sources.txt 開頭與 docs/evaluation.md 的評測紀錄）。
 
 量的東西跟程式實際的行為一致：用 media_sorter.analysis 的計分（_apply_scores）、「需檢查」的規則（Item.is_low）
 與預設門檻（DEFAULT_SETTINGS["confidence_threshold"]）。向量檔裡每句描述各有一個向量，這裡照 Category.texts()
@@ -73,9 +76,9 @@ class Recorded:
     def items(self, categories) -> list[Item]:
         names = tuple(c.name for c in categories)
         class_emb, vocab_emb, other = self.encode_categories(categories), self.vocabulary_embeddings(), self.other_embedding()
-        result = []
+        result, owners = [], set(self.frame_owner.tolist())
         for position, name in enumerate(self.names):
-            video = name.endswith(".mp4")
+            video = position in owners  # 有存逐格向量的就是影片（副檔名不只 .mp4）
             item = Item(Path(name), "video" if video else "image", embedding=self.images[position],
                         frames=self.frames[self.frame_owner == position] if video else None)
             _apply_scores(item, class_emb, names, vocab_emb, self.logit_scale, other)
@@ -116,7 +119,7 @@ def evaluate(recorded: Recorded, threshold: float = THRESHOLD) -> dict:
         precision = tp / predicted if predicted else float("nan")
         recall = tp / actual if actual else float("nan")
         f1 = 2 * precision * recall / (precision + recall) if tp else 0.0
-        return precision, recall, f1
+        return precision, recall, f1 if actual else float("nan")  # 這一批沒有這個分類的檔案：不列入平均
 
     per_class = {}
     for name in names:
@@ -132,13 +135,14 @@ def evaluate(recorded: Recorded, threshold: float = THRESHOLD) -> dict:
     return {
         "threshold": threshold,
         "n": len(rows), "n_known": len(known), "n_unknown": len(unknown),
+        "n_ambiguous": sum(1 for it in answers.values() if "+" in it),
         "per_class": per_class,
         "closed_accuracy": len(correct_known) / len(known),
-        "closed_balanced": float(np.mean([v["closed"][1] for v in per_class.values()])),
-        "closed_macro_f1": float(np.mean([v["closed"][2] for v in per_class.values()])),
+        "closed_balanced": float(np.nanmean([v["closed"][1] for v in per_class.values()])),
+        "closed_macro_f1": float(np.nanmean([v["closed"][2] for v in per_class.values()])),
         "open_macro_precision": float(np.nanmean([v["open"][0] for v in per_class.values()])),
-        "open_macro_recall": float(np.mean([v["open"][1] for v in per_class.values()])),
-        "open_macro_f1": float(np.mean([v["open"][2] for v in per_class.values()])),
+        "open_macro_recall": float(np.nanmean([v["open"][1] for v in per_class.values()])),
+        "open_macro_f1": float(np.nanmean([v["open"][2] for v in per_class.values()])),
         "flagged": sum(r[2] for r in rows) / len(rows),
         "accepted": len(accepted) / len(rows),
         # 「不進需檢查的部分」裡分錯的比例：分母是所有被接受的檔案，未知的檔案被接受也算錯
@@ -211,15 +215,16 @@ def render() -> str:
     results = {(which, preset): evaluate(rec) for which in SETS for preset in PRESETS
                if (rec := load(which, preset)) is not None}
 
-    def summary(which: str, title: str) -> None:
+    def summary(which: str, title: str, unit: str = "張") -> None:
         out.append(f"### {title}\n")
         present = [p for p in PRESETS if (which, p) in results]
         if not present:
             out.append("（沒有這一批的向量檔）\n")
             return
         first = results[(which, present[0])]
-        out.append(f"{first['n']:,} 張：{first['n_known']:,} 張屬於某個預設分類，{first['n_unknown']:,} 張不屬於任何預設分類。"
-                   f"「需檢查」門檻 {round(first['threshold'] * 100)}。\n")
+        both = f"（其中 {first['n_ambiguous']:,} {unit}兩可：答案是兩個分類，選到任何一個都算對）" if first["n_ambiguous"] else ""
+        out.append(f"{first['n']:,} {unit}：{first['n_known']:,} {unit}屬於某個預設分類{both}，"
+                   f"{first['n_unknown']:,} {unit}不屬於任何預設分類。「需檢查」門檻 {round(first['threshold'] * 100)}。\n")
         out.append("| 指標 | " + " | ".join(PRESETS[p] + "模型" for p in present) + " |")
         out.append("| --- | " + " | ".join("---:" for _ in present) + " |")
         lines = [
@@ -240,13 +245,14 @@ def render() -> str:
             out.append(f"| {label} | " + " | ".join(pct(results[(which, p)][key]) for p in present) + " |")
         out.append("")
 
-    def per_class(which: str) -> None:
+    def per_class(which: str, unit: str = "張") -> None:
         present = [p for p in PRESETS if (which, p) in results]
         if not present:
             return
+        heads = (f"| 分類 | {unit}數 | ", f"| 組別 | {unit}數 | ")
         out.append("每一類（P＝precision、R＝recall。「封閉」只看有答案的檔案、取第一名；"
                    "「開放」把未知檔案也算進來，而且被標「需檢查」的不算分進這一類）：\n")
-        head = "| 分類 | 張數 | " + " | ".join(f"{PRESETS[p]}：封閉 P | 封閉 R | 開放 P | 開放 R" for p in present) + " |"
+        head = heads[0] + " | ".join(f"{PRESETS[p]}：封閉 P | 封閉 R | 開放 P | 開放 R" for p in present) + " |"
         out.append(head)
         out.append("| --- | ---: | " + " | ".join("---: | ---: | ---: | ---:" for _ in present) + " |")
         for name in results[(which, present[0])]["per_class"]:
@@ -257,7 +263,7 @@ def render() -> str:
             out.append(f"| {name} | {results[(which, present[0])]['per_class'][name]['n']} | " + " | ".join(cells) + " |")
         out.append("")
         out.append("未知檔案各組的誤接受率（沒被標「需檢查」的比例）：\n")
-        out.append("| 組別 | 張數 | " + " | ".join(PRESETS[p] for p in present) + " |")
+        out.append(heads[1] + " | ".join(PRESETS[p] for p in present) + " |")
         out.append("| --- | ---: | " + " | ".join("---:" for _ in present) + " |")
         for group, (count, _) in results[(which, present[0])]["unknown_by_group"].items():
             out.append(f"| {group} | {count} | "
@@ -280,7 +286,11 @@ def render() -> str:
             out.append(f"| {mark}{round(threshold * 100)}{mark} | " + " | ".join(cells) + " |")
         out.append("")
 
-    summary("holdout", "獨立測試集（holdout）——對外引用的數字")
+    summary("holdout2", "第二份獨立測試集（holdout2，圖片）——對外引用的數字")
+    per_class("holdout2")
+    summary("holdout2_video", "第二份獨立測試集的影片（holdout2_video）", "個")
+    per_class("holdout2_video", "個")
+    summary("holdout", "第一份獨立測試集（holdout）——門檻改成 70 時看過它，只當對照")
     per_class("holdout")
     summary("dev", "開發集（dev）——描述與規則是看著它定的，只當對照")
     per_class("dev")
@@ -288,7 +298,8 @@ def render() -> str:
     out.append("假設使用者把「需檢查」的檔案都處理對了，程式用這些修正重看其餘檔案（兩輪）。這是效果的上限估計。\n")
     out.append("| 資料 | 模型 | 需檢查：前 → 後 | 未知誤接受：前 → 後 | 接受部分分錯：前 → 後 | 分對被誤標：前 → 後 |")
     out.append("| --- | --- | ---: | ---: | ---: | ---: |")
-    for which, label in (("holdout2", "第二份獨立測試集"), ("holdout", "第一份獨立測試集"), ("dev", "開發集")):
+    for which, label in (("holdout2", "第二份獨立測試集（圖片）"), ("holdout2_video", "第二份獨立測試集（影片）"),
+                         ("holdout", "第一份獨立測試集"), ("dev", "開發集")):
         for preset in PRESETS:
             rec = load(which, preset)
             if rec is None:
@@ -301,8 +312,10 @@ def render() -> str:
     out.append("### 門檻的依據：在開發集上改變門檻\n")
     out.append("預設門檻是看這張表（與更早的 425 張）定的。粗體是目前的預設值。\n")
     sweep("dev")
-    out.append("### 同一張表，換成獨立測試集（只是報告；沒有依它改門檻）\n")
+    out.append("### 同一張表，換成第一份獨立測試集（門檻從 50 改成 70 的決定看過這張表）\n")
     sweep("holdout")
+    out.append("### 同一張表，換成第二份獨立測試集的圖片（只是報告；沒有依它改任何東西）\n")
+    sweep("holdout2")
     return "\n".join(out).rstrip() + "\n"
 
 
