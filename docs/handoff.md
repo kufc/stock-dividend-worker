@@ -23,7 +23,7 @@
 - 測試數量見最新一次提交的說明（一般環境四百多個通過；裝了 torch 與真模型的環境略過的較少）。
   略過的是需要 torch、真正 Windows 或簽章工具的測試。
 - **真的 Windows**：每次推送，GitHub 會在 Windows 上跑整套測試（`.github/workflows/windows-tests.yml`），目前全部通過，
-  包含真的資源回收筒。送回收筒預設用新式介面（`media_sorter/recycle.py`）：進不了回收筒就拒絕，不會永久刪除。
+  包含真的資源回收筒與安裝程式的安裝／執行／解除安裝。送回收筒預設用新式介面（`media_sorter/recycle.py`）：進不了回收筒就拒絕，不會永久刪除。
 - **還不能公開發行**：缺 Windows 10／11 實機的驗證（安裝程式、真模型、網路磁碟、OneDrive）、程式碼簽章、授權的法律確認。清單在 `docs/release-checklist.md`。
 
 ## 檔案地圖
@@ -116,7 +116,9 @@ python installer/build_installer.py --out dist     # 需要 NSIS 與 pip install
 - 解除安裝時清理 Hugging Face 共用檔案倉庫（`hub/blobs`）的邏輯，只在 Linux 的檔案配置上驗證過。
 - GPU 版 PyTorch 的固定版本只核對過下載站上的雜湊，沒有實際安裝執行過。
 - 手機的 .mov／HEVC 影片與帶旋轉旗標的真實影片沒有驗證過（旋轉只有合成影片的自動測試）。
-- 真的 Windows 的驗證只有 GitHub 的執行環境（Windows Server 2025，沒有真模型、沒有安裝程式）。Windows 10／11 家用版、網路磁碟、OneDrive、安裝程式的實機行為仍然沒有驗過。
+- 真的 Windows 的驗證只有 GitHub 的執行環境（Windows Server 2025）：整套測試、真的資源回收筒、安裝程式的靜默安裝→執行→解除安裝都通過。
+  沒有涵蓋：真模型與 PyTorch 的下載安裝、安裝精靈的畫面、Windows 10／11 家用版、顯示卡、網路磁碟、OneDrive。
+- 安裝程式只能在 Linux（或 WSL）建置：官方的 Windows 版 NSIS 沒有 64 位元的骨架。
 
 ## 建議的下一步
 
