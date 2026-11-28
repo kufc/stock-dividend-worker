@@ -106,3 +106,11 @@ def copy_all(app):
     assert app.show_step(3)
     app.start_copy()
     pump(app.root, lambda: not app.organizing and app.step == 4)
+
+
+@pytest.fixture(autouse=True)
+def _fake_bins_receive_the_files(monkeypatch):
+    """很多測試把 organizer._send2trash 換成「假的回收筒」來檢查送進去的東西。Windows 上程式預設先用
+    IFileOperation（真的回收筒），假的回收筒就收不到檔案，所以測試預設關掉它；要測新介面的測試自己再打開
+    （tests/test_recycle.py）。"""
+    monkeypatch.setenv("MEDIA_SORTER_MODERN_RECYCLE", "0")

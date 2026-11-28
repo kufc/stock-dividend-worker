@@ -9,10 +9,15 @@
 - 所以另外掛一個進度接收器（IFileOperationProgressSink）：Windows 在刪每個檔案之前會呼叫它的 PreDeleteItem，
   參數裡的 TSF_DELETE_RECYCLE_IF_POSSIBLE 表示「這個檔案會進回收筒」。沒有這個旗標就回傳中止，檔案留在原地。
 
-**預設關閉**（MODERN_DEFAULT）。開啟與否看 tools/verify_recycle_windows.py 與
-tools/verify_recycle_refusal_windows.py 在真的 Windows 上的結果（docs/release-checklist.md）。
-Wine 的 IFileOperation 是空殼（每個方法都回 E_NOTIMPL），在那裡只驗得到「介面不能用時退回原本的做法」。
-可以用環境變數 MEDIA_SORTER_MODERN_RECYCLE=1／0 個別開關。
+**預設開啟**（MODERN_DEFAULT，2026-11-28 起）。依據是真的 Windows（GitHub 的 windows-latest，Windows Server 2025）
+上的三項實測，每次推送都會重跑（.github/workflows/windows-tests.yml）：
+  1. tools/verify_recycle_windows.py：檔案離開原地，回收筒的項目數多一個
+  2. tests/test_recycle.py 的真回收筒測試：移除原檔、復原的完整流程，保留的那一份逐位元組不變
+  3. tools/verify_recycle_refusal_windows.py：回收筒被關掉時，這個介面拒絕、檔案留在原地（舊介面在同樣情況下永久刪除）
+沒有驗過的：Windows 10／11 的家用版本、超過回收筒容量的大檔、超長路徑、被重新導向的資料夾。這些情況下
+organizer.recycle_bin_problem 的事前檢查仍然先擋一次；這個介面出錯時的結果是「沒有移除」，不是永久刪除。
+Wine 的 IFileOperation 是空殼（每個方法都回 E_NOTIMPL），在那裡會退回原本的做法。
+出問題時可以用環境變數 MEDIA_SORTER_MODERN_RECYCLE=0 關掉。
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ import uuid
 from typing import Callable
 
 MODERN_ENV = "MEDIA_SORTER_MODERN_RECYCLE"
-MODERN_DEFAULT = False
+MODERN_DEFAULT = True
 
 FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 0x0004, 0x0010, 0x0040, 0x0400
 FOFX_RECYCLEONDELETE, FOFX_EARLYFAILURE = 0x00080000, 0x00100000

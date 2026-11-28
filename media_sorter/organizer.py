@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover - 選用功能
 
 
 def _trash(path: str) -> None:
-    """送進資源回收筒。預設就是 send2trash；新的 IFileOperation 路徑預設關閉（見 recycle.py）。"""
+    """送進資源回收筒。Windows 上先用 IFileOperation（進不了回收筒就拒絕，見 recycle.py），不能用才退回 send2trash。"""
     from .recycle import to_recycle_bin  # noqa: PLC0415
 
     to_recycle_bin(path, lambda target: _send2trash(target))

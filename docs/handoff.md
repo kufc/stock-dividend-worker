@@ -22,7 +22,9 @@
 - 第二次外部審查（39 項）的逐項回覆在 `docs/review10-response.md`：哪些修了、哪些查證後不改、哪些沒做。
 - 測試數量見最新一次提交的說明（一般環境四百多個通過；裝了 torch 與真模型的環境略過的較少）。
   略過的是需要 torch、真正 Windows 或簽章工具的測試。
-- **還不能公開發行**：缺真正 Windows 上的驗證、程式碼簽章、授權的法律確認。清單在 `docs/release-checklist.md`。
+- **真的 Windows**：每次推送，GitHub 會在 Windows 上跑整套測試（`.github/workflows/windows-tests.yml`），目前全部通過，
+  包含真的資源回收筒。送回收筒預設用新式介面（`media_sorter/recycle.py`）：進不了回收筒就拒絕，不會永久刪除。
+- **還不能公開發行**：缺 Windows 10／11 實機的驗證（安裝程式、真模型、網路磁碟、OneDrive）、程式碼簽章、授權的法律確認。清單在 `docs/release-checklist.md`。
 
 ## 檔案地圖
 
@@ -34,7 +36,7 @@
 | `media_sorter/classifier.py` | 載入模型、計分（softmax；分類少於 3 個時跟「其他東西」一起比） |
 | `media_sorter/media.py` | 讀圖、影片取樣、縮圖；3 億像素硬上限 `check_pixels` |
 | `media_sorter/organizer.py` | 複製（fsync＋讀回驗證）、整理紀錄、復原、移除原檔、檔案鎖、回收筒偵測 |
-| `media_sorter/recycle.py` | 回收筒的第二種做法（IFileOperation），預設關閉，等真的 Windows 驗證 |
+| `media_sorter/recycle.py` | 送資源回收筒（IFileOperation；進不了回收筒就拒絕）。真的 Windows 上驗過，預設開啟 |
 | `media_sorter/netpolicy.py` | 離線政策、模型檔核對（固定 commit＋SHA-256）、下載與修復 |
 | `media_sorter/workdb.py` | SQLite 工作資料庫與縮圖磁碟快取（可接續、只重算變更的檔案） |
 | `media_sorter/config.py` | 預設設定、模型清單與固定版本、使用者資料位置 |
@@ -114,7 +116,7 @@ python installer/build_installer.py --out dist     # 需要 NSIS 與 pip install
 - 解除安裝時清理 Hugging Face 共用檔案倉庫（`hub/blobs`）的邏輯，只在 Linux 的檔案配置上驗證過。
 - GPU 版 PyTorch 的固定版本只核對過下載站上的雜湊，沒有實際安裝執行過。
 - 手機的 .mov／HEVC 影片與帶旋轉旗標的真實影片沒有驗證過（旋轉只有合成影片的自動測試）。
-- 資源回收筒預設用舊式 API（`SHFileOperationW`，移除前先檢查回收筒設定）。新式的 `IFileOperation` 路徑已寫好但**預設關閉**（`media_sorter/recycle.py`）：Wine 裡它是空殼，真正搬檔案的呼叫沒有執行過。開啟的步驟在 `docs/release-checklist.md`。
+- 真的 Windows 的驗證只有 GitHub 的執行環境（Windows Server 2025，沒有真模型、沒有安裝程式）。Windows 10／11 家用版、網路磁碟、OneDrive、安裝程式的實機行為仍然沒有驗過。
 
 ## 建議的下一步
 

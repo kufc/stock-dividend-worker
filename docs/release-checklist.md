@@ -24,17 +24,13 @@
       確認真的進了回收筒而不是被永久刪除（240 這個界線是保守估的，沒有實測）
 - [ ] **「圖片」資料夾由 OneDrive 接管**時整理並移除原檔：確認檔案進了本機的回收筒；
       再試「圖片」資料夾被重新導向到另一顆磁碟或網路位置（程式會讀 `BitBucket\KnownFolder` 的設定，只在 Wine 裡驗證過）
-- [ ] **驗證並開啟新的回收筒介面**（`media_sorter/recycle.py`：IFileOperation 加「不能進回收筒就失敗」的旗標，
-      讓 Windows 自己把關，不必只靠我們列舉的規則）。程式已經寫好但**預設關閉**，因為 Wine 的這個介面是空殼，
-      真正搬檔案的呼叫從來沒有執行過。在真的 Windows 上：
-      0. `python tools/verify_recycle_windows.py`：應該印出「通過：檔案進了資源回收筒」（它會核對回收筒的項目數多了一個）
-      1. `set MEDIA_SORTER_MODERN_RECYCLE=1` 後執行 `python -m pytest tests/test_recycle.py -s`：
-         `test_real_call_either_recycles_or_…` 必須通過，而且**不能**印出「IFileOperation 不支援」；到回收筒確認 `recycle-me.jpg` 在裡面
-      2. 同一個環境變數下執行 `python -m pytest tests/test_regressions_review7.py tests/test_regressions_review8.py tests/test_regressions_review9.py tests/test_copy_first_safety.py`
-      3. 開著環境變數實際用程式移除一批原檔，再從回收筒還原
-      4. 把回收筒設成「不要將檔案移到資源回收筒」、另外把容量設得比檔案小，各試一次：應該失敗並保留原檔
-         （先暫時讓 `organizer.recycle_bin_problem` 放行才測得到這一層）
-      5. 全部通過後把 `recycle.MODERN_DEFAULT` 改成 `True`；任何一步不對就維持關閉
+- [x] 新的回收筒介面（`media_sorter/recycle.py`）：2026-11-28 在 GitHub 的 Windows 執行環境（Windows Server 2025）上驗證後
+      **已預設開啟**——檔案真的進回收筒、移除原檔與復原的完整流程、回收筒被關掉時拒絕並保留檔案。每次推送都會重跑
+      （`.github/workflows/windows-tests.yml`）。
+- [ ] 同一件事在 **Windows 10／11 家用版**上再確認一次（自動測試跑的是伺服器版）：
+      `python tools/verify_recycle_windows.py` 應該印出「通過」；實際用程式移除一批原檔再從回收筒還原。
+      另外沒有自動測試的情況：超過回收筒容量的大檔、超長路徑、被 OneDrive 接管的資料夾。
+      有問題時設定環境變數 `MEDIA_SORTER_MODERN_RECYCLE=0` 可以退回舊介面
 - [ ] 免安裝版：在只有 Python 3.13 的電腦上執行 `install.bat`，應該明確要求 3.12 而不是裝下去
 - [ ] 把 `settings.json` 改成空檔再開程式：應該能開，並提示已改用預設值
 - [ ] 辨識到一半用工作管理員結束程式，重開後確認接續、改過的分類還在

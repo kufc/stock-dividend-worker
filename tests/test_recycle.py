@@ -10,10 +10,14 @@ from media_sorter.recycle import STAGE_OPERATION, STAGE_SETUP, RecycleUnsupporte
 _REAL = recycle.recycle_modern  # 有些測試會把模組裡的換掉，這裡留著真的
 
 
-def test_modern_path_is_off_by_default_and_legacy_is_used(tmp_path, monkeypatch):
+def test_modern_path_is_on_by_default_and_can_be_switched_off(tmp_path, monkeypatch):
+    """原本這裡斷言「預設關閉」。2026-11-28 在真的 Windows 上驗過正常與拒絕兩種情況之後改成預設開啟
+    （依據寫在 recycle.py 開頭）；環境變數設成 0 可以關掉，關掉時完全不碰新介面。"""
     monkeypatch.delenv(recycle.MODERN_ENV, raising=False)
-    assert recycle.MODERN_DEFAULT is False and not recycle.modern_enabled()
-    monkeypatch.setattr(recycle, "recycle_modern", lambda path: pytest.fail("預設不該走新介面"))
+    assert recycle.MODERN_DEFAULT is True and recycle.modern_enabled()
+    monkeypatch.setenv(recycle.MODERN_ENV, "0")
+    assert not recycle.modern_enabled()
+    monkeypatch.setattr(recycle, "recycle_modern", lambda path: pytest.fail("關掉之後不該走新介面"))
     seen = []
     recycle.to_recycle_bin("x", seen.append)
     assert seen == ["x"]
@@ -108,7 +112,7 @@ def test_real_call_either_recycles_or_reports_unsupported_without_touching_the_f
 
 def test_organizer_routes_both_removals_through_the_same_helper(tmp_path, monkeypatch):
     """復原與移除原檔都經過 organizer._trash；沒開新介面時它就是 send2trash（測試換掉的那個也會被用到）。"""
-    monkeypatch.delenv(recycle.MODERN_ENV, raising=False)
+    monkeypatch.setenv(recycle.MODERN_ENV, "0")
     seen = []
     monkeypatch.setattr(organizer, "_send2trash", seen.append)
     organizer._trash("some-file")
