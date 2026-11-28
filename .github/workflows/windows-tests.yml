@@ -66,33 +66,44 @@ jobs:
           MEDIA_SORTER_ALLOW_REGISTRY_TEST: "1"
         run: python tools/verify_recycle_refusal_windows.py
 
-  installer:
-    # 在真的 Windows 上建置安裝程式，然後實際安裝、開啟程式跑一遍、解除安裝（跟 Wine 裡跑的是同一份檢查）。
-    runs-on: windows-latest
-    timeout-minutes: 45
-    env:
-      PYTHONUTF8: "1"
+  build-installer:
+    # 安裝程式是 64 位元的（setup.nsi 的 Target amd64-unicode）。官方的 Windows 版 NSIS 沒有 64 位元的骨架，
+    # Debian／Ubuntu 的 nsis 套件才有，所以在 Linux 上建置，再交給下面的 Windows 工作去安裝。
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Build the installer
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q nsis
+          python -m pip install py-rattler
+          LC_ALL=C.UTF-8 python installer/build_installer.py --out dist
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup
+          path: dist/AI-Media-Sorter-Setup-*.exe
+          retention-days: 3
+
+  installer:
+    # 在真的 Windows 上實際安裝、開啟程式跑一遍、解除安裝（跟 Wine 裡跑的是同一份檢查）。
+    needs: build-installer
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: setup
+          path: dist
       - name: Use a 1920x1080 screen
         shell: pwsh
         run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
-      - name: Find or install NSIS
-        shell: pwsh
-        run: |
-          $candidate = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
-          if (-not (Test-Path $candidate)) { choco install nsis -y --no-progress }
-          if (-not (Test-Path $candidate)) { throw "makensis not found" }
-          "MAKENSIS=$candidate" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-      - name: Build the installer
-        shell: bash
-        run: |
-          python -m pip install py-rattler
-          python installer/build_installer.py --out dist --makensis "$MAKENSIS"
-          ls -la dist
       - name: Install, run the app, uninstall (the same checks as under Wine)
         shell: bash
         run: WHEELS=pip bash installer/test_in_wine.sh dist/AI-Media-Sorter-Setup-*.exe

@@ -398,7 +398,7 @@ python tools/build_zip.py         # 打包 ZIP（含 tests/manual 的評測資�
 
 ```bash
 pip install py-rattler pillow          # 取得內建 Python（conda-forge，含 tkinter）用
-sudo apt install nsis                  # Windows 上改裝 NSIS 並加入 PATH
+sudo apt install nsis                  # 要在 Linux 或 WSL 建置：官方的 Windows 版 NSIS 沒有 64 位元的骨架
 python installer/build_installer.py --publisher "你的公司名稱"
 # → dist/AI-Media-Sorter-Setup-版本.exe
 ```

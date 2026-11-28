@@ -1,7 +1,8 @@
-"""建置 Windows 安裝程式（setup.exe）。可以在 Linux 或 Windows 上執行。
+"""建置 Windows 安裝程式（setup.exe）。在 Linux（或 WSL）上執行。
 
 需要：
-  - NSIS 的 makensis（Linux：apt install nsis；Windows：安裝 NSIS 並加入 PATH）
+  - NSIS 的 makensis，而且要有 64 位元的骨架（amd64-unicode）：Debian／Ubuntu 的 nsis 套件有（apt install nsis）；
+    官方的 Windows 版 NSIS **沒有**，在 Windows 上建置會失敗（2026-11-28 在 GitHub 的 Windows 環境實測），請在 Linux 或 WSL 建置
   - 內建的 Python 執行環境（含 tkinter）。預設用 py-rattler 從 conda-forge 取得 Windows 版
     （pip install py-rattler），也可以用 --runtime 指定已經準備好的資料夾。
 
