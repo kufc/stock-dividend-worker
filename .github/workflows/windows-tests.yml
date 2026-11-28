@@ -1,0 +1,55 @@
+# 在真正的 Windows 上跑自動測試（開發環境是 Linux＋Wine，Wine 驗不到真的資源回收筒）。
+# 推送到這個分支時執行；也可以在 GitHub 的 Actions 頁面手動執行。
+name: Windows tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/relaxed-johnson-02ap4m"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies (pinned, without torch and the model libraries)
+        shell: bash
+        run: |
+          grep -E '^(numpy|Pillow|pillow-heif|av|send2trash)==' requirements.txt > ci-requirements.txt
+          cat ci-requirements.txt
+          python -m pip install -r ci-requirements.txt pytest
+      - name: System information
+        shell: bash
+        run: |
+          python -c "import platform, sys; print(platform.platform(), sys.version)"
+          python -c "import tkinter; r = tkinter.Tk(); print('screen', r.winfo_screenwidth(), r.winfo_screenheight(), 'tk', r.tk.call('info', 'patchlevel')); r.destroy()"
+      - name: Full test suite (default settings)
+        shell: bash
+        run: python -m pytest -q -p no:cacheprovider -rs
+      - name: Modern recycle interface really moves a file to the Recycle Bin
+        if: always()
+        shell: bash
+        run: python tools/verify_recycle_windows.py
+      - name: Removal and undo tests with the modern recycle interface switched on
+        if: always()
+        shell: bash
+        env:
+          MEDIA_SORTER_MODERN_RECYCLE: "1"
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:cacheprovider -s -rs tests/test_recycle.py tests/test_regressions_review7.py tests/test_regressions_review8.py tests/test_regressions_review9.py tests/test_copy_first_safety.py tests/test_review10.py tests/test_app.py | tee modern.log
+          if grep -q "IFileOperation 不支援" modern.log; then echo "the modern interface was not actually used"; exit 1; fi
