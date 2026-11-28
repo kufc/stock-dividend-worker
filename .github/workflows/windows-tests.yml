@@ -37,19 +37,22 @@ jobs:
         run: |
           python -c "import platform, sys; print(platform.platform(), sys.version)"
           python -c "import tkinter; r = tkinter.Tk(); print('screen', r.winfo_screenwidth(), r.winfo_screenheight(), 'tk', r.tk.call('info', 'patchlevel')); r.destroy()"
-      - name: Full test suite (default settings)
+      - name: Full test suite (default settings, including the tests that use the real Recycle Bin)
         shell: bash
-        run: python -m pytest -q -p no:cacheprovider -rs
+        env:
+          MEDIA_SORTER_TEST_REAL_TRASH: "1"
+        run: python -m pytest -q -p no:cacheprovider -rfs --tb=short
       - name: Modern recycle interface really moves a file to the Recycle Bin
         if: always()
         shell: bash
         run: python tools/verify_recycle_windows.py
-      - name: Removal and undo tests with the modern recycle interface switched on
+      - name: Recycle tests with the modern interface switched on by the environment
         if: always()
         shell: bash
         env:
           MEDIA_SORTER_MODERN_RECYCLE: "1"
+          MEDIA_SORTER_TEST_REAL_TRASH: "1"
         run: |
           set -o pipefail
-          python -m pytest -q -p no:cacheprovider -s -rs tests/test_recycle.py tests/test_regressions_review7.py tests/test_regressions_review8.py tests/test_regressions_review9.py tests/test_copy_first_safety.py tests/test_review10.py tests/test_app.py | tee modern.log
+          python -m pytest -q -p no:cacheprovider -s -rfs --tb=short tests/test_recycle.py tests/test_regressions_review8.py | tee modern.log
           if grep -q "IFileOperation 不支援" modern.log; then echo "the modern interface was not actually used"; exit 1; fi

@@ -103,3 +103,80 @@ def test_organizer_routes_both_removals_through_the_same_helper(tmp_path, monkey
     assert seen == ["some-file"]
     source = (organizer.__file__ and open(organizer.__file__, encoding="utf-8").read())
     assert source.count("_send2trash(") == 1  # 只剩 _trash 裡面那一個呼叫
+
+
+# ---------------------------------------------------------------- 真的資源回收筒（只在 Windows、明確要求時才跑）
+real_bin = pytest.mark.skipif(
+    sys.platform != "win32" or __import__("os").environ.get("MEDIA_SORTER_TEST_REAL_TRASH") != "1",
+    reason="會放小測試檔到真正的資源回收筒；Windows 上設定 MEDIA_SORTER_TEST_REAL_TRASH=1 才執行")
+
+
+def _bin_items(path) -> int:
+    import ctypes
+
+    class Info(ctypes.Structure):
+        _pack_ = 8
+        _fields_ = [("cbSize", ctypes.c_ulong), ("i64Size", ctypes.c_longlong), ("i64NumItems", ctypes.c_longlong)]
+
+    info = Info()
+    info.cbSize = ctypes.sizeof(info)
+    assert ctypes.windll.shell32.SHQueryRecycleBinW(str(path.anchor), ctypes.byref(info)) == 0
+    return int(info.i64NumItems)
+
+
+def _organized(tmp_path):
+    from datetime import datetime
+
+    source = tmp_path / "src" / "ai-media-sorter-測試檔-可刪除.jpg"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"photo-bytes" * 500)
+    ops = organizer.plan_operations([(source, "貓", datetime(2024, 1, 2))], tmp_path / "out")
+    result = organizer.execute(ops, tmp_path / "logs", source_dir=tmp_path / "src", output_dir=tmp_path / "out")
+    assert result.done == 1
+    return source, ops[0].dst, result.log_path
+
+
+def _watch_modern(monkeypatch):
+    """記下新介面每次呼叫的結果，確認它真的被用到（而不是悄悄退回舊介面）。"""
+    seen = []
+
+    def spy(path):
+        try:
+            _REAL(path)
+        except Exception as exc:
+            seen.append(type(exc).__name__)
+            raise
+        seen.append("recycled")
+
+    monkeypatch.setattr(recycle, "recycle_modern", spy)
+    return seen
+
+
+@real_bin
+@pytest.mark.parametrize("modern", [False, True], ids=["legacy", "modern"])
+def test_real_bin_takes_the_original_while_the_copy_is_guarded(tmp_path, monkeypatch, modern):
+    """整個產品最關鍵的一步，在真的 Windows 上：移除原檔時程式握著原檔與複本的保護，
+    真的資源回收筒要能把原檔搬走，複本原封不動。兩種介面各跑一次。"""
+    monkeypatch.setenv(recycle.MODERN_ENV, "1" if modern else "0")
+    seen = _watch_modern(monkeypatch)
+    source, copy, log = _organized(tmp_path)
+    data, before = copy.read_bytes(), _bin_items(source)
+    removed = organizer.remove_originals(log)
+    assert removed.done == 1 and not removed.errors, removed.errors
+    assert not source.exists() and copy.read_bytes() == data
+    assert _bin_items(source) == before + 1          # 進了回收筒，不是被永久刪除
+    assert seen == (["recycled"] if modern else [])
+
+
+@real_bin
+@pytest.mark.parametrize("modern", [False, True], ids=["legacy", "modern"])
+def test_real_bin_takes_the_copy_on_undo(tmp_path, monkeypatch, modern):
+    monkeypatch.setenv(recycle.MODERN_ENV, "1" if modern else "0")
+    seen = _watch_modern(monkeypatch)
+    source, copy, log = _organized(tmp_path)
+    data, before = source.read_bytes(), _bin_items(source)
+    undone = organizer.undo(log)
+    assert undone.done == 1 and not undone.errors, undone.errors
+    assert not copy.exists() and source.read_bytes() == data
+    assert _bin_items(source) == before + 1
+    assert seen == (["recycled"] if modern else [])
