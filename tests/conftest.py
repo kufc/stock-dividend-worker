@@ -47,7 +47,7 @@ def _make_app(monkeypatch, tmp_path, scaling=None, geometry=None):
     for name in ("settings.json", "categories.json"):  # 設定檔在測試之間不共用
         (config.APP_DIR / name).unlink(missing_ok=True)
     tk = pytest.importorskip("tkinter")
-    root = tk.Tk()
+    root = app_module.make_root()  # 偶發的 Tk 啟動讀檔失敗會自動再試（見 make_root 的說明）
     # Tk 的縮放值是跟著顯示器連線記住的：上一個測試設成 200% 之後，新開的視窗還會沿用，所以每次都明確設定
     root.tk.call("tk", "scaling", scaling if scaling is not None else 96 / 72)
     instance = app_module.App(root, classifier_factory=FakeClassifier, model_status_func=lambda choice: None)

@@ -734,3 +734,26 @@ def test_confirmation_shows_folders_as_they_are_on_disk(tmp_path, monkeypatch):
     assert organizer.display_path("") == ""
     if sys.platform == "win32":
         assert organizer.display_path(str(real).lower()) == str(real.resolve())
+
+
+def test_window_creation_is_retried_when_tk_fails_to_read_its_files(monkeypatch):
+    """真的 Windows 的自動測試遇到一次：Tk 啟動時讀不到自己的一個腳本檔（檔案其實在），視窗建不起來。
+    再試一次就好。連續失敗才把錯誤丟出去。"""
+    import tkinter as tk
+
+    from media_sorter import app as app_module
+
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise tk.TclError("couldn't read file combobox.tcl")
+        return "root"
+
+    monkeypatch.setattr(app_module.tk, "Tk", flaky)
+    assert app_module.make_root(pause=0) == "root" and len(calls) == 3
+    calls.clear()
+    monkeypatch.setattr(app_module.tk, "Tk", lambda: (_ for _ in ()).throw(tk.TclError("always")))
+    with pytest.raises(tk.TclError):
+        app_module.make_root(attempts=2, pause=0)

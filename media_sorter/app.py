@@ -2497,11 +2497,24 @@ def _enable_windows_dpi_awareness() -> None:
             pass
 
 
+def make_root(attempts: int = 3, pause: float = 0.3) -> tk.Tk:
+    """建立主視窗。Tk 啟動時要讀自己的幾十個腳本檔，偶爾會有一個讀不到（真的 Windows 與 Wine 的自動測試都遇過：
+    「couldn't read file …/combobox.tcl」，檔案其實在，可能是防毒軟體正好在掃）。再試一次就好，所以最多試幾次。"""
+    for attempt in range(attempts):
+        try:
+            return tk.Tk()
+        except tk.TclError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(pause)
+    raise AssertionError("unreachable")
+
+
 def main() -> None:
     _enable_windows_dpi_awareness()
     gc.disable()  # 循環參照改由主執行緒定期回收（見 App._collect_garbage）
     lock = acquire_app_lock()  # 同時只允許開一個視窗（也讓安裝程式知道程式正在執行）
-    root = tk.Tk()
+    root = make_root()
     if lock is None:
         root.withdraw()
         messagebox.showinfo(APP_NAME, "AI 媒體分類器已經開著了（請看工作列）。")

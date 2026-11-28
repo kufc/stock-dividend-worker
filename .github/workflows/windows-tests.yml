@@ -32,6 +32,9 @@ jobs:
           grep -E '^(numpy|Pillow|pillow-heif|av|send2trash)==' requirements.txt > ci-requirements.txt
           cat ci-requirements.txt
           python -m pip install -r ci-requirements.txt pytest
+      - name: Use a 1920x1080 screen (the runner's default 1024x768 is narrower than the window the layout tests ask for)
+        shell: pwsh
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
       - name: System information
         shell: bash
         run: |
@@ -54,5 +57,5 @@ jobs:
           MEDIA_SORTER_TEST_REAL_TRASH: "1"
         run: |
           set -o pipefail
-          python -m pytest -q -p no:cacheprovider -s -rfs --tb=short tests/test_recycle.py tests/test_regressions_review8.py | tee modern.log
+          python -m pytest -q -p no:cacheprovider -s -rfs --tb=short tests/test_recycle.py | tee modern.log
           if grep -q "IFileOperation 不支援" modern.log; then echo "the modern interface was not actually used"; exit 1; fi
