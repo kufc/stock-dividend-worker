@@ -15,7 +15,8 @@ if [ -n "$NATIVE" ]; then
   export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" PYTHONUTF8=1   # 不要把 /S 這類參數當成路径轉換
   WORK="$(mktemp -d)"; WINWORK="$(cygpath -w "$WORK")"
   # 解除安裝程式會複製自己到暫存資料夾再執行、原本的行程馬上結束，所以要等那個複本跑完
-  settle() { for _ in $(seq 90); do tasklist 2>/dev/null | grep -qiE "^(Un_.|Au_)\.exe" || break; sleep 1; done; sleep 1; }
+  # （先等兩秒讓複本啟動；複本的檔名是 Un_A.exe 之類，舊版 NSIS 是 Au_.exe）
+  settle() { sleep 2; for _ in $(seq 180); do tasklist 2>/dev/null | grep -qiE "^(Un_[A-Z]|Au_)\.exe" || break; sleep 1; done; sleep 2; }
   W() { timeout "${T:-300}" "$@" 2>&1; local rc=$?; [ -z "${NOWAIT:-}" ] && settle; return $rc; }
   LOCAL="$(cygpath -u "$LOCALAPPDATA")"
   START="$(cygpath -u "$APPDATA")/Microsoft/Windows/Start Menu/Programs/AI 媒體分類器"
@@ -99,6 +100,10 @@ wait $HOLD; [ -z "$NATIVE" ] && timeout 60 wineserver -w; sleep 1
 
 echo "== 解除安裝（靜默，不加 _?=：跟使用者在「設定 → 應用程式」按解除安裝時一樣）：預設保留所有個人資料"
 W "$PROG/uninstall.exe" /S; echo "  結束代碼 $?"
+if [ -n "$NATIVE" ] && [ -e "$PROG" ]; then  # 診斷用：還沒移除乾淨時，印出還在跑的行程與剩下的東西
+  echo "  （診斷）還在執行的解除安裝行程："; tasklist | grep -iE "un_|au_|nsis|uninstall" || echo "    沒有"
+  echo "  （診斷）安裝資料夾裡剩下："; ls "$PROG" | head -10; find "$PROG" -type f | wc -l
+fi
 check "程式與 Python 已移除（含下載的套件）" '[ ! -d "$PROG/python" ] && [ ! -d "$PROG/app" ]'
 check "開始功能表捷徑已移除" '[ "$(find "$START" -name "*.lnk" | wc -l)" -eq 0 ]'
 check "登錄項目已移除" '! W reg query "$UNKEY" | grep -q "DisplayName"'
