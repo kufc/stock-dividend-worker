@@ -233,6 +233,7 @@ def test_primary_buttons_stay_inside_the_window(app_factory, tmp_path, screen, s
     """各種螢幕大小與縮放：每個步驟的主要按鈕都必須完整顯示在視窗內。"""
     app = app_factory(scaling=scaling)
     root = app.root
+    root.state("normal")  # Windows 上程式一開就最大化到「真的」螢幕；要模擬別種螢幕得先還原，否則改大小不會生效
     app._init_geometry(screen)  # 假裝這台電腦的螢幕是 screen 大小
     root.minsize(min(app.px(900), screen[0] - 20), min(app.px(560), screen[1] - 80))
     root.update()
