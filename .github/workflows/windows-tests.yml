@@ -59,3 +59,9 @@ jobs:
           set -o pipefail
           python -m pytest -q -p no:cacheprovider -s -rfs --tb=short tests/test_recycle.py | tee modern.log
           if grep -q "IFileOperation 不支援" modern.log; then echo "the modern interface was not actually used"; exit 1; fi
+      - name: With the Recycle Bin switched off, the app notices and the modern interface refuses
+        if: always()
+        shell: bash
+        env:
+          MEDIA_SORTER_ALLOW_REGISTRY_TEST: "1"
+        run: python tools/verify_recycle_refusal_windows.py
