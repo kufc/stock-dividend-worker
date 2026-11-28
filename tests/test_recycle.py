@@ -44,6 +44,8 @@ def test_refusal_by_windows_is_never_retried_with_the_legacy_call(tmp_path, monk
     ((STAGE_OPERATION, 0x80070005, False), OSError),              # 存取被拒
     ((STAGE_OPERATION, 0, True), OSError),                        # 被中止
     ((STAGE_OPERATION, 0, False), OSError),                       # 回報成功但檔案還在
+    ((STAGE_OPERATION, 0x80004004, True, {"will_recycle": False}), OSError),   # Windows 說不會進回收筒：我們中止了
+    ((STAGE_OPERATION, 0, False, {}), OSError),                   # Windows 沒有先問我們：無法確認去向
 ])
 def test_outcomes_of_the_shell_call(tmp_path, outcome, error):
     victim = tmp_path / "a.jpg"
@@ -62,6 +64,16 @@ def test_success_requires_the_file_to_be_gone(tmp_path):
         return STAGE_OPERATION, 0, False
 
     _REAL(str(victim), fake)  # 不丟錯誤
+
+
+def test_refusal_message_says_the_file_would_have_been_deleted_for_good(tmp_path):
+    """真的 Windows 上實測：回收筒被關掉時，光靠「不能進回收筒就失敗」的旗標，檔案照樣被永久刪除。
+    所以改成刪除前由 Windows 告訴我們會不會進回收筒；不會就中止並說明。"""
+    victim = tmp_path / "a.jpg"
+    victim.write_bytes(b"x")
+    with pytest.raises(OSError, match="不會進資源回收筒"):
+        _REAL(str(victim), lambda path: (STAGE_OPERATION, 0x80004004, True, {"will_recycle": False}))
+    assert victim.read_bytes() == b"x"
 
 
 def test_a_missing_system_library_counts_as_unsupported(tmp_path):
