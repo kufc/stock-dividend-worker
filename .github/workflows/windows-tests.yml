@@ -65,3 +65,34 @@ jobs:
         env:
           MEDIA_SORTER_ALLOW_REGISTRY_TEST: "1"
         run: python tools/verify_recycle_refusal_windows.py
+
+  installer:
+    # 在真的 Windows 上建置安裝程式，然後實際安裝、開啟程式跑一遍、解除安裝（跟 Wine 裡跑的是同一份檢查）。
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Use a 1920x1080 screen
+        shell: pwsh
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+      - name: Find or install NSIS
+        shell: pwsh
+        run: |
+          $candidate = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $candidate)) { choco install nsis -y --no-progress }
+          if (-not (Test-Path $candidate)) { throw "makensis not found" }
+          "MAKENSIS=$candidate" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Build the installer
+        shell: bash
+        run: |
+          python -m pip install py-rattler
+          python installer/build_installer.py --out dist --makensis "$MAKENSIS"
+          ls -la dist
+      - name: Install, run the app, uninstall (the same checks as under Wine)
+        shell: bash
+        run: WHEELS=pip bash installer/test_in_wine.sh dist/AI-Media-Sorter-Setup-*.exe
